@@ -1,0 +1,12 @@
+title: update-managedcluster-status-to-include-clusterinfo
+authors:
+  - "@elgnay"
+reviewers:
+  - "@qiujian16"
+approvers:
+  - "@deads2k"
+  - "@pmorie"
+  - "@mdelder"
+creation-date: 2020-10-30
+last-updated: 2020-11-25
+status: provisional
