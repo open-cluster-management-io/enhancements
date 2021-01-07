@@ -3,13 +3,13 @@
 
 The `enhancements` repo is made available to discuss specific new features or architectural improvements for the community around `open-cluster-management`.
 
-Inspired by the [Kubernetes enhancement](https://github.com/kubernetes/enhancements)process.
+Inspired by the [Kubernetes enhancement](https://github.com/kubernetes/enhancements) process.
 
 This repository provides a rally point to discuss, debate, and reach consensus for how Open Cluster Management enhancements are introduced.
 
 Enhancements may take multiple releases to ultimately complete and thus provide the basis of a community roadmap. Enhancements may be filed from anyone in the community, but require consensus from domain specific project maintainers in order to implement and accept into the release.
 
-For template references, see the [template](guidelines/enhancement_template.md).
+For template references, see the [template](guidelines/README.md).
 
 ## Is My Thing an Enhancement?
 
