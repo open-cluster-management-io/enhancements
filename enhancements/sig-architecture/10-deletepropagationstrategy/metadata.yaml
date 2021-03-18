@@ -1,0 +1,17 @@
+title: add-deletionpropagation-for-manifestwork
+authors:
+  - "@qiujian16"
+reviewers:
+  - "@deads2k"
+  - "@pmorie"
+  - "@mdelder"
+approvers:
+  - "@deads2k"
+  - "@pmorie"
+  - "@mdelder"
+creation-date: 2021-03-18
+last-updated: 2021-03-18
+status: implementable
+see-also:
+replaces:
+superseded-by:
