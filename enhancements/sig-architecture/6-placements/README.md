@@ -39,9 +39,9 @@ Placement APIs can be used by a higher primitive and controller to decide which 
 
 #### Story 5: The placement API should be scalable to support selecting hundreds of ManagedClusters from thousands of ManagedClusters.
 
-#### Story 6: A user can select ManagedClusters across different regions.
+#### Story 6: A controller is able to consume placements to select desired ManagedClusters.
 
-#### Story 7: A controller is able to consume placements to select desired ManagedClusters.
+#### Story 7: A user can select ManagedClusters across different regions.
 
 #### Story 8: A user can specify tolerations and select ManagedClusters with particular taints.
 
@@ -55,7 +55,7 @@ Placement APIs can be used by a higher primitive and controller to decide which 
 - Have a component created with controllers to consume placements and generate placement decisions;
 - Limit the access to ManagedClusters by leveraging ManagedClusterSets;
 - Replace and deprecate the current placementrule APIs in https://github.com/open-cluster-management/multicloud-operators-placementrule
-- The user stories 8-10 need further investigation and will be covered in separate enhancements when API version moves to beta;
+- The user stories 7-10 need further investigation and will be covered in separate enhancements when API version moves to beta;
 
 ## Proposal
 
@@ -102,51 +102,42 @@ type Placement struct {
 // PlacementSpec defines the attributes of Placement.
 // An empty PlacementSpec selects all ManagedClusters from the bound ManagedClusterSets to placement namespace.
 type PlacementSpec struct {
-	// Predicates represent a slice of predicates to select ManagedClusters. The predicates are ORed.
-	// +optional
-	Predicates []ClusterPredicate `json:"predicates,omitempty"`
-
-	// Affinity represents the scheduling constraints
-	// +optional
-	Affinity *Affinity `json:"affinity,omitempty"`
-}
-
-// ClusterPredicate represents a predicate to select ManagedClusters.
-type ClusterPredicate struct {
-	// ClusterSets represent the ManagedClusterSets from which the ManagedClusters are selected.
+  // ClusterSets represent the ManagedClusterSets from which the ManagedClusters are selected.
 	// If the slice is empty, ManagedClusters will be selected from the ManagedClusterSets bound to the placement
 	// namespace, otherwise ManagedClusters will be selected from the intersection of this slice and the
 	// ManagedClusterSets bound to the placement namespace.
 	// +optional
 	ClusterSets []string `json:"clusterSets,omitempty"`
 
-	// NumberOfClusters represents the number of ManagedClusters to be selected which meet the
-	// requirements in this predicate.
-	// 1) If not specified, it indicates all matched ManagedClusters will be selected;
-	// 2) Otherwise if the nubmer of matched ManagedClusters is larger than NumberOfClusters, a random subset
-	//    with expected number of ManagedClusters will be selected;
-	// 3) If the nubmer of matched ManagedClusters is equal to NumberOfClusters, all matched ManagedClusters
-	//    will be selected;
-	// 4) If the nubmer of matched ManagedClusters is less than NumberOfClusters, all matched ManagedClusters
-	//    will be selected, and the status of condition `PlacementConditionSatisfied` will be set to false;
+	// NumberOfClusters represents the desired number of ManagedClusters to be selected which meet the
+	// placement requirements.
+	// 1) If not specified, all ManagedClusters which meet the placement requirements (including ClusterSets,
+	//    and Predicates) will be selected;
+	// 2) Otherwise if the nubmer of ManagedClusters meet the placement requirements is larger than
+	//    NumberOfClusters, a random subset with desired number of ManagedClusters will be selected;
+	// 3) If the nubmer of ManagedClusters meet the placement requirements is equal to NumberOfClusters,
+	//    all of them will be selected;
+	// 4) If the nubmer of ManagedClusters meet the placement requirements is less than NumberOfClusters,
+	//    all of them will be selected, and the status of condition `PlacementConditionSatisfied` will be
+	//    set to false;
 	// +optional
 	NumberOfClusters *int32 `json:"numberOfClusters,omitempty"`
 
-	// RequiredDuringSchedulingRequiredDuringExecution represents a scheduling strategy for a
-	// cluster selector. If specified, the cluster selector should be matched at both scheduling
-	// time (when the placement decisions are made for the first time) and execution time (After
-	// one or multiple placement decisions are made). It means,
-	// 1) Any ManagedCluster, which does not match the selector, should not be selected;
-	// 2) If a selected ManagedCluster ceases to match the selector (e.g. due to an update) after the
-	//    placement decisions are made, it will be eventually removed from the placement decisions;
-	// 3) If a ManagedCluster starts to match the selector after the placement decisions are made, it
-	//    will either be selected or at least has chance to be selected (when NumberOfClusters is
-	//    specified);
-	//
-	// Other scheduling strategies not yet implemented includes
-	// RequiredDuringSchedulingIgnoredDuringExecution and PreferredDuringSchedulingIgnoredDuringExecution
+	// Predicates represent a slice of predicates to select ManagedClusters. The predicates are ORed.
 	// +optional
-	RequiredDuringSchedulingRequiredDuringExecution *ClusterSelector `json:"requiredDuringSchedulingRequiredDuringExecution,omitempty"`
+	Predicates []ClusterPredicate `json:"predicates,omitempty"`
+}
+
+// ClusterPredicate represents a predicate to select ManagedClusters.
+type ClusterPredicate struct {
+	// RequiredClusterSelector represents a selector of ManagedClusters by label and claim. If specified,
+	// 1) Any ManagedCluster, which does not match the selector, should not be selected by this ClusterPredicate;
+	// 2) If a selected ManagedCluster (of this ClusterPredicate) ceases to match the selector (e.g. due to
+	//    an update) of any ClusterPredicate, it will be eventually removed from the placement decisions;
+	// 3) If a ManagedCluster (not selected previously) starts to match the selector, it will either
+	//    be selected or at least has a chance to be selected (when NumberOfClusters is specified);
+	// +optional
+	RequiredClusterSelector ClusterSelector `json:"requiredClusterSelector,omitempty"`
 }
 
 // ClusterSelector represents the AND of the containing selectors
@@ -168,51 +159,6 @@ type ClusterClaimSelector struct {
 	MatchExpressions []metav1.LabelSelectorRequirement `json:"matchExpressions,omitempty"`
 }
 
-// Affinity is a group of affinity scheduling rules.
-type Affinity struct {
-	// ClusterAntiAffinity describes cluster affinity scheduling rules for the placement.
-	// +optional
-	ClusterAntiAffinity *ClusterAntiAffinity `json:"clusterAntiAffinity,omitempty"`
-}
-
-// ClusterAntiAffinity is a group of cluster affinity scheduling rules.
-type ClusterAntiAffinity struct {
-	// RequiredDuringSchedulingRequiredDuringExecution is a scheduling strategies for
-	// ClusterAntiAffinity. The anti-affinity requirements specified by this field should be met
-	// at both scheduling time (when the placement decisions are made for the first time) and
-	// execution time (After one or multiple placement decisions are made). It means,
-	// 1) Any ManagedCluster, which does not meet the requirements, should not be selected;
-	// 2) If a selected ManagedCluster ceases to meet the requirements (e.g. due to an update) after the
-	//    placement decisions are made, it will be eventually removed from the placement decisions;
-	// 3) If a ManagedCluster starts to meet the requirements after the placement decisions are made, it
-	//    will either be selected or at least has chance to be selected;
-	// When there are multiple elements, the lists of ManagedClusters corresponding to each
-	// ClusterAffinityTerm are intersected, i.e. all terms must be satisfied.
-	//
-	// Other scheduling strategies not yet implemented includes
-  // RequiredDuringSchedulingIgnoredDuringExecution and PreferredDuringSchedulingIgnoredDuringExecution
-	// +optional
-	RequiredDuringSchedulingRequiredDuringExecution []ClusterAffinityTerm `json:"requiredDuringSchedulingRequiredDuringExecution,omitempty"`
-}
-
-// ClusterAffinityTerm defines a constraint on a set of ManagedClusters. Any ManagedCluster in this set
-// should be co-located (affinity) or not co-located (anti-affinity) with each other, where co-located
-// is defined as the value of the label/claim with name <topologyKey> on ManagedCluster is the same.
-type ClusterAffinityTerm struct {
-	// TopologyKey is either a label key or a cluster claim name of ManagedClusters
-	// +required
-	TopologyKey string `json:"topologyKey"`
-
-	// TopologyKeyType indicates the type of TopologyKey. It could be Label or Claim.
-	// +required
-	TopologyKeyType string `json:"topologyKeyType"`
-}
-
-const (
-	TopologyKeyTypeLabel string = "Label"
-	TopologyKeyTypeClaim string = "Claim"
-)
-
 type PlacementStatus struct {
 	// NumberOfSelectedClusters represents the number of selected ManagedClusters
 	NumberOfSelectedClusters int32 `json:"numberOfSelectedClusters"`
@@ -222,11 +168,16 @@ type PlacementStatus struct {
 }
 
 const (
-	// PlacementConditionSatisfied means Placement is satisfied.
-	// A placement is satisfied only if all predicates are satisfied. And a predicate
-	// is not satisfied if
-	// 1) NumberOfClusters is specified;
-	// 2) And the number of matched ManagedClusters for this predicate is less than NumberOfClusters;
+	// PlacementConditionSatisfied means Placement requirements are satisfied.
+	// A placement is not satisfied if
+	// 1) No ManagedClusterSetBinding is found in the placement namespace;
+	// 2) ClusterSets in spec is specified and none of them is bound to the placement namespace;
+	// 3) No memeber ManagedCluster is found for all eligible ManagedClusterSets; A ManagedClusterSet
+	//    is eligible for a placement if
+	//    a) It is bound to the placement namespace;
+	//    b) And if ClusterSets in spec is specified, it is in the list;
+	// 4) No ManagedCluster matches any of the cluster predicates of the placement;
+	// 5) NumberOfClusters in spec is specified and NumberOfSelectedClusters in status is less than it;
 	PlacementConditionSatisfied string = "PlacementSatisfied"
 )
 ```
@@ -241,8 +192,19 @@ type PlacementDecision struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
+	// Status represents the current status of the PlacementDecision
+	// +optional
+	Status PlacementDecisionStatus `json:"status,omitempty"`
+}
+
+// PlacementDecisionStatus represents the current status of the PlacementDecision.
+type PlacementDecisionStatus struct {
 	// Decisions is a slice of decisions according to a placement
-	// The number of decisions should not be larger than 100
+	// The number of decisions should not be larger than 100.
+	// The slice should not include any empty ClusterDecision.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxItems=100
+	// +required
 	Decisions []ClusterDecision `json:"decisions"`
 }
 
@@ -270,7 +232,7 @@ metadata:
   namespace: ns1
 spec:
   predicates:
-    - requiredDuringSchedulingRequiredDuringExecution:
+    - requiredClusterSelector:
         claimSelector:
           matchExpressions:
             - key: id.k8s.io
@@ -289,10 +251,9 @@ metadata:
   name: clusters-from-specific-clusterset
   namespace: ns1
 spec:
-  predicates:
-    - clusterSets:
-      - clusterset1
-      numberOfClusters: 3
+  clusterSets:
+    - clusterset1
+  numberOfClusters: 3
 ```
 **Note:** No ManagedCluster will be selected if the ManagedClusterSet is not bound to the placement namespace.
 
@@ -306,7 +267,7 @@ metadata:
   namespace: ns1
 spec:
   predicates:
-    - requiredDuringSchedulingRequiredDuringExecution:
+    - requiredClusterSelector:
         labelSelector:
           matchLabels:
             vendor: OpenShift
@@ -319,56 +280,12 @@ spec:
                 - 4.5.9
 ```
 
-#### 4. Select 2 AWS ManagedClusters and 1 GCE ManagedCluster
-
-```yaml
-apiVersion: cluster.open-cluster-management.io/v1alpha1
-kind: Placement
-metadata:
-  name: clusters-from-aws-and-gce
-  namespace: ns1
-spec:
-  predicates:
-    - numberOfClusters: 2
-      requiredDuringSchedulingRequiredDuringExecution:
-        claimSelector:
-          matchExpressions:
-            - key: platform.open-cluster-management.io
-              operator: In
-              values:
-                - AWS
-    - numberOfClusters: 1
-      requiredDuringSchedulingRequiredDuringExecution:
-        claimSelector:
-          matchExpressions:
-            - key: platform.open-cluster-management.io
-              operator: In
-              values:
-                - GCE
-```
-
-#### 5. Select ManagedClusters across different regions
-
-```yaml
-apiVersion: cluster.open-cluster-management.io/v1alpha1
-kind: Placement
-metadata:
-  name: clusters-across-regions
-  namespace: ns1
-spec:
-  affinity:
-    clusterAntiAffinity:
-      requiredDuringSchedulingRequiredDuringExecution:
-        - topologyKey: region.open-cluster-management.io
-          topologyKeyType: Claim
-```
-
 ## Design Details
 
 ### User Scenario
 1. Cluster admin imports some Kubernetes clusters to hub as ManagedClusters;
 2. Cluster admin organizes those ManagedClusters with ManagedClusterSets;
-3. Cluster admin grant a normal user the access to some ManagedClusterSets;
+3. Cluster admin grants a normal user the access to some ManagedClusterSets;
 4. The user binds some authorized ManagedClusterSets to their working namespace on hub cluster by creating ManagedClusterSetBindings in this namespace. An example looks like,
     ```yaml
     apiVersion: cluster.open-cluster-management.io/v1alpha1
@@ -389,7 +306,7 @@ spec:
       namespace: ns1
     spec:
       predicates:
-        - requiredDuringSchedulingRequiredDuringExecution:
+        - requiredClusterSelector:
             labelSelector:
               matchLabels:
                 vendor: OpenShift
@@ -401,10 +318,10 @@ spec:
     kind: PlacementDecision
     metadata:
       labels:
-        placement.open-cluster-management.io: placement1
+        cluster.open-cluster-management.io/placement: placement1
       name: placement1-decision-1
       namespace: ns1
-    spec:
+    status:
       decisions:
         - clusterName: cluster1
         - clusterName: cluster2
@@ -416,26 +333,13 @@ Limitations:
   - The number of ManagedClusterSets might be very large;
   - The new added ManagedClusterSets cannot be bound to the namespace automatically;
 
-### Workflows
+### Workflow: Placement Reconciliation
 
-#### Workflow 1: Placement Reconciliation
-1. If the placement has old placementdecisions, fetch them all and get a slice of old matched ManagedClusters;
-2. Evaluate each cluster predicates (see Workflow 2 below for more details) and get the union of all predicates result;
-3. Enforce the affinity constrains on the union and remove ManagedClusters if necessary;
-4. If the placement has no old placementdicisions yet, create placementdicisions;
-5. Otherwise, update the existing placementdicisions, and add/remove placementdicisions if necessary.
-
-#### Workflow 2: Evaluate a cluster predicate
-1. If `ClusterSets` is not empty, get ManagedClusters belongs to intersection of `ClusterSets` and the ManagedClusterSets bound to the placement namespace;
-2. Otherwise get ManagedClusters from the ManagedClusterSets bound to the placement namespace;
-3. If `RequiredDuringSchedulingRequiredDuringExecution` is specified, filter ManagedClusters with label/claim selectors;
-4. If `NumberOfClusters` is not specified, return all matched ManagedClusters;
-5. Otherwise, get the intersection of old matched ManagedClusters and new matched ManagedClusters;
-6. If `NumberOfClusters` is equal to the size of the intersection, return ManagedClusters in the intersection;
-7. If `NumberOfClusters` is less than the size of the intersection, select random ManagedClusters from the intersection and return;
-8. Otherwise, return ManagedClusters in the intersection with some random additional ManagedClusters from the remaining of the new matched ManagedClusters;
-
-**Note:** The old matched ManagedClusters are preferred during the predicate evaluation, which makes the placement decisions as stable as possible.
+1. Get all clustersetbindings in the placement namespace;
+2. Get eligible clustersets for the placement. A clusterset is eligible for a placement if it is bound to the placement namespace, and it is the .spec.clustersets if it is not empty;
+3. Find out all available clusters for the placement;
+4. Filter clusters with cluster predicates;
+5. Select clusters and generate cluster decisions;
 
 ### An example of consuming controller
 
@@ -467,10 +371,6 @@ func (c *WorkloadController) sync(workload []runtime.RawExtension, placement *Pl
 	return c.removeWorkload(placement.Namespace, placement.Name, toBeRemoved.List())
 }
 ```
-
-### Open Questions
-
-1. The API group of the new placement APIs could be `cluster.open-cluster-management.io` or `scheduling.open-cluster-management.io`. Which one is better?
 
 ### Test Plan
 
@@ -538,7 +438,7 @@ Placement Manager is a new component and contains controllers to implement the n
         - clusterset1
         - clusterset2
       predicates:
-        - requiredDuringSchedulingRequiredDuringExecution:
+        - requiredClusterSelector:
             labelSelector:
               matchLabels:
                 vendor: OpenShift
