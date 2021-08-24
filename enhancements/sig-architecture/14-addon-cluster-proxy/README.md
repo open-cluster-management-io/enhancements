@@ -50,13 +50,21 @@ mutually untrusted, copying the credentials will be strictly impossible.
 
 ### Goals
 
+P1: 
+
 - Automate the installation and operation and apiserver-network-proxy via 
   the addon-framework.
+  - Structurelize the configuration of the proxy components from command-line
+    flags to a custom resource configuration object.
 - Automate the certificate rotation of both proxy-servers and proxy-agents.
 
 ### Non-Goals
 
-- Customizing the source code of apiserver-network-proxy.
+- Tweak the original implementation of apiserver-network-proxy.
+
+### User Story
+
+#### 1. Calling spoke cluster's kubernetes api 
 
 ## Proposal
 
@@ -105,37 +113,139 @@ The following figure shows the interaction between the components:
 
 #### Components
 
-According to the latest design and implementation of [addon-framework](https://github.com/open-cluster-management-io/enhancements/tree/main/enhancements/sig-architecture/8-addon-framework),
-we will bring a new agent controller named `cluster-proxy-agent-controller` that
-qualifies the interfaces defined in addon-framework and automatically does the 
-following things upon discovering a new `ManagedClusterAddon` resource:
+##### Cluster Proxy Operator
 
-1. Signing all the required X509 certificates and keys beforehand:
+According to the latest design and implementation of [addon-framework](https://github.com/open-cluster-management-io/enhancements/tree/main/enhancements/sig-architecture/8-addon-framework),
+we will bring a new agent controller named `cluster-proxy-operator` that
+manages the lifecycle of the proxy components by watching the configuration
+under a new group of api `proxy.addon.open-cluster-management.io/v1alpha1`:
+
+- __ManagedProxyServer__: the configuration and status of proxy-servers.
+
+- __MangedProxyAgent__: the configuration and status of proxy-agents.
+
+Additionally, the operator will be list-watching the standard `ManagedClusterAddon`
+resource and automatically installs proxy-agents w/ the expected options
+upon discovering the addon in each cluster's namespace.
+
+
+##### ManagedProxyServer
+
+The `ManagedProxyServer` is supposed to be a cluster-scoped resource and holds 
+information for provisioning an active proxy-server instance. An example will 
+be:
+
+```yaml
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: ManagedProxyServer
+metadata:
+  name: default # Or any unique name, will be the name of the workload
+spec:
+  replicas: 1
+  certificates:
+    signingSANs: 
+      - "1.1.1.1"
+      - "example.com"
+    rotation:
+      expiringDays: 365
+      forceReloadDays: 200
+  proxy: 
+    mode: [http-connect|grpc|uds] 
+  deploy:
+    namespace: open-cluster-management
+    agentAuthentication:
+      namespace: <validating namespace>
+      serviceAccount: <validating service-account>
+    listeningPorts:
+      proxyServer: 8090
+      agentServer: 8091 
+      healthServer: 8092
+      adminServer: 8095 
+status:
+  lastObserverdGeneration: 2
+  conditions:
+  - type: "AllHealthy" 
+    status: "True"
+  - type: "AllUpToDate" 
+    status: "True"
+  components:
+  - name: default-1
+    namespace: open-cluster-management
+    healthy: true
+    restartCount: 0
+  - name: default-2
+    namespace: open-cluster-management
+    healthy: true
+    restartCount: 0
+```
+
+The operator will be actively syncing up the deployment of the proxy-servers
+to the configuration in the following steps:
+
+1. Signing all the required X509 certificates and keys then stores them into
+   a secret object:
    
     i.   a CSR requesting server certificate which will be shared across the 
          replicas of the proxy servers.
    
-    ii.  a CSR requesting agent certificate which will be shared by the proxy 
-         agents.
-   
-    iii. a CSR requesting client certificate for logging onto in the tunnel.
+    ii. a CSR requesting client certificate for logging onto in the tunnel 
+        (skipped if the proxy server under "uds" mode).
 
-2. A configuration custom resource that contains the following information: 
+2. Rolling/scaling out the proxy servers upon spec changes.
+   
+3. Actively probing/reporting the status of the proxy server instances.
 
-    - the expected replicas of proxy-servers.
-      
-    - the proxy protocol.
-      
-    - the server/agent ports
-    
-3. Installing proxy-server in the cluster namespace in the hub cluster.
-   
-4. Installing proxy-agent in an arbitrary namespace in the spoke cluster with 
-   bootstrap credentials configured.
-   
-5. Periodically probing the connectivity healthiness of the tunnel.
+##### ManagedProxyAgent
+
+The `ManagedProxyAgent` resource is also a cluster-scoped resource and this
+is the template configuration for installing agents to specific clusters:
+
+An example is shown below:
+
+```yaml
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: ManagedProxyAgent
+metadata:
+  name: default # Or any unique name, will be the name of the workload
+spec:
+  serverReference: 
+    # A pointer to the server configuration so that auto-signed certificates
+    # and other related config can be imported.
+    apiVersion: "addon.open-cluster-management.io/v1alpha1"
+    resource: managedproxyservers
+    name: default
+  replicas: 2
+  proxyServerAddress: 1.1.1.1
+  clusterServiceAccount: open-cluster-management:proxy-agent:egress
+  certificates:
+    bootstrapSecret: 
+      # A reference to a secret resource that stores bootstrap kubeconfig
+      namespace: default
+      name: proxy-bootstrap-kubeconfig
+```
+
+
+##### ManagedClusterAddon
+
+```yaml
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: ClusterManagementAddon
+metadata:
+ name: apiserver-network-proxy
+spec:
+ addonMeta:
+   displayName: apiserver-network-proxy
+   description: "https://github.com/kubernetes-sigs/apiserver-network-proxy"
+ addonConfiguration:
+   # Importing templates for creating real agent instances.
+   crd: managedproxyagents.proxy.addon.open-cluster-management.io
+   name: default
+```
 
 #### Expected Usage
+
+
+##### Direct HTTP calls
 
 Basically all the client library supporting HTTP proxy are expected to use 
 the proxy addons w/o additional work. As a matter of fact, most of those 
@@ -158,42 +268,34 @@ curl -v -p \
 ````
 
 
-#### API Spec
+##### SSH over HTTPS tunnels
 
-ManagedClusterAddon:
+The original ssh command supports customizing tunnelling techniques by passing
+`-o "ProxyCommand=..."` option, e.g. ssh over an plain HTTP proxy will be:
 
-```yaml
-apiVersion: addon.open-cluster-management.io/v1alpha1
-kind: ClusterManagementAddon
-metadata:
- name: apiserver-network-proxy
-spec:
- addonMeta:
-   displayName: apiserver-network-proxy
-   description: "https://github.com/kubernetes-sigs/apiserver-network-proxy"
- addonConfiguration:
-   crd: proxy.addon.open-cluster-management.io
-   name: proxy-config
+```shell
+ssh user@host \
+-o "ProxyCommand=nc --proxy-type http --proxy 127.0.0.1:8090 %h %p"
 ```
 
-ProxyConfiguration:
+However, mutual TLS is not yet supported for configuring proxy options, so an
+alternative will be replacing `nc` w/ a simple binary named `konnectivity-nc`
+that supports both mTLS https or grpc proxy as an extension.
 
-```yaml
-apiVersion: proxy.addon.open-cluster-management.io/v1alpha1
-kind: ProxyConfiguration
-metadata:
- name: apiserver-network-proxy
-spec:
-  server:
-    replicas: 2
-    protocol: [websocket|grpc]
-    tunnel-port: 8091
-    proxy-port: 8090
-  agent:
-    replicas: 2
-    server-address: 4.4.4.4
+An very simple revision of `konnectiviy-nc` will be:
+
+[https://gist.github.com/yue9944882/3266bb3a73fde5538e861ae174f6f177](https://gist.github.com/yue9944882/3266bb3a73fde5538e861ae174f6f177)
+
+And the ssh command will be:
+
+```shell
+ssh user@host \
+-o "ProxyCommand=konnectivity-nc \
+--proxy-ca-cert <filepath to ca cert> \
+--proxy-cert <filepath to x509 cert> \
+--proxy-key <filepath to private key> \
+%h %p"
 ```
-
 
 #### Framework Integration
 
