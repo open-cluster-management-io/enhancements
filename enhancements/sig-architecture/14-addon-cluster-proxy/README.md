@@ -50,7 +50,7 @@ mutually untrusted, copying the credentials will be strictly impossible.
 
 ### Goals
 
-P1: 
+Alpha: 
 
 - Automate the installation and operation and apiserver-network-proxy via 
   the addon-framework.
@@ -242,6 +242,24 @@ spec:
    name: default
 ```
 
+#### Proxy Security
+
+##### Server <-> Proxy Authentication
+
+The tunnel from agent to server is secured by mTLS technique, the same way
+we're doing for securing kubernetes' apiserver. So it's almost safe to expose
+the proxy-servers' entry point even in the public networks unless it is 
+flooded by DDoS attacks.
+
+
+##### Server <-> Proxy Authorization
+
+Based on the authentication above, the proxy-server can opt-in to verify
+the agents' identity by asking the agents to pass its service-account-token 
+in the handshake attempts. The proxy-servers can either validate the token
+by its signed namespace or the name of the service-account.
+
+
 #### Expected Usage
 
 
@@ -354,9 +372,3 @@ kubectl get --raw="/apis/<the addon api-group>/<the addon api-version>/<addon-re
 And the official golang and java SDKs are supposed to talk to the managed cluster
 by simply adding an api prefix to the requests.
 
-#### Proxy Server Authorization 
-
-Even if the proxy-servers are mTLS-secured, all the client talking to the servers
-will be actually sharing the same identity for each cluster. We can consider passing
-the real client identity via impersonation headers or something else that keep that
-information.
