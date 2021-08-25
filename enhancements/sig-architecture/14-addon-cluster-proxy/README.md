@@ -118,7 +118,7 @@ The following figure shows the interaction between the components:
 According to the latest design and implementation of [addon-framework](https://github.com/open-cluster-management-io/enhancements/tree/main/enhancements/sig-architecture/8-addon-framework),
 we will bring a new agent controller named `cluster-proxy-operator` that
 manages the lifecycle of the proxy components by watching the configuration
-under a new group of api `proxy.addon.open-cluster-management.io/v1alpha1`:
+under a new group of api `proxy.open-cluster-management.io/v1alpha1`:
 
 - __ManagedProxyServer__: the configuration and status of proxy-servers.
 
@@ -136,7 +136,7 @@ information for provisioning an active proxy-server instance. An example will
 be:
 
 ```yaml
-apiVersion: addon.open-cluster-management.io/v1alpha1
+apiVersion: proxy.open-cluster-management.io/v1alpha1
 kind: ManagedProxyServer
 metadata:
   name: default # Or any unique name, will be the name of the workload
@@ -203,7 +203,7 @@ is the template configuration for installing agents to specific clusters:
 An example is shown below:
 
 ```yaml
-apiVersion: addon.open-cluster-management.io/v1alpha1
+apiVersion: proxy.open-cluster-management.io/v1alpha1
 kind: ManagedProxyAgent
 metadata:
   name: default # Or any unique name, will be the name of the workload
@@ -352,6 +352,13 @@ func (a *ApiserverNetworkProxyAddon) CSRApproveCheck(cluster *clusterv1.ManagedC
 	// matching all those CSR with the expected bootstrap kubeconfig
 }
 ```
+
+#### Test Plan
+
+Alpha:
+
+- Unit tests that makes sure the project's fundamental quality.
+- Integration tests against real KinD clusters to execercise the installation.
 
 ## Future Work
 
