@@ -68,14 +68,14 @@ type PrioritizerConfig struct {
 	// Weight defines the weight of prioritizer. The value must be ranged in [0,10].
 	// +kubebuilder:validation:Minimum:=0
 	// +kubebuilder:validation:Maximum:=10
-	// +kubebuilder:default=1
-	// +required
-	Weight int32 `json:"weight"`
+	// +kubebuilder:default:=1
+	// +optional
+	Weight int32 `json:"weight,omitempty"`
 }
 ```
 
 ### 2. Creating a plugin, `resource`, to score managed clusters based on cluster resource usage.
-The plugin is registered as the below 4 prioritizers with different names, which are disabled by default (weight is 0). 
+The plugin is registered as the below 4 resource prioritizers with different names, which are disabled by default (weight is 0).
 1. `ResourceRatioCPU`, it scores managed clusters according to allocatable to capacity ratio of CPU.
 2. `ResourceAllocatableCPU`, it scores managed clusters according to allocatable CPU.
 3. `ResourceRatioMemory`, it scores managed clusters according to allocatable to capacity ratio of Memory.
@@ -119,9 +119,13 @@ Besides the new prioritizers, there are two exising prioritizers with weight 1 i
 - `balance`, it balances the number of decisions among the clusters. The cluster with the highest number of decison is given the lowest score, while the empty cluster is given the highest score. The score ranges from -100 to 100.
 - `steady`, it ensures the existing decision is stabilized. The clusters that existing decisions choose are given the highest score while the clusters with no existing decisions are given the lowest score. The score is either 100 or 0.
 
-When making cluster decisions, managed clusters are sorted by the final score of managed cluster, which is the sum of scores from all prioritizers with weights. User is able to adjust the weights of prioritizers to impact the final score, for example
-- Set the weight of `ResourceRatioCPU`/`ResourceAllocatableCPU`/`ResourceRatioMemory`/`ResourceAllocatableMemory` to schedule placement based on resource usage;
-- Make placement sensitive to resource usage by setting a higer weight for `ResourceRatioCPU`/`ResourceAllocatableCPU`/`ResourceRatioMemory`/`ResourceAllocatableMemory`;
+When making cluster decisions, managed clusters are sorted by the final score of managed cluster, which is the sum of scores from all prioritizers with weights: final_score = sum(prioritizer_x_weight * prioritizer_x_score), while
+- prioritizer_x_weight, the weight of prioritizer x;
+- prioritizer_x_score, the score returned by prioritizer x for a managed cluster;
+
+User is able to adjust the weights of prioritizers to impact the final score, for example
+- Set the weight of resource prioritizers to schedule placement based on resource usage;
+- Make placement sensitive to resource usage by setting a higer weight for resource prioritizers;
 - Ignore resource usage change and pin the placementdecisions by increasing the weight of `steady`;
 
 ## Examples
@@ -201,3 +205,28 @@ N/A
 
 ## Version Skew Strategy
 N/A
+
+## Appendix
+
+### 1. Is there a way to express: "I must have at least this much space"?
+No, because it can not be supported. 
+To express it, we will need to allow specifying resourceRequirement in placement. 
+And when we calculate remaining resource in a managed cluster, we need to take the resourceRequirement into account. 
+However, since placement has no link to the real workload, when the remaining resource on a managed cluster reduced, we have no idea whether it is because of workload associated with this placement or other workloads. 
+We cannot subtract resourceRequirement of the placement from the remaining resources on the cluster, since maybe no associated workload has been deployed on it. 
+We cannot ignore resourceRequirement of the placement from the remaining resources on the cluster either. 
+It results in that we will never accurately calculate the remaining resource on the managed cluster.
+
+### 2. How it works when managed clusters are autoscaling
+
+#### Scale up
+1. User creates a placement with resource prioritizers enabled;
+2. The placement selects managed clusters based on resource usage/capacity;
+3. Workload will then be deployed on the selected clusters;
+4. If there is no enough resource available or the capacity is tight on the selected managed cluster, new node will be added;
+5. Capacity/allocatable of the managed cluster changes. That will trigger a new scheduling cycle for placements with resource prioritizers enabled;
+
+#### Scale down
+1. An underutilized node in a managed cluster is removed;
+2. Capacity/allocatable of this managed cluster changes. That will trigger a new scheduling cycle for placements with resource prioritizers enabled;
+3. Some Placements may no longer select this cluster because of resource changes;
