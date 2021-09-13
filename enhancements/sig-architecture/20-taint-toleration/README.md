@@ -10,7 +10,7 @@
 
 ## Summary
 
-The proposed work would define Taints and Tolerations in placement APIs to allow users to control the selection of managed clusters more flexibly, and evict selected unhealthy/not-reporting clusters after a certain period.
+The proposed work would define Taints in MnagedCluster and Tolerations in placement APIs to allow users to control the selection of managed clusters more flexibly, and evict selected unhealthy/not-reporting clusters after a certain period.
 
 ## Motivation
 
@@ -23,22 +23,20 @@ Taints and tolerations would work together to allow users to control the selecti
 
 ### User Stories
 
-Story 1: Users can prevent some workloads from being scheduled to those managed clusters.
+Story 1: Users schedule some workloads to certain managed clusters.
 
-Story 2: Users schedule some workloads to certain managed clusters.
+Story 2: When a managed cluster gets offline, the system can make applications deployed on this cluster to be transferred to another available managed cluster immediately. 
 
-Story 3: When a managed cluster gets offline, the system can make applications deployed on this cluster to be transferred to another available managed cluster immediately. 
+Story 3: User can set a cluster to maintaining status, so workloads will be evicted and no workloads will be scheduled to the cluster. User can set security configuration still in these clusters even the cluster is in maintaining mode.
 
-Story 4: Users are able to evict workloads deployed on a cluster without modifying or being aware of existing placements’ details.
-
-Story 5: When a managed cluster gets offline, users can make applications deployed on this cluster to be transferred to another available managed cluster after a tolerated time.
+Story 4: When a managed cluster gets offline, users can make applications deployed on this cluster to be transferred to another available managed cluster after a tolerated time.
 
 ## Proposal
 
 ### API repo
 
 #### ManagedClusterSpec
-In `ManagedClusterSpec`, we can add `taints` which has the similar structure with taints in Kubernetes. But to keep things simple at the beginning, we can remove `effect` which is in Kubernetes' taint while only keep `key` and `value` .
+In `ManagedClusterSpec`, we can add `taints` which has the similar structure with taints in Kubernetes. But since we do not have explicit `Schedule` and `Execute` phases and in order to keep things simple at the beginning, we can remove `effect` which is in Kubernetes' taint while only keep `key` and `value` .
 
 ```go
 type ManagedClusterSpec struct {
@@ -53,7 +51,9 @@ type ManagedClusterSpec struct {
 type Taint struct {
    // Required. The taint key to be applied to a cluster.
    Key string `json:"key"`
-   // The taint value corresponding to the taint key.
+   // The taint value corresponding to the taint key. It can be nil. When the Operator in Toleration is
+   // "Exists", the Value in taint would be ignored. When the Operator in Toleration is "Equal" and taint's
+   // value is nil, toleration's value should also be nil if they are matched.
    // +optional
    Value string `json:"value,omitempty"`
    // TimeAdded represents the time at which the taint was added.
@@ -113,20 +113,26 @@ type Toleration struct {
 
 #### Changes:
 
-* Current placement process is implemented by plugins. To add taint-toleration, we need to add a new plugin which check taint-toleration matching after the filter pipline in the schedule function. Specifically, in this new plugin, for every taint of all the taints on a managed cluster, we go through every toleration on the placement to see if there is a match. Once the match is found, the checking passes.
-* By the end of the schedule process, we check all tolerated taints to get the first expiration time of the cluster. `scheduleResult` should also be updated by adding `requeue` and `delay`, which represent whether requeue need to be triggered in the controller and after how many seconds it would be triggerd. Then we add a requeue process in the controller to evict the cluster after this `delay` time. `delay` time is the first expiration time of tolerated taints, and it would be computed as: toleration.TolerationSeconds - (current time - taint.TimeAdded), and the first expiration time is the minimum among all expiration times.
+* Current placement process is implemented by plugins. To add taint-toleration, we need to add a new plugin which check taint-toleration matching after the filter pipline in the schedule function. Specifically, we do following matching checking in this new plugin:
+  * for every taint of all the taints on a managed cluster
+  * go through every toleration on the placement
+  * check if there is a match
+* By the end of the schedule process, we check all tolerated taints to get the first expiration time of the cluster.
+* `scheduleResult` should be updated by adding `requeue` and `delay`, which represent whether requeue need to be triggered in the controller and after how many seconds it would be triggerd. 
+* We also add a requeue process in the controller to evict the cluster after this `delay` time. `delay` time is the first expiration time of tolerated taints, and it would be computed as: toleration.TolerationSeconds - (current time - taint.TimeAdded), and the first expiration time is the minimum among all expiration times.
+* Update the plugin interface, which can return the `requeueAfter` time for each plugin.
 
 ### Register repo
 
 #### Add new controller:
 
-Based on what we have in current Placement APIs, we add a new controller which can map the state of unhealthy and unreachable managed clusters to corresponding taints, so we can leverage the Taint-Toleration to support[ filtering unhealthy/not-reporting clusters (issue #48)](https://github.com/open-cluster-management-io/community/issues/48).
+Based on what we have in current Placement APIs, we add a new controller which can map the state of unhealthy and unreachable managed clusters to corresponding taints `open-clustet-management.io/unhealthy` and `open-cluster-management.io/unreachable`, so we can leverage the Taint-Toleration to support[ filtering unhealthy/not-reporting clusters (issue #48)](https://github.com/open-cluster-management-io/community/issues/48).
 
 ### Examples
 
-#### 1. No Schedule on Certain Clusters
+#### 1. Cluster Maintaining
 
-Users want to prevent some workloads from being scheduled to certain managed clusters. 
+Users (admins) can set a cluster to maintaining status, so workloads will be evicted and no workloads will be scheduled to the cluster. There's no need to set the toleration in placement.yaml under this senario. If toleration has to be set, make sure there won't be a matching key-value with the `maintaining` key-value in taint.
 
 cluster.yaml:
 
@@ -140,7 +146,7 @@ metadata:
 spec:
   hubAcceptsClient: true
   taints:
-    - key: gpu
+    - key: maintaining
       value: "true"
 ```
 
@@ -152,12 +158,12 @@ kind: Placement
 metadata:
   name: placement1
   namespace: default
-spec:~
+spec: ~
 ```
 
 #### 2. Schedule on Certain Clusters
 
-Users want to schedule some workloads to certain managed clusters.
+Developers want to schedule some workloads to certain managed clusters.
 
 cluster.yaml:
 
@@ -195,7 +201,7 @@ When managed clusters' availability becomes `false`, the taint `unhealthy` would
 
 ##### 3.1 Immediate Eviction
 
-Users want applications deployed on this cluster to be transferred to another available managed cluster immediately.
+Admins or developers want applications deployed on this cluster to be transferred to another available managed cluster immediately.
 
 cluster.yaml:
 
@@ -231,7 +237,7 @@ spec:
 
 ##### 3.2 Eviction After TolerationSeconds
 
-When a managed cluster gets offline, users want applications deployed on this cluster to be transferred to another available managed cluster after a tolerated time.
+When a managed cluster gets offline, developers or admins want applications deployed on this cluster to be transferred to another available managed cluster after a tolerated time.
 
 cluster.yaml:
 
