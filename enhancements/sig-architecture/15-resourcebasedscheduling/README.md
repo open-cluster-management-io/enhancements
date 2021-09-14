@@ -49,23 +49,60 @@ Link to the feature request: https://github.com/open-cluster-management-io/commu
 ## Proposal
 
 ### 1. Changes on Placement APIs
-Add a field `PrioritizerConfigs` into the Placement spec to allow users to weight prioritizers.
+Add a field `PrioritizerConfigs` into the Placement spec to allow users to defines the policy of the prioritizers.
 ```go
 type PlacementSpec struct {
 	// ... ...
-
-	// PrioritizerConfigs override the default configuration of the prioritizers
+	
+	// PrioritizerPolicy defines the policy of the prioritizers.
+	// If this field is unset, then default prioritizer mode and configurations are used.
+	// Referring to PrioritizerPolicy to see more description about Mode and Configurations.
 	// +optional
-	PrioritizerConfigs []PrioritizerConfig `json:"prioritizerConfigs,omitempty"`
+	PrioritizerPolicy PrioritizerPolicy `json:"prioritizerPolicy"`
 }
+
+// PrioritizerPolicy represents the policy of prioritizer
+type PrioritizerPolicy struct {
+	// Mode is either Exact, Additive, "" where "" is Additive by default.
+	// In Additive mode, any prioritizer not explicitly enumerated is enabled in its default Configurations,
+	// in which Steady and Balance prioritizers have the weight of 1 while other prioritizers have the weight of 0.
+	// Additive doesn't require configuring all prioritizers. The default Configurations may change in the future,
+	// and additional prioritization will happen.
+	// In Exact mode, any prioritizer not explicitly enumerated is weighted as zero.
+	// Exact requires knowing the full set of prioritizers you want, but avoids behavior changes between releases.
+	// +kubebuilder:default:=Additive
+	// +optional
+	Mode PrioritizerPolicyModeType `json:"mode,omitempty"`
+
+	// +optional
+	Configurations []PrioritizerConfig `json:"configurations,omitempty"`
+}
+
+// PrioritizerPolicyModeType represents the type of PrioritizerPolicy.Mode
+type PrioritizerPolicyModeType string
+
+const (
+	// Valid PrioritizerPolicyModeType value is Exact, Additive.
+	PrioritizerPolicyModeAdditive PrioritizerPolicyModeType = "Additive"
+	PrioritizerPolicyModeExact    PrioritizerPolicyModeType = "Exact"
+)
 
 // PrioritizerConfig represents the configuration of prioritizer
 type PrioritizerConfig struct {
-	// Name is the name of prioritizer
+	// Name is the name of a prioritizer. Below are the valid names:
+	// 1) Balance: balance the decisions among the clusters.
+	// 2) Steady: ensure the existing decision is stabilized.
+	// 3) ResourceRatioCPU & ResourceRatioMemory: sort clusters based on the allocatable to capacity ratio.
+	// 4) ResourceAllocatableCPU & ResourceAllocatableMemory: sort clusters based on the allocatable.
+	// +kubebuilder:validation:Required
 	// +required
 	Name string `json:"name"`
 
 	// Weight defines the weight of prioritizer. The value must be ranged in [0,10].
+	// Each prioritizer will calculate an integer score of a cluster in the range of [-100, 100].
+	// The final score of a cluster will be sum(weight * prioritizer_score).
+	// A higher weight indicates that the prioritizer weights more in the cluster selection,
+	// while 0 weight indicate thats the prioritizer is disabled.
 	// +kubebuilder:validation:Minimum:=0
 	// +kubebuilder:validation:Maximum:=10
 	// +kubebuilder:default:=1
@@ -84,10 +121,10 @@ The plugin is registered as the below 4 resource prioritizers with different nam
 According to the name it registered, the `resource` plugin uses different formulas to calculate the score of a managed cluster, the value falls in the range between -100 and 100.
 | Prioritizer | Formula |
 | - | - |
-| `ResourceRatioCPU` | score = 2 * 100 * (0.5 - cpu_allocatable / cpu_capacity) |
-| `ResourceAllocatableCPU` | score = 2 * 100 * (0.5 - (cpu_allocatable - min(cpu_allocatable)) / (max(cpu_allocatable) - min(cpu_allocatable))) |
-| `ResourceRatioMemory` | score = 2 * 100 * (0.5 - memory_allocatable / memory_capacity) |
-| `ResourceAllocatableMemory` | score = 2 * 100 * (0.5 - memory_allocatable - min(memory_allocatable)) / (max(memory_allocatable) - min(memory_allocatable))) |
+| `ResourceRatioCPU` | score = 2 * 100 * (cpu_allocatable / cpu_capacity - 0.5) |
+| `ResourceAllocatableCPU` | score = 2 * 100 * ((cpu_allocatable - min(cpu_allocatable)) / (max(cpu_allocatable) - min(cpu_allocatable)) - 0.5) |
+| `ResourceRatioMemory` | score = 2 * 100 * (memory_allocatable / memory_capacity - 0.5) |
+| `ResourceAllocatableMemory` | score = 2 * 100 * (memory_allocatable - min(memory_allocatable)) / (max(memory_allocatable) - min(memory_allocatable)) - 0.5) |
 
 ### 3. Resource data required during scheduling
 Currently the following resource data is available for both CPU and Memory in the status of ManagedCluster, which is updated by registration agent.
@@ -140,9 +177,10 @@ metadata:
   namespace: ns1
 spec:
   numberOfClusters: 3
-  prioritizerConfigs:
-    - name: ResourceRatioCPU
-    - name: ResourceRatioMemory
+  prioritizerPolicy:
+    configurations:
+      - name: ResourceRatioCPU
+      - name: ResourceRatioMemory
 ```
 
 ### 2. Select a cluster with the largest memory available. (Use Story 2)
@@ -155,8 +193,9 @@ metadata:
   namespace: ns1
 spec:
   numberOfClusters: 1
-  prioritizerConfigs:
-    - name: ResourceAllocatableMemory
+  prioritizerPolicy:
+    configurations:
+      - name: ResourceAllocatableMemory
 ```
 
 ### 3. Make placement sensitive to resource changes. (Use Story 3)
@@ -169,11 +208,12 @@ metadata:
   namespace: ns1
 spec:
   numberOfClusters: 2
-  prioritizerConfigs:
-    - name: ResourceRatioCPU
-      weight: 2
-    - name: ResourceAllocatableMemory
-      weight: 2
+  prioritizerPolicy:
+    configurations:
+      - name: ResourceRatioCPU
+        weight: 2
+      - name: ResourceAllocatableMemory
+        weight: 2
 ```
 
 ### 4. Pin the placementdecisions. (Use Story 4)
@@ -185,10 +225,12 @@ metadata:
   namespace: ns1
 spec:
   numberOfClusters: 4
-  prioritizerConfigs:
-    - name: steady
-      weight: 3
-    - name: ResourceAllocatableCPU
+  prioritizerPolicy:
+    mode: Exact
+    configurations:
+      - name: ResourceAllocatableCPU
+      - name: Steady
+        weight: 3
 ```
 
 ## Test Plan
@@ -198,7 +240,13 @@ spec:
 - Integration tests cover user story 1-4;
 
 ## Graduation Criteria
-N/A
+#### Alpha
+1. The new APIs is reviewed and accepted;
+2. Implementation is completed to support the functionalities;
+3. Develop test cases to demonstrate that the above user stories work correctly;
+
+#### Beta
+1. Need to revisit the API shape before upgrade to beta based on user’s feedback.
 
 ## Upgrade / Downgrade Strategy
 N/A
