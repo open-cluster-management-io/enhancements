@@ -197,7 +197,7 @@ spec:
 
 #### 3. Support Filtering Unhealthy/Unreachable Clusters
 
-When managed clusters' availability becomes `false`, the taint `unhealthy` would be automatically added to clusters. If managed clusters' availability becomes `unknown`, the taint `unreachable` would be added. Those unhealthy or unreachable clusters could be evicted immediatly or after `TolerationSeconds`.
+When managed clusters' availability becomes `false`, the taint `open-cluster-management.io/unhealthy` would be automatically added to clusters. If managed clusters' availability becomes `unknown`, the taint `open-cluster-management.io/unreachabl` would be added. Those unhealthy or unreachable clusters could be evicted immediatly or after `TolerationSeconds`.
 
 ##### 3.1 Immediate Eviction
 

@@ -1,0 +1,12 @@
+title: taint-toleration-in-placement-apis
+authors:
+  - "@anthonyxu109"
+reviewers:
+  - "@qiujian16"
+approvers:
+  - "@deads2k"
+  - "@pmorie"
+  - "@mdelder"
+creation-date: 2021-08-21
+last-updated: 2021-09-30
+status: implementable
