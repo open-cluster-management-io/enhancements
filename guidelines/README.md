@@ -9,7 +9,7 @@ critical to clearly communicate the status of a proposal.
     title can help communicate what the enhancement is and should be considered as
     part of any review.
 
-The YAML `title` should be lowercased and spaces/punctuation should be
+The YAML `title` should be lowercase and spaces/punctuation should be
 replaced with `-`.
 * **status** Required
   * The current state of the proposal.
@@ -38,7 +38,7 @@ replaced with `-`.
   * The date that the proposal was last changed significantly.
   * In the form `yyyy-mm-dd`.
 * **see-also** Optional
-  * A list of other proposaals that are relevant to this proposal.
+  * A list of other proposals that are relevant to this proposal.
   * In the form `Proposal-123`.
 * **replaces** Optional
   * A list of proposals that this proposal replaces.  Those proposals should list this proposal in
@@ -57,7 +57,7 @@ To get started with this template:
 1. **Fill out the "overview" sections.** This includes the Summary and
    Motivation sections. These should be easy and explain why the community
    should desire this enhancement.
-1. **Create a PR in the Enhacements repo.** Assign it to folks with expertise in that
+1. **Create a PR in the Enhancements repo.** Assign it to folks with expertise in that
    domain to help sponsor the process.
 1. **Merge at each milestone.** Merge when the design is able to transition to a
    new status (provisional, implementable, implemented, etc.). View anything
@@ -123,7 +123,7 @@ What are the caveats to the implementation? What are some important details that
 didn't come across above. Go in to as much detail as necessary here. This might
 be a good place to talk about core concepts and how they relate.
 
-### Risks and Mitigations
+### Risks and Mitigation
 
 What are the risks of this proposal and how do we mitigate. Think broadly. For
 example, consider both security and how this will impact the larger OKD
@@ -235,7 +235,7 @@ enhancement:
   in the klusterlet? How does an n-2 klusterlet without this feature available behave
   when this feature is used?
 - Will any other components on the managed cluster change? For example, changes to infrastructure
-  configurartion of the managed cluster may be needed before the updading klusterlet or other
+  configuration of the managed cluster may be needed before the updating klusterlet or other
   agent components.
 
 ## Implementation History
