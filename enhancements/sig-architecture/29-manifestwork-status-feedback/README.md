@@ -47,7 +47,7 @@ In the spec of `ManifestWork`, add a new field
 type ManifestWorkSpec struct {
     ...
 	// StatusFeedback defines the option to return status of applied resource
-	StatusFeedbackOptions []StatusFeedbackOption `json:"statusFeedbackOption,omitempty"`
+	StatusFeedbacks []StatusFeedbackOption `json:"statusFeedbacks,omitempty"`
 }
 
 type StatusFeedbackOption struct {
@@ -56,23 +56,29 @@ type StatusFeedbackOption struct {
 	// +required
 	ResourceIdentifier ResourceIdentifier `json:"resourceIdentifier"`
 
-	// FeedbackOption defines the option of how status can be returned.
+	// FeedBackRules defines the returned resource status feedback
+	FeedbackRule FeedbackRule `json:"feedbackRule"`
+}
+
+type FeedbackRule struct {
+	// Type defines the option of how status can be returned.
 	// It is IntrestedField only today, but can be extend to others in the future.
-	FeedbackOption string `json:"feedbackOption"`
+	Type string `json:"type"`
 
 	// InterstedFields defines the status fields to be synced for a manifest
-    // An interstedValues will be updated in certain manifest status of the manifestwork.status.
-	InterstedFields []InterestedResourceField `json:"interstedFields,omitempty"`
+	// An interstedValues will be updated in certain manifest status of the manifestwork.status.
+	InterestedFields []InterestedResourceField `json:"interestedFields,omitempty"`
 }
 
 type InterestedResourceField struct {
 	// name represents the aliase name for this field
 	// +required
-	Name `json:"name"`
+	Name string `json:"name"`
 
 	// JsonPaths represents the json path of the field under status.
-    // The path must point to a field with single value in the type of integer, bool or string.
-    // If the path points to a structure, map or slice, no value will be returned in ManifestWork
+	// The path must point to a field with single value in the type of integer, bool or string.
+	// If the path points to a structure, map or slice, no value will be returned in ManifestWork.
+	// Ref to https://kubernetes.io/docs/reference/kubectl/jsonpath/ on how to write a jsonPath
 	JsonPath string `json:"jsonPaths,omitempty"`
 }
 
@@ -112,12 +118,13 @@ spec:
       resource: deployments
       name: hello
       namespace: default
-    type: IntrerestedFields
-    intrestedFields:
-    - name: availableReplicas
-      jsonPath: .availableReplicas
-    - name: availableCondition
-      jsonPath: .conditions[?(@.type=="Available")].status
+    feedbackRule:
+      type: InterestedFields
+      interestedFields:
+      - name: availableReplicas
+        jsonPath: .availableReplicas
+      - name: availableCondition
+        jsonPath: .conditions[?(@.type=="Available")].status
 ```
 
 The status of `ManifestWork` will be updated to add
@@ -141,7 +148,9 @@ type ManifestCondition struct {
 
 type StatusFeedback struct {
     // InterestedValue represents the value of the interested field
-    InterestedValue []InterestedValue string `json:"intrestedValue"`
+	// If the relates interestedPath returns a empty, nil or non-single value,
+	// The InterestedValue will not be added.
+    InterestedValues []InterestedValue `json:"intrestedValues"`
 }
 
 type InterestedValue struct {
@@ -154,7 +163,7 @@ type InterestedValue struct {
 }
 
 type FieldValue struct {
-    // Type is the type of the value, it can by integer, string or boolean
+  // Type is the type of the value, it can by integer, string or boolean
 	Type ValueType `json:"type"`
 
 	// +optional
@@ -209,9 +218,10 @@ status:
 #### Status update frequency
 
 Ideally the work agent should have a informer for each applied resource to update interestedValue. It will need to
-manage too many informers in the agent and also will result in frequent update on status of `ManifestWork`. Instead,
-we will start with a periodic update. User can specify the update frequency of interestedValues by setting a 
-`--status-update-frequency` flag on the work agent.
+manage too many informers in the agent and also will result in frequent update on status of `ManifestWork`.
+Instead, we will start with a periodic  update. User can specify the update frequency of interestedValues by setting a
+`--status-update-frequency` flag on the work agent. we should make it configurable for different resource in the
+api spec as the future work.
 
 ### Test Plan
 
