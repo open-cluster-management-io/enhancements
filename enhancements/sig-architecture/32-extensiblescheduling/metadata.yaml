@@ -1,0 +1,14 @@
+title: placement-extensible-scheduling
+authors:
+  - "@haoqing0110"
+reviewers:
+  - "@qiujian16"
+  - "@elgnay"
+approvers:
+  - ""
+creation-date: 2021-11-01
+last-updated: 2021-11-01
+status: provisional
+see-also:
+  - "/enhancements/sig-architecture/6-placements"
+  - "/enhancements/sig-architecture/15-resourcebasedscheduling"
