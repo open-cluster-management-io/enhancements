@@ -187,14 +187,26 @@ status:
   validUntil: "2021-10-29T18:31:39Z"
   score: 74
 ```
-Usually each ManagedClusterScalar {PrioritizerName} will be created in more than one cluster namespaces, different clusters update the status separately. So the prioritizer plugin which depends on ManagedClusterScalar should follow below logic to get avaliable score and sort all the clusters.
-- PreScore. We have talked about PreScore() in previous section, the prioritizer plugin should create the CR before use it.
-- Score. The prioritizer plugin should watch all the created CRs until all of them have a score, then call Score() to sort clusters.
-- Re-Schedule. Rather than watch ManagedClusterScalar and trigger Score(), that will cause frequently reschedule. The prioritizer plugin should periodically(eg. every 5 minutes) call Score() to reschedule.
+Usually each ManagedClusterScalar CR will be created in more than one cluster namespace, different clusters update the status separately. So the prioritizer plugin which depends on ManagedClusterScalar should follow below logic to get avaliable score and sort all the clusters.
+- Prescore
+
+In prescore stage, prioritizer plugin should create the CR before use it (have talked about this in previous section).
+The plugin should also check if 80% of the CRs have a valid score (80% is a reasonable threshold hardcode so far, might make it configurable in the future). If yes, the plugin will continue to score the clusters. If not, terminate this schduling and let requeue to trigger a reschedule.
+
+- Score
+
+In score stage, prioritizer plugin get valid score from ManagedClusterScalar CR. If no score updated in ManagedClusterScalar CR status, treat it as 0.
+After getting all the cluster score, the plugin should formalized them from -100 to 100. The maximal will be 100 and minimal is -100, other score distribute in proportion.
+
+- Re-Schedule
+
+Rather than watch ManagedClusterScalar and trigger Score(), that will cause frequently reschedule. The scheduler framework should periodically (eg. every 5 minutes) reschedule the placement.
+
+Future work：there might be a cluster-scoped CRD to configure the threshold of each prioritizer. For example, the frequency to trigger a re-scheudle, the threshold in prescore to treat score as valid.
 
 ### Examples
 
-#### An agent update ResourceRatioCPU score to API, and placement prioritizer plugin score based on it. (Use Story 1/2)
+#### An agent update ResourceRatioCPU score to API, and placement prioritizer plugin score based on it. (Use Story 1&2)
 1. User create a new placement as below
 ```yaml
 apiVersion: cluster.open-cluster-management.io/v1alpha1
@@ -207,7 +219,7 @@ spec:
   prioritizerPolicy:
     mode: Exact
     configurations:
-      - name: Customized-ResourceRatioCPU
+      - name: CustomizeResourceRatioCPU
 ```
 2. Placement controller watch the placement changes and prioritizer plugin generate a new ManagedClusterScalar CR `resourceratiocpu` to trigger customized data collection.
 ```yaml
@@ -217,7 +229,7 @@ metadata:
   name: resourceratiocpu
   namespace: cluster1
 spec:
-  prioritizerName: Customized-ResourceRatioCPU
+  prioritizerName: CustomizeResourceRatioCPU
 ```
 3. The agent on managed cluster watch the new ManagedClusterScalar CR and update score into it. The agent refresh the score periodically before expire time.
 ```yaml
@@ -227,7 +239,7 @@ metadata:
   name: resourceratiocpu
   namespace: cluster1
 spec:
-  prioritizerName: Customized-ResourceRatioCPU
+  prioritizerName: CustomizeResourceRatioCPU
 status:
   conditions:
   - lastTransitionTime: "2021-10-28T08:31:39Z"
@@ -273,7 +285,7 @@ metadata:
   name: disasterrecovery
   namespace: backup
 spec:
-  prioritizerName: Customized-DisasterRecovery
+  prioritizerName: CustomizeDisasterRecovery
 ```
 3. The customized controller watch the new ManagedClusterScalar CR and update score into it. The primary has score 100 and backup has score 0, and validUntil is nil (the score never expire).
 ```yaml
@@ -283,7 +295,7 @@ metadata:
   name: disasterrecovery
   namespace: primary
 spec:
-  prioritizerName: Customized-DisasterRecovery
+  prioritizerName: CustomizeDisasterRecovery
 status:
   conditions:
   - lastTransitionTime: "2021-10-28T08:31:39Z"
@@ -300,7 +312,7 @@ metadata:
   name: disasterrecovery
   namespace: backup
 spec:
-  prioritizerName: Customized-DisasterRecovery
+  prioritizerName: CustomizeDisasterRecovery
 status:
   conditions:
   - lastTransitionTime: "2021-10-28T08:31:39Z"
@@ -340,10 +352,11 @@ N/A
 
 ## Alternative
 ### Support user-defined scheduler
-As and end user, can specify the user-defined scheduler name in placement, and let a customized scheduler to generate placement decision. In this way, can also achieve extensiable scheduling.
+As and end user, can specify the user-defined scheduler name in placement, and let a customized scheduler to generate placement decision. In this way, extensible scheduling can also be achieved.
 
 Pros: 
   - More flexible, the customized scheduler can schedule based on resource usage, SLA, metrics, etc.
 
 Cons:
   - More effort to write a customized scheduler.
+  - The customized scheduler needs to understand all the spec of placement api, the changes of the api.
