@@ -36,7 +36,7 @@ Story 4: When a managed cluster gets offline, users can make applications deploy
 ### API repo
 
 #### ManagedClusterSpec
-In `ManagedClusterSpec`, we can add `taints` which has the similar structure with taints in Kubernetes. But since we do not have explicit `Schedule` and `Execute` phases and in order to keep things simple at the beginning, we can remove `effect` which is in Kubernetes' taint while only keep `key` and `value` .
+In `ManagedClusterSpec`, we can add `taints` which has the similar structure with taints in Kubernetes. 
 
 ```go
 type ManagedClusterSpec struct {
@@ -49,17 +49,41 @@ type ManagedClusterSpec struct {
 }
  
 type Taint struct {
-   // Required. The taint key to be applied to a cluster.
+   // The taint key to be applied to a cluster. e.g. bar or foo.example.com/bar.
+	 // The regex it matches is (dns1123SubdomainFmt/)?(qualifiedNameFmt)
+   // +required
+   // +kubebuilder:validation:Required
+   // +kubebuilder:validation:Pattern=`^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$`
+   // +kubebuilder:validation:MaxLength=316
    Key string `json:"key"`
+   // Required. The effect of the taint on clusters
+	 // that do not tolerate the taint.
+	 // Valid effects are NoSelect, PreferNoSelect and NoSelectIfNew.
+   Effect TaintEffect `json: "taintEffect"`
    // The taint value corresponding to the taint key. It can be nil. When the Operator in Toleration is
-   // "Exists", the Value in taint would be ignored. When the Operator in Toleration is "Equal" and taint's
-   // value is nil, toleration's value should also be nil if they are matched.
-   // +optional
+	 // "Exists", the Value in taint would be ignored. When the Operator in Toleration is "Equal" and taint's
+	 // value is nil, toleration's value should also be nil if they are matched.
+	 // +optional
+	 // +kubebuilder:validation:MaxLength=1024
    Value string `json:"value,omitempty"`
    // TimeAdded represents the time at which the taint was added.
-   // +optional
    TimeAdded *metav1.Time `json:"timeadded,omitempty"`
 }
+
+type TaintEffect string
+const (
+    // Do not allow placements to select the cluster unless they tolerate the taint.
+    // The cluster will be removed from the placement cluster decisions if a placement has already selected
+    // this cluster.
+    TaintEffectNoSelect TaintEffect = "NoSelect"
+    // Like TaintEffectNoSelect, but the scheduler tries not to select the cluster, rather than
+    // prohibiting placements from selecting the cluster entirely.
+    TaintEffectPreferNoSelect TaintEffect = "PreferNoSelect"
+    // Do not allow placements to select the cluster unless
+    // 1) they tolerate the taint;
+    // 2) they have already had the cluster in their cluster decisions;
+    TaintEffectNoSelectIfNew TaintEffect = "NoSelectIfNew"
+)
 ```
 
 #### PlacementSpec
@@ -91,6 +115,10 @@ type Toleration struct {
    // If the operator is Exists, the value should be empty, otherwise just a regular string.
    // +optional
    Value string `json:"value,omitempty"`
+   // Effect indicates the taint effect to match. Empty means match all taint effects.
+	 // When specified, allowed values are NoSelect, PreferNoSelect and NoSelectIfNew.
+	 // +optional
+	 Effect TaintEffect
    // TolerationSeconds represents the period of time the toleration (which must only be effective under the Evict Senario, otherwise this field should be ignored) tolerates the taint. By default,
    // it is not set, which means tolerate the taint forever (do not evict). 
    // The start time of counting the TolerationSeconds should be the TimeAdded in Taint, not the cluster scheduled time or TolerationSeconds added time.
