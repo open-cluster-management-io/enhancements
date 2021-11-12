@@ -52,34 +52,39 @@ type ManifestWorkSpec struct {
 
 type StatusFeedbackOption struct {
 	// ResourceIdentifier represents the group, resource, name and namespace of a resoure.
-	// It must match to a resource defined in spec.workload.manifests
 	// +required
 	ResourceIdentifier ResourceIdentifier `json:"resourceIdentifier"`
 
-	// FeedBackRules defines the returned resource status feedback
-	FeedbackRule FeedbackRule `json:"feedbackRule"`
+	// FeedBackRules defines what resource status field should be returned.
+	// +required
+	FeedbackRules []FeedbackRule `json:"feedbackRule"`
 }
 
 type FeedbackRule struct {
 	// Type defines the option of how status can be returned.
-	// It is IntrestedField only today, but can be extend to others in the future.
+	// It can be StatusJsonPaths only or WellKnownStatus.
+	// If the type is StatusJsonPaths, user should specify the jsonPaths field
+	// If the type is WellKnownStatus, certain commont fields of status will be reported,
+	// including Replicas, ReadyReplicas, and AvailableReplicas. And these status fields
+	// do not exist, no values will be reported.
+	// +required
 	Type string `json:"type"`
 
-	// InterstedFields defines the status fields to be synced for a manifest
+	// InterestedFields defines the status fields to be synced for a manifest
 	// An interstedValues will be updated in certain manifest status of the manifestwork.status.
-	InterestedFields []InterestedResourceField `json:"interestedFields,omitempty"`
+	JsonPaths []JsonPath `json:"jsonPaths,omitempty"`
 }
 
-type InterestedResourceField struct {
+type JsonPath struct {
 	// name represents the aliase name for this field
 	// +required
 	Name string `json:"name"`
-
 	// JsonPaths represents the json path of the field under status.
 	// The path must point to a field with single value in the type of integer, bool or string.
 	// If the path points to a structure, map or slice, no value will be returned in ManifestWork.
 	// Ref to https://kubernetes.io/docs/reference/kubectl/jsonpath/ on how to write a jsonPath
-	JsonPath string `json:"jsonPaths,omitempty"`
+	// +required
+	Path string `json:"path"`
 }
 
 ```
@@ -118,13 +123,12 @@ spec:
       resource: deployments
       name: hello
       namespace: default
-    feedbackRule:
-      type: InterestedFields
-      interestedFields:
-      - name: availableReplicas
-        jsonPath: .availableReplicas
+    feedbackRules:
+    - type: WellKonwnStatus
+    - type: StatusJsonPaths
+      jsonPaths:
       - name: availableCondition
-        jsonPath: .conditions[?(@.type=="Available")].status
+        path: .conditions[?(@.type=="Available")].status   
 ```
 
 The status of `ManifestWork` will be updated to add
@@ -150,7 +154,7 @@ type StatusFeedback struct {
     // InterestedValue represents the value of the interested field
 	// If the relates interestedPath returns a empty, nil or non-single value,
 	// The InterestedValue will not be added.
-    InterestedValues []InterestedValue `json:"intrestedValues"`
+    InterestedValues []InterestedValue `json:"interestedValues"`
 }
 
 type InterestedValue struct {
@@ -201,6 +205,14 @@ status:
               integer: 1
               type: integer
             name: availableReplica
+          - fieldValue:
+              integer: 1
+              type: integer
+            name: readyReplica
+          - fieldValue:
+              integer: 1
+              type: integer
+            name: replica
           - fieldValue:
               string: "True"
               type: string
