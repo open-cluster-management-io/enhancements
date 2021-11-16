@@ -80,6 +80,7 @@ type ManagedClusterScalar struct {
 // ManagedClusterScalarSpec defines the attributes of the ManagedClusterScalar.
 type ManagedClusterScalarSpec struct {
 	// PrioritizerName will be the prioritizer name used in placement.
+	// Each ManagedClusterScalar only represent the scalar value of one prioritizer for one cluster.
 	// +kubebuilder:validation:Required
 	// +required
 	PrioritizerName string `json:"prioritizerName,omitempty"`
@@ -185,18 +186,18 @@ status:
     status: "True"
     type: ManagedClusterScalarUpdated
   validUntil: "2021-10-29T18:31:39Z"
-  score: 74
+  scalar: 74
 ```
-Usually each ManagedClusterScalar CR will be created in more than one cluster namespace, different clusters update the status separately. So the prioritizer plugin which depends on ManagedClusterScalar should follow below logic to get avaliable score and sort all the clusters.
+Usually each ManagedClusterScalar CR will be created in more than one cluster namespace, different clusters update the status separately. So the prioritizer plugin which depends on ManagedClusterScalar should follow below logic to get avaliable scalar and sort all the clusters.
 - Prescore
 
 In prescore stage, prioritizer plugin should create the CR before use it (have talked about this in previous section).
-The plugin should also check if 80% of the CRs have a valid score (80% is a reasonable threshold hardcode so far, might make it configurable in the future). If yes, the plugin will continue to score the clusters. If not, terminate this schduling and let requeue to trigger a reschedule.
+The plugin should also check if 80% of the CRs have a valid scalar (80% is a reasonable threshold hardcode so far, might make it configurable in the future). If yes, the plugin will continue to score the clusters. If not, terminate this scheduling and wait for the next reschedule.
 
 - Score
 
-In score stage, prioritizer plugin get valid score from ManagedClusterScalar CR. If no score updated in ManagedClusterScalar CR status, treat it as 0.
-After getting all the cluster score, the plugin should formalized them from -100 to 100. The maximal will be 100 and minimal is -100, other score distribute in proportion.
+In score stage, prioritizer plugin get valid scalar from ManagedClusterScalar CR. If no scalar updated in ManagedClusterScalar CR status, treat it as 0.
+After getting all the cluster scalar, the plugin should formalized them from -100 to 100. The maximal will be 100 and minimal is -100, other score distribute in proportion.
 
 - Re-Schedule
 
@@ -206,7 +207,7 @@ Future work：there might be a cluster-scoped CRD to configure the threshold of 
 
 ### Examples
 
-#### An agent update ResourceRatioCPU score to API, and placement prioritizer plugin score based on it. (Use Story 1&2)
+#### An agent update ResourceRatioCPU scalar to API, and placement prioritizer plugin score based on it. (Use Story 1&2)
 1. User create a new placement as below
 ```yaml
 apiVersion: cluster.open-cluster-management.io/v1alpha1
@@ -231,7 +232,7 @@ metadata:
 spec:
   prioritizerName: CustomizeResourceRatioCPU
 ```
-3. The agent on managed cluster watch the new ManagedClusterScalar CR and update score into it. The agent refresh the score periodically before expire time.
+3. The agent on managed cluster watch the new ManagedClusterScalar CR and update scalar into it. The agent refresh the scalar periodically before expire time.
 ```yaml
 apiVersion: cluster.open-cluster-management.io/v1alpha1
 kind: ManagedClusterScalar
@@ -248,10 +249,10 @@ status:
     status: "True"
     type: ManagedClusterScalarUpdated
   validUntil: "2021-10-29T18:31:39Z"
-  score: 74
+  scalar: 74
 ```
-4. Placement get score from ManagedClusterScalar CRs and sort clusters.
-Placement prioritizer plugin will wait for all the ManagedClusterScalar CRs have score, then sort clusters and put the result in PlacementDecision. Placement will reschedule every 5 minutes to ensure the decision is up-to-date.
+4. Placement get scalar from ManagedClusterScalar CRs and sort clusters.
+Placement prioritizer plugin will wait for 80% of the ManagedClusterScalar CRs have scalar, then sort clusters and put the result in PlacementDecision. Placement will reschedule every 5 minutes to ensure the decision is up-to-date.
 
 #### Disaster recovery workload could be automatically switched to an avaliable cluster. (Use Story 3)
 1. A user has 2 clusters, one is primary and one is backup cluster. To deploy workloads on the primary cluster, define the placement as below.  
@@ -266,7 +267,7 @@ spec:
   prioritizerPolicy:
     mode: Exact
     configurations:
-      - name: Customized-DisasterRecovery 
+      - name: CustomizeDisasterRecovery 
 ```
 2. Placement controller watch the placement changes and prioritizer plugin generate a new ManagedClusterScalar CR `disasterrecovery` to trigger customized data collection.
 ```yaml
@@ -276,7 +277,7 @@ metadata:
   name: disasterrecovery
   namespace: primary
 spec:
-  prioritizerName: Customized-DisasterRecovery
+  prioritizerName: CustomizeDisasterRecovery
 ```
 ```yaml
 apiVersion: cluster.open-cluster-management.io/v1alpha1
@@ -287,7 +288,7 @@ metadata:
 spec:
   prioritizerName: CustomizeDisasterRecovery
 ```
-3. The customized controller watch the new ManagedClusterScalar CR and update score into it. The primary has score 100 and backup has score 0, and validUntil is nil (the score never expire).
+3. The customized controller watch the new ManagedClusterScalar CR and update scalar into it. The primary has scalar 100 and backup has scalar 0, and validUntil is nil (the scalar never expire).
 ```yaml
 apiVersion: cluster.open-cluster-management.io/v1alpha1
 kind: ManagedClusterScalar
@@ -303,7 +304,7 @@ status:
     reason: ManagedClusterScalarUpdated
     status: "True"
     type: ManagedClusterScalarUpdated
-  score: 100
+  scalar: 100
 ```
 ```yaml
 apiVersion: cluster.open-cluster-management.io/v1alpha1
@@ -320,10 +321,10 @@ status:
     reason: ManagedClusterScalarUpdated
     status: "True"
     type: ManagedClusterScalarUpdated
-  score: 0
+  scalar: 0
 ```
-4. Placement get score from ManagedClusterScalar CRs and sort clusters.
-As cluster primary has a higher score, the Placement decision will chose and workload will be running on the primary. 
+4. Placement get scalar from ManagedClusterScalar CRs and sort clusters.
+As cluster primary has a higher scalar, the Placement decision will chose and workload will be running on the primary. 
 5. When the primary cluster is unavailable (a taint is added). The placement will filter out the primary because of taint, and backup cluster will be chosen. Then disaster recovery workload will be running on the backup cluster automatically.
 
 ### Test Plan
@@ -348,7 +349,7 @@ N/A
 N/A
 
 ## Drawbacks
-1. Is one score enough? any other missed use cases? For example, spreading depends on previous choice.
+1. Is one scalar enough? any other missed use cases? For example, spreading depends on previous choice.
 
 ## Alternative
 ### Support user-defined scheduler
