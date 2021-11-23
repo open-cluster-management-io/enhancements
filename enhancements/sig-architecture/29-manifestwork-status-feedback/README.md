@@ -227,6 +227,12 @@ status:
           version: v1
 ```
 
+The returned value must be a scalar value, and the work agent should check the type of the returned value. The work agent should
+treat the status that a value "ISNotFound" or "TypeMismatch" separately. If the path of the interestedValue is not found in the
+status of the resource, this values should be ignored. If the path of the interestedValue is valid, but the type of the value is
+not scalar, e.g a list or map, the condition of "StatusFeedbackAvailable" should be set false and a message shoud be added to
+indicate that which intrestedValue cannot be obtained
+
 #### Status update frequency
 
 Ideally the work agent should have a informer for each applied resource to update interestedValue. It will need to
