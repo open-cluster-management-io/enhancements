@@ -10,95 +10,79 @@
 
 ## Summary
 
-The proposed work provides an API to represent a scalar value of the managed cluster, to support placement extensible scheduling.
+The proposed work provides an API to represent the score of the managed cluster, to support placement extensible scheduling.
 
 ## Motivation
 
-When implementing placement resource based scheduling, we find in some cases, prioritizer needs extra data (more than the defualt value provided by `ManagedCluster`) to calculate the score of the managed cluster. For example, there is requirement to schedule based on resource monitoring data from the cluster.
+When implementing placement resource based scheduling, we find in some cases, the prioritizer needs extra data (more than the default value provided by `ManagedCluster`) to calculate the score of the managed cluster. For example, there is a requirement to schedule based on resource monitoring data from the cluster.
 
-So we want a more extensible way to support scheduling based on customized value.
+So we want a more extensible way to support scheduling based on customized scores.
 
 ### Goals
-- Design a new API(CRD) to contain a scalar value for each managed cluster.
-- Let placement prioritizer maintain the lifecycle (creating/deleting) of the CR.
-- Let placement prioritizer support rating clusters with the scalar value of the CR.
+- Design a new API(CRD) to contain the customized scores for each managed cluster.
+- Let placement prioritizer support rating clusters with the customized scores provided by the new API(CRD).
 
 ### Non-Goals
-- How a customized agent update the scalar value into the CR.
-- Placement filter will not support the new API(CRD).
+- How to maintain the life cycle (create/update/delete) of the CRs.
+- Placement filters will not support the new API(CRD).
 
 ## Proposal
 
 ### User Stories
 
 #### Story 1: Users could use the data pushed from each managed cluster to select clusters.
-  - On each managed cluster, there is a customized agent monitoring the resource usage (eg. CPU ratio) of the cluster. It will calculate a scalar value and push the result to hub.
-  - As an end user, I can configure placement yaml to use this scalar value to select clusters.
+  - On each managed cluster, there is a customized agent monitoring the resource usage (eg. CPU ratio) of the cluster. It will calculate a score and push the result to the hub.
+  - As an end user, I can configure placement yaml to use this score to select clusters.
   
-#### Story 2: Users could use the metrics collected on hub to select clusters.
-  - On the hub, there is a customized agent to get metrics (eg. cluster allocatable memory) from Thanos. It will generate a scalar value for each cluster.
-  - As an end user, I can configure placement yaml to use this scalar value to select clusters.
+#### Story 2: Users could use the metrics collected on the hub to select clusters.
+  - On the hub, there is a customized agent to get metrics (eg. cluster allocatable memory) from Thanos. It will generate a score for each cluster.
+  - As an end user, I can configure placement yaml to use this score to select clusters.
 
-#### Story 3: Disaster recovery workload could be automatically switched to an avaliable cluster.
-  - A user has two clusters, a primary and backup cluster on which workload storage is configured so storage are synced from primary cluster to backup.
-  - As an end user, I want to deploy workloads on the primary cluster first. And when primary cluster is down, the workload should be automatically switched to the backup cluster.
+#### Story 3: Disaster recovery workload could be automatically switched to an available cluster.
+  - A user has two clusters, a primary and backup cluster on which workload storage is configured so storage is synced from primary cluster to backup.
+  - As an end user, I want to deploy workloads on the primary cluster first. And when the primary cluster is down, the workload should be automatically switched to the backup cluster.
 
 #### Story 4: Users could use the data provided by third party controllers to select clusters.
   - A third party controller can comprehensively evaluate cluster on latency, region, iops etc. and rate cluster according to the SLA the cluster can provide.
-  - As an end user, I can configure placement yaml to use this scalar value to select clusters.
+  - As an end user, I can configure placement yaml to use this score to select clusters.
 
 ### Risks and Mitigation
 N/A
 
 ## Design Details
 
-### ManagedClusterScalar API
-ManagedClusterScalar is the new API to add, to represents a scalable value (aka score) of one managed cluster.
+### AddOnPlacementScore API
+AddOnPlacementScore is the new API to add, to represent a list of scores of one managed cluster.
 ```go
 // +genclient
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:resource:scope="Namespaced"
 // +kubebuilder:subresource:status
 
-// ManagedClusterScalar represents a scalable value (aka score) of one managed cluster.
-// Each ManagedClusterScalar only represents the scalar value of one prioritizer.
-// ManagedClusterScalar is a namesapce scoped resource. The namespace of the resource is the cluster namespace.
-type ManagedClusterScalar struct {
+// AddOnPlacementScore represents a bundle of scores of one managed cluster, which could be used by placement.
+// AddOnPlacementScore is a namespace scoped resource. The namespace of the resource is the cluster namespace.
+type AddOnPlacementScore struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	// Spec defines the attributes of the ManagedClusterScalar.
-	// +kubebuilder:validation:Required
-	// +required
-	Spec ManagedClusterScalarSpec `json:"spec"`
-
-	// Status represents the status of the ManagedClusterScalar.
+	// Status represents the status of the AddOnPlacementScore.
 	// +optional
-	Status ManagedClusterScalarStatus `json:"status,omitempty"`
+	Status AddOnPlacementScoreStatus `json:"status,omitempty"`
 }
 
-// ManagedClusterScalarSpec defines the attributes of the ManagedClusterScalar.
-type ManagedClusterScalarSpec struct {
-	// PrioritizerName will be the prioritizer name used in placement.
-	// Each ManagedClusterScalar only represent the scalar value of one prioritizer for one cluster.
-	// +kubebuilder:validation:Required
-	// +required
-	PrioritizerName string `json:"prioritizerName,omitempty"`
-}
-
-//ManagedClusterScalarStatus represents the current status of ManagedClusterScalar.
-type ManagedClusterScalarStatus struct {
-	// Conditions contain the different condition statuses for this managed cluster scalar.
+//AddOnPlacementScoreStatus represents the current status of AddOnPlacementScore.
+type AddOnPlacementScoreStatus struct {
+	// Conditions contain the different condition statuses for this AddOnPlacementScore.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions"`
 
-	// Scalar contains a scalable value of this managed cluster.
+	// Scores contains a list of score name and value of this managed cluster.
 	// +optional
-	Scalar int64 `json:"scalar,omitempty"`
+	Scores []AddOnPlacementScoreItem `json:"scores,omitempty"`
 
-	// ValidUntil defines the time this scalar is valid.
-	// After this time, the scalar is considered to be invalid by placement. nil means never expire.
-	// The controller ownning this resource should keep the scalar up-to-date.
+	// ValidUntil defines the valid time of the scores.
+	// After this time, the scores are considered to be invalid by placement. nil means never expire.
+	// The controller owning this resource should keep the scores up-to-date.
 	// +optional
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Type=string
@@ -106,50 +90,180 @@ type ManagedClusterScalarStatus struct {
 	ValidUntil *metav1.Time `json:"validUntil" protobuf:"bytes,4,opt,name=lastTransitionTime"`
 }
 
+//AddOnPlacementScoreItem represents the score name and value.
+type AddOnPlacementScoreItem struct {
+	// Name is the name of the score
+	// +kubebuilder:validation:Required
+	// +required
+	Name string `json:"name"`
+
+	// Value is the value of the score. The score range is from -100 to 100.
+	// +kubebuilder:validation:Minimum:=-100
+	// +kubebuilder:validation:Maximum:=100
+	// +required
+	Value int32 `json:"value,omitempty"`
+}
+
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
-// ManagedClusterScalarList is a collection of managed cluster scalar.
-type ManagedClusterScalarList struct {
+// AddOnPlacementScoreList is a collection of AddOnPlacementScore.
+type AddOnPlacementScoreList struct {
 	metav1.TypeMeta `json:",inline"`
 	// Standard list metadata.
 	// More info: https://git.k8s.io/community/contributors/devel/api-conventions.md#types-kinds
 	// +optional
 	metav1.ListMeta `json:"metadata,omitempty"`
 
-	// Items is a list of managed clusters
-	Items []ManagedClusterScalar `json:"items"`
+	// Items is a list of AddOnPlacementScore
+	Items []AddOnPlacementScore `json:"items"`
+}
+```
+### Placement API
+Add field `Type`, `ScoreResourceName` and `ScoreName` to `PrioritizerConfig`, to support specifying the customized score to sort clusters.
+
+```golang
+type Placement struct {
+  ...
+	Spec PlacementSpec `json:"spec"`
+}
+
+type PlacementSpec struct {
+  ...
+
+	// PrioritizerPolicy defines the policy of the prioritizers.
+	// If this field is unset, then default prioritizer mode and configurations are used.
+	// Referring to PrioritizerPolicy to see more description about Mode and Configurations.
+	// +optional
+	PrioritizerPolicy PrioritizerPolicy `json:"prioritizerPolicy"`
+}
+
+// PrioritizerPolicy represents the policy of prioritizer
+type PrioritizerPolicy struct {
+  ...
+
+	// +optional
+	Configurations []PrioritizerConfig `json:"configurations,omitempty"`
+}
+
+// PrioritizerConfig represents the configuration of prioritizer
+type PrioritizerConfig struct {
+	// Type defines the type of the prioritizer.
+	// Type is either "Build-in", "AddOnScore" or "", where "" is "Build-in" by default.
+	// When type is "Build-in", you can use the build-in prioritizers.
+	// When type is "AddOnScore", the prioritizers use score provided by AddOnPlacementScore to prioritize clusters, the
+	// score source should be defined in ScoreResourceName and ScoreName.
+	// +kubebuilder:default:=Build-in
+	// +optional
+	Type string `json:"type,omitempty"`
+
+	// Name is the name of a prioritizer. Below are the valid build-in prioritizer names.
+	// 1) Balance: balance the decisions among the clusters.
+	// 2) Steady: ensure the existing decision is stabilized.
+	// 3) ResourceAllocatableCPU & ResourceAllocatableMemory: sort clusters based on the allocatable.
+	// +kubebuilder:validation:Required
+	// +required
+	Name string `json:"name"`
+
+	// ScoreResourceName defines the resource name of the AddOnPlacementScore.
+	// AddOnPlacementScore resource contains a bundle of scores. When type is defined as "AddOnScore",
+	// you need to define the AddOnPlacementScore resource name which
+	// could be used by the prioritizer to sort clusters.
+	// +optional
+	ScoreResourceName string `json:"scoreResourceName,omitempty"`
+
+	// ScoreName defines the score name of the AddOnPlacementScore.
+	// AddOnPlacementScore contains a list of score name and score value, ScoreName specify the score to be used by
+	// the prioritizer.
+	// +optional
+	ScoreName string `json:"scoreName,omitempty"`
+
+	// Weight defines the weight of the prioritizer. The value must be ranged in [0,10].
+	// Each prioritizer will calculate an integer score of a cluster in the range of [-100, 100].
+	// The final score of a cluster will be sum(weight * prioritizer_score).
+	// A higher weight indicates that the prioritizer weights more in the cluster selection,
+	// while 0 weight indicates that the prioritizer is disabled.
+	// +kubebuilder:validation:Minimum:=-10
+	// +kubebuilder:validation:Maximum:=10
+	// +kubebuilder:default:=1
+	// +optional
+	Weight int32 `json:"weight,omitempty"`
 }
 ```
 
-### Let placement prioritizer maintain the lifecycle of the CR.
-- Create
-
-The creation of ManagedClusterScalar CR is handled by each prioritizer plugin on demand. As every update in ManagedClusterScalar CR will introduce an api call, that will bring potential performance presure to api server. So we only want to create ManagedClusterScalar CRs for enabled prioritizer in filterd cluster namespace.
-
-The placement schedule framework will filter avaliable clusters as first step.
-Then the framework will call each prioritizer one by one. If the prioritizer is enable in placement yaml, it will create a corresponding ManagedClusterScalar CR in filtered cluster namespace as below. 
+### Let placement prioritizer support rating clusters with the customized score of the CR.
+How to maintain the lifecycle of AddOnPlacementScore CRs is out of scope in this proposal. Here we suppose there already are AddOnPlacementScore CRs created in each managed cluster namespace.
+A valid AddOnPlacementScore CR resembles as below:
 ```yaml
 apiVersion: cluster.open-cluster-management.io/v1alpha1
-kind: ManagedClusterScalar
+kind: AddOnPlacementScore
 metadata:
-  name: {PrioritizerName}
+  name: default
   namespace: cluster1
-spec:
-  prioritizerName: {PrioritizerNameInPlacement}
+status:
+  conditions:
+  - lastTransitionTime: "2021-10-28T08:31:39Z"
+    message: AddOnPlacementScore updated successfully
+    reason: AddOnPlacementScoreUpdated
+    status: "True"
+    type: AddOnPlacementScoreUpdated
+  validUntil: "2021-10-29T18:31:39Z"
+  scores:
+  - name: "cpuratio"
+    value: 88
+  - name: "memratio"
+    value: 77
+  - name: "cpu"
+    value: 66
+  - name: "mem"
+    value: 55
 ```
-The name is the prioritizer name.
-The namespace is the filtered cluster namespace.
-The spec.prioritizerName is the prioritizer name used in placement yaml. 
+The `AddOnPlacementScore` resource name is "default" in this example, the namespace "cluster1" is the managed cluster namespace.
+The `status.scores` contains a list of score items, for example, score "cpuratio" has value "88".
 
-The code change includes add PreScore() in Prioritizer interface, in which to create ManagedClusterScalar CR before Score().
-```go
-// Prioritizer defines a prioritizer plugin that score each cluster. The score is normalized
-// as a floating betwween 0 and 1.
+As an end user, can define a placement as below to use the scores in `AddOnPlacementScore` to sort clusters.
+```yaml
+apiVersion: cluster.open-cluster-management.io/v1alpha1
+kind: Placement
+metadata:
+  name: placement
+  namespace: ns1
+spec:
+  numberOfClusters: 3
+  prioritizerPolicy:
+    mode: Exact
+    configurations:
+      - name: Steady
+        weight: 3
+      - type: AddOnScore
+        name: ResourceRatioCPU
+        weight: 1
+        scoreResourceName: default
+        scoreName: cpuratio
+```
+
+- For "Build-in" type prioritizers, you don't need to specify the type explicitly. In the above example, the placement defines prioritizer "Steady" with weight 3.
+- For "AddOnScore" type prioritizers, also need define scoreResourceName and scoreName. In above example, the placement defines an "AddOnScore" type prioritizer "ResourceRatioCPU" which will use score "cpuratio" provided by AddOnPlacementScore "default" to sort clusters, the weight is 1.
+
+When this placement.yaml is created, the placement controller sorts the clusters with "Build-in" prioritizer "Steady" and "AddOnScore" prioritizer "ResourceRatioCPU". The build-in prioritizer scheduling behavior keeps the same before, the "AddOnScore" type prioritizer scheduling process is as below:
+
+- First schedule
+
+The prioritizer "ResourceRatioCPU" will get customized score "cpuratio" from "default" `AddOnPlacementScore`, and calculate a final score for each managed clusters.
+
+- Reschedule
+
+The scores inside `AddOnPlacementScore` are supposed to be updated frequently. Rather than watch the changes in `AddOnPlacementScore` and trigger reschedule, the scheduler framework would periodically (eg. every 5 minutes) reschedule the placement.
+
+**What if no valid score is generated?**
+
+What if some of the scores are invalid? For example, the AddOnPlacementScore CR is not created for some managed clusters, the score is missing in some CR, the score is expired. To handle the invalid cases, we add a PreScore() in the Prioritizer interface, to do some pre-check before Score().
+```golang
+// Prioritizer defines a prioritizer plugin that scores each cluster. The score is normalized
+// as floating between 0 and 1.
 type Prioritizer interface {
 	Plugin
 
-	// PreScore() do some prepare work before Score().
-	// For example, creating ManagedClusterScalar CR before Score().
+	// PreScore() do some preparation work before Score().
 	PreScore(ctx context.Context, placement *clusterapiv1alpha1.Placement, clusters []*clusterapiv1.ManagedCluster) error
 
 	// Score gives the score to a list of the clusters, it returns a map with the key as
@@ -158,104 +272,107 @@ type Prioritizer interface {
 }
 ```
 
-- Delete
+With the PreSocre() added, the "AddOnScore" type prioritizer scheduling process is as below:
 
-The deletion of ManagedClusterScalar CR is handled by the framework (out of all the prioritizer plugins). The ManagedClusterScalar CR is created by each prioritizer plugin on demand, and the CR should be shared by some placements cross namespaces. When the ManagedClusterScalar CR is not used by any placement, need to clean it to avoid unnecessary api call.
+- First schedule
+  - In PreScore(), the prioritizer checks if 80% of the CRs have a valid score. (80% is a reasonable threshold hardcode so far, might make it configurable in the future). 
+    - If yes, the prioritizer will continue to score the clusters. 
+    - If no, terminate this scheduling and wait for the next reschedule.
+  - In Score(), the prioritizer will get customized score from `AddOnPlacementScore`, and calculate a final score for each managed cluster.
 
-There will be a GC() funcion in the framework, being called every 10 minutes. Go through all the Placment CRs and ManagedClusterScalar CRs, and clean not used ManagedClusterScalar CRs.
+- Reschedule
+  - In PreScore(), the prioritizer checks if 80% of the CRs have a valid score.
+    - If yes, the prioritizer will continue to score the clusters. 
+    - If no, remove the managed cluster which has invalid score from the placement decision.
+  - In Score(), the prioritizer will get customized score from `AddOnPlacementScore`, and calculate a final score for each managed cluster.
 
-- Update
+Future work：there might be a cluster-scoped CRD to configure the threshold of each prioritizer. For example, the frequency to trigger a re-schedule, the threshold to treat the cluster's score as valid.
 
-ManagedClusterScalar CR's status is updated by customized agent or third party controllers. Out of scope and won't be covered in this proposal.
-
-### Let placement prioritizer support rating clusters with the scalar value of the CR.
-Once ManagedClusterScalar CR is created in PreScore(), a customized agent or third party controllers should watch the change and update the CR status as below.
-```yaml
-apiVersion: cluster.open-cluster-management.io/v1alpha1
-kind: ManagedClusterScalar
-metadata:
-  name: {PrioritizerName}
-  namespace: cluster1
-spec:
-  prioritizerName: {PrioritizerNameInPlacement}
-status:
-  conditions:
-  - lastTransitionTime: "2021-10-28T08:31:39Z"
-    message: ManagedClusterScalar updated successfully
-    reason: ManagedClusterScalarUpdated
-    status: "True"
-    type: ManagedClusterScalarUpdated
-  validUntil: "2021-10-29T18:31:39Z"
-  scalar: 74
-```
-Usually each ManagedClusterScalar CR will be created in more than one cluster namespace, different clusters update the status separately. So the prioritizer plugin which depends on ManagedClusterScalar should follow below logic to get avaliable scalar and sort all the clusters.
-- Prescore
-
-In prescore stage, prioritizer plugin should create the CR before use it (have talked about this in previous section).
-The plugin should also check if 80% of the CRs have a valid scalar (80% is a reasonable threshold hardcode so far, might make it configurable in the future). If yes, the plugin will continue to score the clusters. If not, terminate this scheduling and wait for the next reschedule.
-
-- Score
-
-In score stage, prioritizer plugin get valid scalar from ManagedClusterScalar CR. If no scalar updated in ManagedClusterScalar CR status, treat it as 0.
-After getting all the cluster scalar, the plugin should formalized them from -100 to 100. The maximal will be 100 and minimal is -100, other score distribute in proportion.
-
-- Re-Schedule
-
-Rather than watch ManagedClusterScalar and trigger Score(), that will cause frequently reschedule. The scheduler framework should periodically (eg. every 5 minutes) reschedule the placement.
-
-Future work：there might be a cluster-scoped CRD to configure the threshold of each prioritizer. For example, the frequency to trigger a re-scheudle, the threshold in prescore to treat score as valid.
+### How to maintain the lifecycle of the AddOnPlacementScore CRs? 
+Even this is out of scope in this proposal, 2 options to maintain the resources:
+- Can write a customized controller running on each managed cluster, to maintain the lifecycle (create/update/delete) of the CRs.
+- Let the placement controller create/delete the CRs for each managed cluster, and customized score provider only needs to write an agent to update the scores.
 
 ### Examples
 
-#### An agent update ResourceRatioCPU scalar to API, and placement prioritizer plugin score based on it. (Use Story 1&2)
-1. User create a new placement as below
+#### A customized controller updates scores to API for managed clusters, and users could use these scores to select clusters.(Use Story 1&2)
+1. A customized controller creates "default" `AddOnPlacementScore` for each managed cluster, and update scores "cpuratio", "memratio" into it.
 ```yaml
 apiVersion: cluster.open-cluster-management.io/v1alpha1
-kind: Placement
+kind: AddOnPlacementScore
 metadata:
-  name: placement
-  namespace: ns1
-spec:
-  numberOfClusters: 1
-  prioritizerPolicy:
-    mode: Exact
-    configurations:
-      - name: CustomizeResourceRatioCPU
-```
-2. Placement controller watch the placement changes and prioritizer plugin generate a new ManagedClusterScalar CR `resourceratiocpu` to trigger customized data collection.
-```yaml
-apiVersion: cluster.open-cluster-management.io/v1alpha1
-kind: ManagedClusterScalar
-metadata:
-  name: resourceratiocpu
-  namespace: cluster1
-spec:
-  prioritizerName: CustomizeResourceRatioCPU
-```
-3. The agent on managed cluster watch the new ManagedClusterScalar CR and update scalar into it. The agent refresh the scalar periodically before expire time.
-```yaml
-apiVersion: cluster.open-cluster-management.io/v1alpha1
-kind: ManagedClusterScalar
-metadata:
-  name: resourceratiocpu
-  namespace: cluster1
-spec:
-  prioritizerName: CustomizeResourceRatioCPU
+  name: default
+  namespace: {managed cluster namespace}
 status:
   conditions:
   - lastTransitionTime: "2021-10-28T08:31:39Z"
-    message: ManagedClusterScalar updated successfully
-    reason: ManagedClusterScalarUpdated
+    message: AddOnPlacementScore updated successfully
+    reason: AddOnPlacementScoreUpdated
     status: "True"
-    type: ManagedClusterScalarUpdated
+    type: AddOnPlacementScoreUpdated
   validUntil: "2021-10-29T18:31:39Z"
-  scalar: 74
+  scores:
+  - name: "cpuratio"
+    value: 88
+  - prioritizer: "memratio"
+    value: 77
 ```
-4. Placement get scalar from ManagedClusterScalar CRs and sort clusters.
-Placement prioritizer plugin will wait for 80% of the ManagedClusterScalar CRs have scalar, then sort clusters and put the result in PlacementDecision. Placement will reschedule every 5 minutes to ensure the decision is up-to-date.
+2. User creates a new placement as below to sort clusters with "cpuratio" score provided by AddOnPlacementScore "default".
+```yaml
+apiVersion: cluster.open-cluster-management.io/v1alpha1
+kind: Placement
+metadata:
+  name: placement
+  namespace: ns1
+spec:
+  numberOfClusters: 3
+  prioritizerPolicy:
+    mode: Exact
+    configurations:
+      - type: AddOnScore
+        name: ResourceRatioCPU
+        weight: 1
+        scoreResourceName: default
+        scoreName: cpuratio
+```
 
-#### Disaster recovery workload could be automatically switched to an avaliable cluster. (Use Story 3)
-1. A user has 2 clusters, one is primary and one is backup cluster. To deploy workloads on the primary cluster, define the placement as below.  
+#### Disaster recovery workload could be automatically switched to an available cluster. (Use Story 3)
+1. A user has 2 clusters, one is primary and one is backup cluster. A customized controller update score into it. The primary has score 100 and backup has score 0, and validUntil is nil (the score never expire).
+```yaml
+apiVersion: cluster.open-cluster-management.io/v1alpha1
+kind: AddOnPlacementScore
+metadata:
+  name: disasterrecovery
+  namespace: primary
+status:
+  conditions:
+  - lastTransitionTime: "2021-10-28T08:31:39Z"
+    message: AddOnPlacementScore updated successfully
+    reason: AddOnPlacementScoreUpdated
+    status: "True"
+    type: AddOnPlacementScoreUpdated
+  scores:
+  - name: "workload"
+    value: 100
+```
+```yaml
+apiVersion: cluster.open-cluster-management.io/v1alpha1
+kind: AddOnPlacementScore
+metadata:
+  name: disasterrecovery
+  namespace: backup
+status:
+  conditions:
+  - lastTransitionTime: "2021-10-28T08:31:39Z"
+    message: AddOnPlacementScore updated successfully
+    reason: AddOnPlacementScoreUpdated
+    status: "True"
+    type: AddOnPlacementScoreUpdated
+  scores:
+  - name: "workload"
+    value: 0
+```
+2. To deploy workloads on the primary cluster, the user define the placement as below.  
 ```yaml
 apiVersion: cluster.open-cluster-management.io/v1alpha1
 kind: Placement
@@ -267,70 +384,19 @@ spec:
   prioritizerPolicy:
     mode: Exact
     configurations:
-      - name: CustomizeDisasterRecovery 
+      - type: AddOnScore
+        name: DisasterRecovery
+        weight: 1
+        scoreResourceName: disasterrecovery
+        scoreName: workload
 ```
-2. Placement controller watch the placement changes and prioritizer plugin generate a new ManagedClusterScalar CR `disasterrecovery` to trigger customized data collection.
-```yaml
-apiVersion: cluster.open-cluster-management.io/v1alpha1
-kind: ManagedClusterScalar
-metadata:
-  name: disasterrecovery
-  namespace: primary
-spec:
-  prioritizerName: CustomizeDisasterRecovery
-```
-```yaml
-apiVersion: cluster.open-cluster-management.io/v1alpha1
-kind: ManagedClusterScalar
-metadata:
-  name: disasterrecovery
-  namespace: backup
-spec:
-  prioritizerName: CustomizeDisasterRecovery
-```
-3. The customized controller watch the new ManagedClusterScalar CR and update scalar into it. The primary has scalar 100 and backup has scalar 0, and validUntil is nil (the scalar never expire).
-```yaml
-apiVersion: cluster.open-cluster-management.io/v1alpha1
-kind: ManagedClusterScalar
-metadata:
-  name: disasterrecovery
-  namespace: primary
-spec:
-  prioritizerName: CustomizeDisasterRecovery
-status:
-  conditions:
-  - lastTransitionTime: "2021-10-28T08:31:39Z"
-    message: ManagedClusterScalar updated successfully
-    reason: ManagedClusterScalarUpdated
-    status: "True"
-    type: ManagedClusterScalarUpdated
-  scalar: 100
-```
-```yaml
-apiVersion: cluster.open-cluster-management.io/v1alpha1
-kind: ManagedClusterScalar
-metadata:
-  name: disasterrecovery
-  namespace: backup
-spec:
-  prioritizerName: CustomizeDisasterRecovery
-status:
-  conditions:
-  - lastTransitionTime: "2021-10-28T08:31:39Z"
-    message: ManagedClusterScalar updated successfully
-    reason: ManagedClusterScalarUpdated
-    status: "True"
-    type: ManagedClusterScalarUpdated
-  scalar: 0
-```
-4. Placement get scalar from ManagedClusterScalar CRs and sort clusters.
-As cluster primary has a higher scalar, the Placement decision will chose and workload will be running on the primary. 
-5. When the primary cluster is unavailable (a taint is added). The placement will filter out the primary because of taint, and backup cluster will be chosen. Then disaster recovery workload will be running on the backup cluster automatically.
+As cluster primary has a higher score, the Placement decision will chose it and workload will be running on the primary. 
+
+3. When the primary cluster is unavailable (a taint is added). The placement will filter out the primary because of taint, and the backup cluster will be chosen. Then disaster recovery workload will be running on the backup cluster automatically.
 
 ### Test Plan
 
-- Unit tests cover placement creating/reading/cleaning ManagedClusterScalar.
-- Unit tests cover placement desicion when ManagedClusterScalar status changes/expire/empty.
+- Unit tests cover placement decisions when AddOnPlacementScore status changes/expire/empty.
 - Integration tests cover user story 1-4;
 
 ### Graduation Criteria
@@ -340,7 +406,7 @@ As cluster primary has a higher scalar, the Placement decision will chose and wo
 3. Develop test cases to demonstrate that the above user stories work correctly;
 
 #### Beta
-1. Need to revisit the API shape before upgrade to beta based on user’s feedback.
+1. Need to revisit the API shape before upgrading to beta based on user’s feedback.
 
 ### Upgrade / Downgrade Strategy
 N/A
@@ -348,12 +414,9 @@ N/A
 ### Version Skew Strategy
 N/A
 
-## Drawbacks
-1. Is one scalar enough? any other missed use cases? For example, spreading depends on previous choice.
-
 ## Alternative
 ### Support user-defined scheduler
-As and end user, can specify the user-defined scheduler name in placement, and let a customized scheduler to generate placement decision. In this way, extensible scheduling can also be achieved.
+As an end user, can specify the user-defined scheduler name in placement, and let a customized scheduler generate placement decisions. In this way, extensible scheduling can also be achieved.
 
 Pros: 
   - More flexible, the customized scheduler can schedule based on resource usage, SLA, metrics, etc.
