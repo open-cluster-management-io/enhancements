@@ -23,7 +23,7 @@ So we want a more extensible way to support scheduling based on customized score
 - Let placement prioritizer support rating clusters with the customized scores provided by the new API(CRD).
 
 ### Non-Goals
-- How to maintain the life cycle (create/update/delete) of the CRs.
+- How to maintain the lifecycle (create/update/delete) of the CRs.
 - Placement filters will not support the new API(CRD).
 
 ## Proposal
@@ -119,7 +119,7 @@ type AddOnPlacementScoreList struct {
 }
 ```
 ### Placement API
-Add field `Type`, `ScoreResourceName` and `ScoreName` to `PrioritizerConfig`, to support specifying the customized score to sort clusters.
+Replace `Name` with `PrioritizerScoreCoordinate` inside `PrioritizerConfig`, to support specifying the customized score to sort clusters.
 
 ```golang
 type Placement struct {
@@ -147,37 +147,12 @@ type PrioritizerPolicy struct {
 
 // PrioritizerConfig represents the configuration of prioritizer
 type PrioritizerConfig struct {
-	// Type defines the type of the prioritizer.
-	// Type is either "Build-in", "AddOnScore" or "", where "" is "Build-in" by default.
-	// When type is "Build-in", you can use the build-in prioritizers.
-	// When type is "AddOnScore", the prioritizers use score provided by AddOnPlacementScore to prioritize clusters, the
-	// score source should be defined in ScoreResourceName and ScoreName.
-	// +kubebuilder:default:=Build-in
-	// +optional
-	Type string `json:"type,omitempty"`
-
-	// Name is the name of a prioritizer. Below are the valid build-in prioritizer names.
-	// 1) Balance: balance the decisions among the clusters.
-	// 2) Steady: ensure the existing decision is stabilized.
-	// 3) ResourceAllocatableCPU & ResourceAllocatableMemory: sort clusters based on the allocatable.
+	// PrioritizerScoreCoordinate represents the configuration of the prioritizer and score source.
 	// +kubebuilder:validation:Required
 	// +required
-	Name string `json:"name"`
+	PrioritizerScoreCoordinate PrioritizerScoreCoordinate `json:"scoreCoordinate"`
 
-	// ScoreResourceName defines the resource name of the AddOnPlacementScore.
-	// AddOnPlacementScore resource contains a bundle of scores. When type is defined as "AddOnScore",
-	// you need to define the AddOnPlacementScore resource name which
-	// could be used by the prioritizer to sort clusters.
-	// +optional
-	ScoreResourceName string `json:"scoreResourceName,omitempty"`
-
-	// ScoreName defines the score name of the AddOnPlacementScore.
-	// AddOnPlacementScore contains a list of score name and score value, ScoreName specify the score to be used by
-	// the prioritizer.
-	// +optional
-	ScoreName string `json:"scoreName,omitempty"`
-
-	// Weight defines the weight of the prioritizer. The value must be ranged in [0,10].
+	// Weight defines the weight of the prioritizer score. The value must be ranged in [0,10].
 	// Each prioritizer will calculate an integer score of a cluster in the range of [-100, 100].
 	// The final score of a cluster will be sum(weight * prioritizer_score).
 	// A higher weight indicates that the prioritizer weights more in the cluster selection,
@@ -187,6 +162,44 @@ type PrioritizerConfig struct {
 	// +kubebuilder:default:=1
 	// +optional
 	Weight int32 `json:"weight,omitempty"`
+}
+
+// PrioritizerScoreCoordinate represents the configuration of the prioritizer and score source
+type PrioritizerScoreCoordinate struct {
+	// Type defines the type of the prioritizer.
+	// Type is either "BuildIn", "AddOn" or "", where "" is "BuildIn" by default.
+	// When the type is "BuildIn", need to specify a buildin prioritizer name in BuildIn.
+	// When the type is "AddOn", need to configure the score source in AddOn.
+	// +kubebuilder:default:=BuildIn
+	// +optional
+	Type string `json:"type,omitempty"`
+
+	// BuildIn defines the name of a buildin prioritizer. Below are the valid buildin prioritizer names.
+	// 1) Balance: balance the decisions among the clusters.
+	// 2) Steady: ensure the existing decision is stabilized.
+	// 3) ResourceAllocatableCPU & ResourceAllocatableMemory: sort clusters based on the allocatable.
+	// +optional
+	BuildIn string `json:"buildIn,omitempty"`
+
+	// When type is "AddOn", AddOn defines the resource name and score name.
+	// +optional
+	AddOn PrioritizerAddOnScore `json:"addOn"`
+}
+
+// PrioritizerAddOnScore represents the configuration of the addon score source.
+type PrioritizerAddOnScore struct {
+	// ResourceName defines the resource name of the AddOnPlacementScore.
+	// The placement prioritizer select AddOnPlacementScore CR by this name.
+	// +kubebuilder:validation:Required
+	// +required
+	ResourceName string `json:"resourceName"`
+
+	// ScoreName defines the score name inside AddOnPlacementScore.
+	// AddOnPlacementScore contains a list of score name and score value, ScoreName specify the score to be used by
+	// the prioritizer.
+	// +kubebuilder:validation:Required
+	// +required
+	ScoreName string `json:"scoreName"`
 }
 ```
 
@@ -232,23 +245,25 @@ spec:
   prioritizerPolicy:
     mode: Exact
     configurations:
-      - name: Steady
+      - scoreCoordinate:
+          type: BuildIn
+          buildIn: Steady
         weight: 3
-      - type: AddOnScore
-        name: ResourceRatioCPU
+      - scoreCoordinate:
+          type: AddOn
+          addOn:
+            resourceName: default
+            scoreName: cpuratio
         weight: 1
-        scoreResourceName: default
-        scoreName: cpuratio
 ```
 
-- For "Build-in" type prioritizers, you don't need to specify the type explicitly. In the above example, the placement defines prioritizer "Steady" with weight 3.
-- For "AddOnScore" type prioritizers, also need define scoreResourceName and scoreName. In above example, the placement defines an "AddOnScore" type prioritizer "ResourceRatioCPU" which will use score "cpuratio" provided by AddOnPlacementScore "default" to sort clusters, the weight is 1.
+In the above example, the placement defines buildin prioritizer "Steady" with weight 3, and as well as using score "cpuratio" in "default" AddOnPlacementScore to sort clusters.
 
-When this placement.yaml is created, the placement controller sorts the clusters with "Build-in" prioritizer "Steady" and "AddOnScore" prioritizer "ResourceRatioCPU". The build-in prioritizer scheduling behavior keeps the same before, the "AddOnScore" type prioritizer scheduling process is as below:
+When this placement.yaml is created, the placement controller sorts the clusters with "BuildIn" prioritizer "Steady" and "AddOn" score "cpuratio". The "BuildIn" prioritizer scheduling behavior keeps the same before, the "AddOn" type prioritizer scheduling process is as below:
 
 - First schedule
 
-The prioritizer "ResourceRatioCPU" will get customized score "cpuratio" from "default" `AddOnPlacementScore`, and calculate a final score for each managed clusters.
+The prioritizer will get customized score "cpuratio" from "default" `AddOnPlacementScore`, and calculate a final score for each managed clusters.
 
 - Reschedule
 
@@ -289,9 +304,28 @@ With the PreSocre() added, the "AddOnScore" type prioritizer scheduling process 
 Future work：there might be a cluster-scoped CRD to configure the threshold of each prioritizer. For example, the frequency to trigger a re-schedule, the threshold to treat the cluster's score as valid.
 
 ### How to maintain the lifecycle of the AddOnPlacementScore CRs? 
-Even this is out of scope in this proposal, 2 options to maintain the resources:
-- Can write a customized controller running on each managed cluster, to maintain the lifecycle (create/update/delete) of the CRs.
-- Let the placement controller create/delete the CRs for each managed cluster, and customized score provider only needs to write an agent to update the scores.
+The details of how to maintain the AddOnPlacementScore CRs lifecycle is out of scope, however, this proposal would like to give some suggestions about how to implement a 3rd party controller for it.
+- Where should the 3rd party controller run? 
+
+  The 3rd part controller could run on either hub or managed cluster. Just like what is described in user story 1 & 2.
+
+- When should the score be created?
+
+  It can be created with the existence of a ManagedCluster, or on demand for the purpose of reducing objects on hub.
+
+- When should the score be updated?
+
+  We recommend that you set `ValidUntil` when updating the score, so that the placement controller can know if the score is still valid in case it failed to update for a long time.
+
+  The score could be updated when your monitoring data changes, or at least you need to update it before it expires.
+
+- How to calculate the score.
+
+  The score should be in the range -100 to 100, you need to normalize the scores before update it into `AddOnPlacementScore`.
+
+  For instance if it is a controller on hub to maintain the score, it can normalize based on max/min value it collects. While if the controller is running on the managed cluster, it can use a reasonable max/min value to normalize the score, eg, if the cluster memory allocatable is larger than 100GB, score is 100, if less than 1GB give score -100, and other scores distributed among them.
+
+Besides the above suggestions, we would consider a common library to make it easier.
 
 ### Examples
 
@@ -329,11 +363,12 @@ spec:
   prioritizerPolicy:
     mode: Exact
     configurations:
-      - type: AddOnScore
-        name: ResourceRatioCPU
+      - scoreCoordinate:
+          type: AddOn
+          addOn:
+            resourceName: default
+            scoreName: cpuratio
         weight: 1
-        scoreResourceName: default
-        scoreName: cpuratio
 ```
 
 #### Disaster recovery workload could be automatically switched to an available cluster. (Use Story 3)
@@ -384,11 +419,12 @@ spec:
   prioritizerPolicy:
     mode: Exact
     configurations:
-      - type: AddOnScore
-        name: DisasterRecovery
+      - scoreCoordinate:
+          type: AddOn
+          addOn:
+            resourceName: disasterrecovery
+            scoreName: workload
         weight: 1
-        scoreResourceName: disasterrecovery
-        scoreName: workload
 ```
 As cluster primary has a higher score, the Placement decision will chose it and workload will be running on the primary. 
 
