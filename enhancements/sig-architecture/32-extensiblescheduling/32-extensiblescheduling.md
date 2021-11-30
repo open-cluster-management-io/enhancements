@@ -26,6 +26,8 @@ So we want a more extensible way to support scheduling based on customized score
 - How to maintain the lifecycle (create/update/delete) of the CRs.
 - Placement filters will not support the new API(CRD).
 
+  Putting this into non-goals is because most of the cases we know are that users want to use customized values to prioritize clusters. And for filters, adding labels to filter is easier than supporting customized values to filter.
+
 ## Proposal
 
 ### User Stories
@@ -147,16 +149,28 @@ type PrioritizerPolicy struct {
 
 // PrioritizerConfig represents the configuration of prioritizer
 type PrioritizerConfig struct {
-	// PrioritizerScoreCoordinate represents the configuration of the prioritizer and score source.
+	// Name will be deprecated in v1beta1 and replaced by PrioritizerScoreCoordinate.BuildIn.
+	// If both Name and PrioritizerScoreCoordinate.BuildIn are defined, will use the value
+	// in PrioritizerScoreCoordinate.BuildIn.
+	// Name is the name of a prioritizer. Below are the valid names:
+	// 1) Balance: balance the decisions among the clusters.
+	// 2) Steady: ensure the existing decision is stabilized.
+	// 3) ResourceAllocatableCPU & ResourceAllocatableMemory: sort clusters based on the allocatable.
 	// +kubebuilder:validation:Required
 	// +required
+	Name string `json:"name"`
+
+	// PrioritizerScoreCoordinate represents the configuration of the prioritizer and score source.
+	// +kubebuilder:validation:Required
+	// +optional
 	PrioritizerScoreCoordinate PrioritizerScoreCoordinate `json:"scoreCoordinate"`
 
-	// Weight defines the weight of the prioritizer score. The value must be ranged in [0,10].
+	// Weight defines the weight of the prioritizer score. The value must be ranged in [-10,10].
 	// Each prioritizer will calculate an integer score of a cluster in the range of [-100, 100].
 	// The final score of a cluster will be sum(weight * prioritizer_score).
 	// A higher weight indicates that the prioritizer weights more in the cluster selection,
-	// while 0 weight indicates that the prioritizer is disabled.
+	// while 0 weight indicates that the prioritizer is disabled. A negatvie weight indicates
+	// wants to select the last ones.
 	// +kubebuilder:validation:Minimum:=-10
 	// +kubebuilder:validation:Maximum:=10
 	// +kubebuilder:default:=1
@@ -204,7 +218,7 @@ type PrioritizerAddOnScore struct {
 ```
 
 ### Let placement prioritizer support rating clusters with the customized score of the CR.
-How to maintain the lifecycle of AddOnPlacementScore CRs is out of scope in this proposal. Here we suppose there already are AddOnPlacementScore CRs created in each managed cluster namespace.
+How to maintain the lifecycle of AddOnPlacementScore CRs is out of scope in this proposal. Here we suppose there already are AddOnPlacementScore CRs created in each managed cluster namespace before placement attempts to use it.
 A valid AddOnPlacementScore CR resembles as below:
 ```yaml
 apiVersion: cluster.open-cluster-management.io/v1alpha1
@@ -271,37 +285,7 @@ The scores inside `AddOnPlacementScore` are supposed to be updated frequently. R
 
 **What if no valid score is generated?**
 
-What if some of the scores are invalid? For example, the AddOnPlacementScore CR is not created for some managed clusters, the score is missing in some CR, the score is expired. To handle the invalid cases, we add a PreScore() in the Prioritizer interface, to do some pre-check before Score().
-```golang
-// Prioritizer defines a prioritizer plugin that scores each cluster. The score is normalized
-// as floating between 0 and 1.
-type Prioritizer interface {
-	Plugin
-
-	// PreScore() do some preparation work before Score().
-	PreScore(ctx context.Context, placement *clusterapiv1alpha1.Placement, clusters []*clusterapiv1.ManagedCluster) error
-
-	// Score gives the score to a list of the clusters, it returns a map with the key as
-	// the cluster name.
-	Score(ctx context.Context, placement *clusterapiv1alpha1.Placement, clusters []*clusterapiv1.ManagedCluster) (map[string]int64, error)
-}
-```
-
-With the PreSocre() added, the "AddOnScore" type prioritizer scheduling process is as below:
-
-- First schedule
-  - In PreScore(), the prioritizer checks if 80% of the CRs have a valid score. (80% is a reasonable threshold hardcode so far, might make it configurable in the future). 
-    - If yes, the prioritizer will continue to score the clusters. 
-    - If no, terminate this scheduling and wait for the next reschedule.
-  - In Score(), the prioritizer will get customized score from `AddOnPlacementScore`, and calculate a final score for each managed cluster.
-
-- Reschedule
-  - In PreScore(), the prioritizer checks if 80% of the CRs have a valid score.
-    - If yes, the prioritizer will continue to score the clusters. 
-    - If no, remove the managed cluster which has invalid score from the placement decision.
-  - In Score(), the prioritizer will get customized score from `AddOnPlacementScore`, and calculate a final score for each managed cluster.
-
-Future work：there might be a cluster-scoped CRD to configure the threshold of each prioritizer. For example, the frequency to trigger a re-schedule, the threshold to treat the cluster's score as valid.
+For the invalid score cases, for example, the AddOnPlacementScore CR is not created for some managed clusters, the score is missing in some CR, or the score is expired. The prioritizer will give those clusters with score 0, and the final placement decision is still made by the total score of each prioritizers.
 
 ### How to maintain the lifecycle of the AddOnPlacementScore CRs? 
 The details of how to maintain the AddOnPlacementScore CRs lifecycle is out of scope, however, this proposal would like to give some suggestions about how to implement a 3rd party controller for it.
@@ -315,13 +299,13 @@ The details of how to maintain the AddOnPlacementScore CRs lifecycle is out of s
 
 - When should the score be updated?
 
-  We recommend that you set `ValidUntil` when updating the score, so that the placement controller can know if the score is still valid in case it failed to update for a long time.
+  We recommend that you set `ValidUntil` when updating the score, so that the placement controller can know if the score is still valid in case it failed to update for a long time. An expired score will be treated as score 0 in placement controller.
 
   The score could be updated when your monitoring data changes, or at least you need to update it before it expires.
 
 - How to calculate the score.
 
-  The score should be in the range -100 to 100, you need to normalize the scores before update it into `AddOnPlacementScore`.
+  The score must be in the range -100 to 100, you need to normalize the scores before update it into `AddOnPlacementScore`.
 
   For instance if it is a controller on hub to maintain the score, it can normalize based on max/min value it collects. While if the controller is running on the managed cluster, it can use a reasonable max/min value to normalize the score, eg, if the cluster memory allocatable is larger than 100GB, score is 100, if less than 1GB give score -100, and other scores distributed among them.
 
@@ -351,7 +335,7 @@ status:
   - prioritizer: "memratio"
     value: 77
 ```
-2. User creates a new placement as below to sort clusters with "cpuratio" score provided by AddOnPlacementScore "default".
+2. User creates a new placement as below to select clusters with most "cpuratio" score provided by AddOnPlacementScore "default", so that he can deploy the workload to those clusters..
 ```yaml
 apiVersion: cluster.open-cluster-management.io/v1alpha1
 kind: Placement
@@ -369,6 +353,25 @@ spec:
             resourceName: default
             scoreName: cpuratio
         weight: 1
+```
+3. User creates a new placement as below to select clusters with least "cpuratio" score provided by AddOnPlacementScore "default", so that he can check if there is something wrong with that cluster.
+```yaml
+apiVersion: cluster.open-cluster-management.io/v1alpha1
+kind: Placement
+metadata:
+  name: placement
+  namespace: ns1
+spec:
+  numberOfClusters: 1
+  prioritizerPolicy:
+    mode: Exact
+    configurations:
+      - scoreCoordinate:
+          type: AddOn
+          addOn:
+            resourceName: default
+            scoreName: cpuratio
+        weight: -1
 ```
 
 #### Disaster recovery workload could be automatically switched to an available cluster. (Use Story 3)
