@@ -121,7 +121,15 @@ type AddOnPlacementScoreList struct {
 }
 ```
 ### Placement API
-Replace `Name` with `PrioritizerScoreCoordinate` inside `PrioritizerConfig`, to support specifying the customized score to sort clusters.
+The changes in Placement API includes:
+
+- Add `PrioritizerScoreCoordinate` inside `PrioritizerConfig`.
+
+  `PrioritizerScoreCoordinate` represents the configuration of the prioritizer and customized scores. `PrioritizerScoreCoordinate` will replace `Name` in the future.
+
+- Support configuring negative prioritizer weight. 
+
+  A negative weight indicates "not suggest to select', or "reverse selection". For example, a user owns 5 clusters, he wants to send the workload to the top one, and also wants to get the last one to check if there is something wrong with that cluster or do something else. With negative weight, he can achieve it by creating 2 placements, one with weight 1 to select the top one, and another one with weight -1 to select the last one.
 
 ```golang
 type Placement struct {
@@ -161,7 +169,6 @@ type PrioritizerConfig struct {
 	Name string `json:"name"`
 
 	// PrioritizerScoreCoordinate represents the configuration of the prioritizer and score source.
-	// +kubebuilder:validation:Required
 	// +optional
 	PrioritizerScoreCoordinate PrioritizerScoreCoordinate `json:"scoreCoordinate"`
 
@@ -169,7 +176,7 @@ type PrioritizerConfig struct {
 	// Each prioritizer will calculate an integer score of a cluster in the range of [-100, 100].
 	// The final score of a cluster will be sum(weight * prioritizer_score).
 	// A higher weight indicates that the prioritizer weights more in the cluster selection,
-	// while 0 weight indicates that the prioritizer is disabled. A negatvie weight indicates
+	// while 0 weight indicates that the prioritizer is disabled. A negative weight indicates
 	// wants to select the last ones.
 	// +kubebuilder:validation:Minimum:=-10
 	// +kubebuilder:validation:Maximum:=10
@@ -203,7 +210,7 @@ type PrioritizerScoreCoordinate struct {
 // PrioritizerAddOnScore represents the configuration of the addon score source.
 type PrioritizerAddOnScore struct {
 	// ResourceName defines the resource name of the AddOnPlacementScore.
-	// The placement prioritizer select AddOnPlacementScore CR by this name.
+	// The placement prioritizer selects AddOnPlacementScore CR by this name.
 	// +kubebuilder:validation:Required
 	// +required
 	ResourceName string `json:"resourceName"`
