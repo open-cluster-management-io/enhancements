@@ -1,0 +1,14 @@
+title: securing-sensitive-data-in-hub-policy-templates
+authors:
+  - "@mprahl"
+reviewers:
+  - "@ckandag"
+  - "@gparvin"
+  - "@ycao56"
+approvers:
+  - "@deads2k"
+  - "@jnpacker"
+  - "@qiujian16"
+creation-date: 2021-12-21
+last-updated: 2021-12-21
+status: implementable
