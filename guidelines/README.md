@@ -76,7 +76,7 @@ To get started with this template:
 - [ ] Design details are appropriately documented from clear requirements
 - [ ] Test plan is defined
 - [ ] Graduation criteria for dev preview, tech preview, GA
-- [ ] User-facing documentation is created in [website](https://github.com/open-cluster-management/website/)
+- [ ] User-facing documentation is created in [website](https://github.com/open-cluster-management-io/open-cluster-management-io.github.io/)
 
 ## Summary
 
