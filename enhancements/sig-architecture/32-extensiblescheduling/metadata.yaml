@@ -10,8 +10,8 @@ approvers:
   - "@qiujian16"
   - "@elgnay"
 creation-date: 2021-11-01
-last-updated: 2021-12-07
-status: impelememtable
+last-updated: 2022-01-28
+status: implemented
 see-also:
   - "/enhancements/sig-architecture/6-placements"
   - "/enhancements/sig-architecture/15-resourcebasedscheduling"

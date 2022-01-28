@@ -75,21 +75,26 @@ type AddOnPlacementScore struct {
 //AddOnPlacementScoreStatus represents the current status of AddOnPlacementScore.
 type AddOnPlacementScoreStatus struct {
 	// Conditions contain the different condition statuses for this AddOnPlacementScore.
+	// +patchMergeKey=type
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=type
 	// +optional
-	Conditions []metav1.Condition `json:"conditions"`
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
-	// Scores contains a list of score name and value of this managed cluster.
+	// Scores contain a list of score name and value of this managed cluster.
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	Scores []AddOnPlacementScoreItem `json:"scores,omitempty"`
 
 	// ValidUntil defines the valid time of the scores.
 	// After this time, the scores are considered to be invalid by placement. nil means never expire.
 	// The controller owning this resource should keep the scores up-to-date.
-	// +optional
-	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Format=date-time
-	ValidUntil *metav1.Time `json:"validUntil" protobuf:"bytes,4,opt,name=lastTransitionTime"`
+	// +optional
+	ValidUntil *metav1.Time `json:"validUntil"`
 }
 
 //AddOnPlacementScoreItem represents the score name and value.
@@ -100,10 +105,11 @@ type AddOnPlacementScoreItem struct {
 	Name string `json:"name"`
 
 	// Value is the value of the score. The score range is from -100 to 100.
+	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Minimum:=-100
 	// +kubebuilder:validation:Maximum:=100
 	// +required
-	Value int32 `json:"value,omitempty"`
+	Value int32 `json:"value"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -123,13 +129,13 @@ type AddOnPlacementScoreList struct {
 ### Placement API
 The changes in Placement API includes:
 
-- Add `PrioritizerScoreCoordinate` inside `PrioritizerConfig`.
+- Add `ScoreCoordinate` inside `PrioritizerConfig`.
 
-  `PrioritizerScoreCoordinate` represents the configuration of the prioritizer and customized scores. `PrioritizerScoreCoordinate` will replace `Name` in the future.
+  `ScoreCoordinate` represents the configuration of the prioritizer and customized scores. `ScoreCoordinate` will replace `Name` in the future.
 
 - Support configuring negative prioritizer weight. 
 
-  A negative weight indicates "not suggest to select', or "reverse selection". For example, a user owns 5 clusters, he wants to send the workload to the top one, and also wants to get the last one to check if there is something wrong with that cluster or do something else. With negative weight, he can achieve it by creating 2 placements, one with weight 1 to select the top one, and another one with weight -1 to select the last one.
+  A negative weight indicates "not suggest to select", or "reverse selection". For example, a user owns 5 clusters, he wants to send the workload to the top one, and also wants to get the last one to check if there is something wrong with that cluster or do something else. With negative weight, he can achieve it by creating 2 placements, one with weight 1 to select the top one, and another one with weight -1 to select the last one.
 
 ```golang
 type Placement struct {
@@ -157,20 +163,19 @@ type PrioritizerPolicy struct {
 
 // PrioritizerConfig represents the configuration of prioritizer
 type PrioritizerConfig struct {
-	// Name will be deprecated in v1beta1 and replaced by PrioritizerScoreCoordinate.BuildIn.
-	// If both Name and PrioritizerScoreCoordinate.BuildIn are defined, will use the value
-	// in PrioritizerScoreCoordinate.BuildIn.
+	// Name will be removed in v1beta1 and replaced by ScoreCoordinate.BuiltIn.
+	// If both Name and ScoreCoordinate.BuiltIn are defined, will use the value
+	// in ScoreCoordinate.BuiltIn.
 	// Name is the name of a prioritizer. Below are the valid names:
 	// 1) Balance: balance the decisions among the clusters.
 	// 2) Steady: ensure the existing decision is stabilized.
 	// 3) ResourceAllocatableCPU & ResourceAllocatableMemory: sort clusters based on the allocatable.
-	// +kubebuilder:validation:Required
-	// +required
-	Name string `json:"name"`
-
-	// PrioritizerScoreCoordinate represents the configuration of the prioritizer and score source.
 	// +optional
-	PrioritizerScoreCoordinate PrioritizerScoreCoordinate `json:"scoreCoordinate"`
+	Name string `json:"name,omitempty"`
+
+	// ScoreCoordinate represents the configuration of the prioritizer and score source.
+	// +optional
+	ScoreCoordinate *ScoreCoordinate `json:"scoreCoordinate,omitempty"`
 
 	// Weight defines the weight of the prioritizer score. The value must be ranged in [-10,10].
 	// Each prioritizer will calculate an integer score of a cluster in the range of [-100, 100].
@@ -185,30 +190,38 @@ type PrioritizerConfig struct {
 	Weight int32 `json:"weight,omitempty"`
 }
 
-// PrioritizerScoreCoordinate represents the configuration of the prioritizer and score source
-type PrioritizerScoreCoordinate struct {
-	// Type defines the type of the prioritizer.
-	// Type is either "BuildIn", "AddOn" or "", where "" is "BuildIn" by default.
-	// When the type is "BuildIn", need to specify a buildin prioritizer name in BuildIn.
+// ScoreCoordinate represents the configuration of the score type and score source
+type ScoreCoordinate struct {
+	// Type defines the type of the prioritizer score.
+	// Type is either "BuiltIn", "AddOn" or "", where "" is "BuiltIn" by default.
+	// When the type is "BuiltIn", need to specify a BuiltIn prioritizer name in BuiltIn.
 	// When the type is "AddOn", need to configure the score source in AddOn.
-	// +kubebuilder:default:=BuildIn
-	// +optional
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=BuiltIn;AddOn
+	// +kubebuilder:default:=BuiltIn
+	// +required
 	Type string `json:"type,omitempty"`
 
-	// BuildIn defines the name of a buildin prioritizer. Below are the valid buildin prioritizer names.
+	// BuiltIn defines the name of a BuiltIn prioritizer. Below are the valid BuiltIn prioritizer names.
 	// 1) Balance: balance the decisions among the clusters.
 	// 2) Steady: ensure the existing decision is stabilized.
 	// 3) ResourceAllocatableCPU & ResourceAllocatableMemory: sort clusters based on the allocatable.
 	// +optional
-	BuildIn string `json:"buildIn,omitempty"`
+	BuiltIn string `json:"builtIn,omitempty"`
 
 	// When type is "AddOn", AddOn defines the resource name and score name.
 	// +optional
-	AddOn PrioritizerAddOnScore `json:"addOn"`
+	AddOn *AddOnScore `json:"addOn,omitempty"`
 }
 
-// PrioritizerAddOnScore represents the configuration of the addon score source.
-type PrioritizerAddOnScore struct {
+const (
+	// Valid ScoreCoordinate type is BuiltIn, AddOn.
+	ScoreCoordinateTypeBuiltIn string = "BuiltIn"
+	ScoreCoordinateTypeAddOn   string = "AddOn"
+)
+
+// AddOnScore represents the configuration of the addon score source.
+type AddOnScore struct {
 	// ResourceName defines the resource name of the AddOnPlacementScore.
 	// The placement prioritizer selects AddOnPlacementScore CR by this name.
 	// +kubebuilder:validation:Required
@@ -268,7 +281,7 @@ spec:
     configurations:
       - scoreCoordinate:
           type: BuildIn
-          buildIn: Steady
+          builtIn: Steady
         weight: 3
       - scoreCoordinate:
           type: AddOn
