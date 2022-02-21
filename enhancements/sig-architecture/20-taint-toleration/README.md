@@ -40,49 +40,65 @@ In `ManagedClusterSpec`, we can add `taints` which has the similar structure wit
 
 ```go
 type ManagedClusterSpec struct {
-   ManagedClusterClientConfigs []ClientConfig `json:"managedClusterClientConfigs,omitempty"`
-   HubAcceptsClient bool `json:"hubAcceptsClient"`
-   LeaseDurationSeconds int32 `json:"leaseDurationSeconds,omitempty"`
-   // Taints is a property of managed cluster that allow the cluster to be repelled when scheduling.
-   // +optional
-   Taints []Taint `json:"taints,omitempty"`
+	ManagedClusterClientConfigs []ClientConfig `json:"managedClusterClientConfigs,omitempty"`
+	HubAcceptsClient bool `json:"hubAcceptsClient"`
+	LeaseDurationSeconds int32 `json:"leaseDurationSeconds,omitempty"`
+
+	// Taints is a property of managed cluster that allow the cluster to be repelled when scheduling.
+	// Taints, including 'ManagedClusterUnavailable' and 'ManagedClusterUnreachable', can not be added/removed by agent
+	// running on the managed cluster; while it's fine to add/remove other taints from either hub cluser or managed cluster.
+	// +optional
+	Taints []Taint `json:"taints,omitempty"`
 }
  
 type Taint struct {
-   // The taint key to be applied to a cluster. e.g. bar or foo.example.com/bar.
-	 // The regex it matches is (dns1123SubdomainFmt/)?(qualifiedNameFmt)
-   // +required
-   // +kubebuilder:validation:Required
-   // +kubebuilder:validation:Pattern=`^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$`
-   // +kubebuilder:validation:MaxLength=316
-   Key string `json:"key"`
-   // Required. The effect of the taint on clusters
-	 // that do not tolerate the taint.
-	 // Valid effects are NoSelect, PreferNoSelect and NoSelectIfNew.
-   Effect TaintEffect `json: "taintEffect"`
-   // The taint value corresponding to the taint key. It can be nil. When the Operator in Toleration is
-	 // "Exists", the Value in taint would be ignored. When the Operator in Toleration is "Equal" and taint's
-	 // value is nil, toleration's value should also be nil if they are matched.
-	 // +optional
-	 // +kubebuilder:validation:MaxLength=1024
-   Value string `json:"value,omitempty"`
-   // TimeAdded represents the time at which the taint was added.
-   TimeAdded *metav1.Time `json:"timeadded,omitempty"`
+	// Key is the taint key applied to a cluster. e.g. bar or foo.example.com/bar.
+	// The regex it matches is (dns1123SubdomainFmt/)?(qualifiedNameFmt)
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$`
+	// +kubebuilder:validation:MaxLength=316
+	// +required
+	Key string `json:"key"`
+	// Value is the taint value corresponding to the taint key.
+	// +kubebuilder:validation:MaxLength=1024
+	// +optional
+	Value string `json:"value,omitempty"`
+	// Effect indicates the effect of the taint on placements that do not tolerate the taint.
+	// Valid effects are NoSelect, PreferNoSelect and NoSelectIfNew.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum:=NoSelect;PreferNoSelect;NoSelectIfNew
+	// +required
+	Effect TaintEffect `json:"effect"`
+	// TimeAdded represents the time at which the taint was added.
+	// +nullable
+	// +required
+	TimeAdded metav1.Time `json:"timeAdded"`
 }
 
 type TaintEffect string
 const (
-    // Do not allow placements to select the cluster unless they tolerate the taint.
-    // The cluster will be removed from the placement cluster decisions if a placement has already selected
-    // this cluster.
-    TaintEffectNoSelect TaintEffect = "NoSelect"
-    // Like TaintEffectNoSelect, but the scheduler tries not to select the cluster, rather than
-    // prohibiting placements from selecting the cluster entirely.
-    TaintEffectPreferNoSelect TaintEffect = "PreferNoSelect"
-    // Do not allow placements to select the cluster unless
-    // 1) they tolerate the taint;
-    // 2) they have already had the cluster in their cluster decisions;
-    TaintEffectNoSelectIfNew TaintEffect = "NoSelectIfNew"
+	// TaintEffectNoSelect means placements are not allowed to select the cluster unless they tolerate the taint.
+	// The cluster will be removed from the placement cluster decisions if a placement has already selected
+	// this cluster.
+	TaintEffectNoSelect TaintEffect = "NoSelect"
+	// TaintEffectPreferNoSelect means the scheduler tries not to select the cluster, rather than prohibiting
+	// placements from selecting the cluster entirely.
+	TaintEffectPreferNoSelect TaintEffect = "PreferNoSelect"
+	// TaintEffectNoSelectIfNew means placements are not allowed to select the cluster unless
+	// 1) they tolerate the taint;
+	// 2) they have already had the cluster in their cluster decisions;
+	TaintEffectNoSelectIfNew TaintEffect = "NoSelectIfNew"
+)
+
+const (
+	// ManagedClusterTaintUnavailable is the key of the taint added to a managed cluster when it is not available.
+	// To be specific, the cluster has a condtion 'ManagedClusterConditionAvailable' with status of 'False';
+	ManagedClusterTaintUnavailable string = "cluster.open-cluster-management.io/unavailable"
+	// ManagedClusterTaintUnreachable is the key of the taint added to a managed cluster when it is not reachable.
+	// To be specific,
+	// 1) The cluster has no condition 'ManagedClusterConditionAvailable';
+	// 2) Or the status of condtion 'ManagedClusterConditionAvailable' is 'Unknown';
+	ManagedClusterTaintUnreachable string = "cluster.open-cluster-management.io/unreachable"
 )
 ```
 
@@ -91,39 +107,49 @@ Similarly, we add "Kubernetes like" `tolerations` to the `PlacementSpec`, which 
 
 ```go
 type PlacementSpec struct {
-   ClusterSets []string `json:"clusterSets,omitempty"`
-   NumberOfClusters *int32 `json:"numberOfClusters,omitempty"`
-   Predicates []ClusterPredicate `json:"predicates,omitempty"`
-   // Tolerations are applied to placements, and allow (but do not require) the managed clusters with
-   // certain taints to schedule onto placements with matching tolerations.
-   // +optional
-   Tolerations []Toleration `json:"tolerations,omitempty"`
+	ClusterSets []string `json:"clusterSets,omitempty"`
+	NumberOfClusters *int32 `json:"numberOfClusters,omitempty"`
+	Predicates []ClusterPredicate `json:"predicates,omitempty"`
+	// Tolerations are applied to placements, and allow (but do not require) the managed clusters with
+	// certain taints to be selected by placements with matching tolerations.
+	// +optional
+	Tolerations []Toleration `json:"tolerations,omitempty"`
 }
  
+// Toleration represents the toleration object that can be attached to a placement.
+// The placement this Toleration is attached to tolerates any taint that matches
+// the triple <key,value,effect> using the matching operator <operator>.
 type Toleration struct {
-   // Key is the taint key that the toleration applies to. Empty means match all taint keys.
-   // If the key is empty, operator must be Exists; this combination means to match all values and all keys.
-   // +optional
-   Key string `json:"key,omitempty"`
-   // Operator represents a key's relationship to the value.
-   // Valid operators are Exists and Equal. Defaults to Equal.
-   // Exists is equivalent to wildcard for value, so that a placement can
-   // tolerate all taints of a particular category.
-   // +optional
-   Operator TolerationOperator `json:"operator,omitempty"`
-   // Value is the taint value the toleration matches to.
-   // If the operator is Exists, the value should be empty, otherwise just a regular string.
-   // +optional
-   Value string `json:"value,omitempty"`
-   // Effect indicates the taint effect to match. Empty means match all taint effects.
-	 // When specified, allowed values are NoSelect, PreferNoSelect and NoSelectIfNew.
-	 // +optional
-	 Effect TaintEffect
-   // TolerationSeconds represents the period of time the toleration (which must only be effective under the Evict Senario, otherwise this field should be ignored) tolerates the taint. By default,
-   // it is not set, which means tolerate the taint forever (do not evict). 
-   // The start time of counting the TolerationSeconds should be the TimeAdded in Taint, not the cluster scheduled time or TolerationSeconds added time.
-   // +optional
-   TolerationSeconds *int64 `json:"tolerationSeconds,omitempty"`
+	// Key is the taint key that the toleration applies to. Empty means match all taint keys.
+	// If the key is empty, operator must be Exists; this combination means to match all values and all keys.
+	// +kubebuilder:validation:Pattern=`^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$`
+	// +kubebuilder:validation:MaxLength=316
+	// +optional
+	Key string `json:"key,omitempty"`
+	// Operator represents a key's relationship to the value.
+	// Valid operators are Exists and Equal. Defaults to Equal.
+	// Exists is equivalent to wildcard for value, so that a placement can
+	// tolerate all taints of a particular category.
+	// +kubebuilder:default:="Equal"
+	// +optional
+	Operator TolerationOperator `json:"operator,omitempty"`
+	// Value is the taint value the toleration matches to.
+	// If the operator is Exists, the value should be empty, otherwise just a regular string.
+	// +kubebuilder:validation:MaxLength=1024
+	// +optional
+	Value string `json:"value,omitempty"`
+	// Effect indicates the taint effect to match. Empty means match all taint effects.
+	// When specified, allowed values are NoSelect, PreferNoSelect and NoSelectIfNew.
+	// +kubebuilder:validation:Enum:=NoSelect;PreferNoSelect;NoSelectIfNew
+	// +optional
+	Effect v1.TaintEffect `json:"effect,omitempty"`
+	// TolerationSeconds represents the period of time the toleration (which must be of effect
+	// NoSelect/PreferNoSelect, otherwise this field is ignored) tolerates the taint.
+	// The default value is nil, which indicates it tolerates the taint forever.
+	// The start time of counting the TolerationSeconds should be the TimeAdded in Taint, not the cluster
+	// scheduled time or TolerationSeconds added time.
+	// +optional
+	TolerationSeconds *int64 `json:"tolerationSeconds,omitempty"`
 }
 ```
 
@@ -154,7 +180,7 @@ type Toleration struct {
 
 #### Add new controller:
 
-Based on what we have in current Placement APIs, we add a new controller which can map the state of unhealthy and unreachable managed clusters to corresponding taints `open-clustet-management.io/unhealthy` and `open-cluster-management.io/unreachable`, so we can leverage the Taint-Toleration to support[ filtering unhealthy/not-reporting clusters (issue #48)](https://github.com/open-cluster-management-io/community/issues/48).
+Based on what we have in current Placement APIs, we add a new controller which can map the state of unhealthy and unreachable managed clusters to corresponding taints `cluster.open-cluster-management.io/unavailable` and `cluster.open-cluster-management.io/unreachable`, so we can leverage the Taint-Toleration to support[ filtering unhealthy/not-reporting clusters (issue #48)](https://github.com/open-cluster-management-io/community/issues/48).
 
 ### Examples
 
@@ -176,6 +202,8 @@ spec:
   taints:
     - key: maintaining
       value: "true"
+      effect: "NoSelect"
+      timeAdded: 2021-07-06T15:00:00+08:00
 ```
 
 placement.yaml:
@@ -207,6 +235,8 @@ spec:
   taints:
     - key: gpu
       value: "true"
+      effect: "NoSelectIfNew"
+      timeAdded: 2021-07-06T15:00:00+08:00
 ```
 placement.yaml:
 
@@ -225,7 +255,7 @@ spec:
 
 #### 3. Support Filtering Unhealthy/Unreachable Clusters
 
-When managed clusters' availability becomes `false`, the taint `open-cluster-management.io/unhealthy` would be automatically added to clusters. If managed clusters' availability becomes `unknown`, the taint `open-cluster-management.io/unreachabl` would be added. Those unhealthy or unreachable clusters could be evicted immediatly or after `TolerationSeconds`.
+When managed clusters' availability becomes `false`, the taint `cluster.open-cluster-management.io/unavailable` would be automatically added to clusters. If managed clusters' availability becomes `unknown`, the taint `cluster.open-cluster-management.io/unreachable` would be added. Those unhealthy or unreachable clusters could be evicted immediatly or after `TolerationSeconds`.
 
 ##### 3.1 Immediate Eviction
 
@@ -245,7 +275,11 @@ spec:
   taints:
     - key: gpu
       value: "true"
+      effect: "NoSelectIfNew"
+      timeAdded: 2021-07-06T15:00:00+08:00
     - key: unhealthy
+      effect: "NoSelect"
+      timeAdded: 2021-07-06T15:00:00+08:00
 ```
 
 placement.yaml:
@@ -281,8 +315,11 @@ spec:
   taints:
     - key: gpu
       value: "true"
+      effect: "NoSelectIfNew"
+      timeAdded: 2021-07-06T15:00:00+08:00
     - key: unreachable
-      timeadded: 2021-07-06T15:00:00+08:00
+      effect: "NoSelect"
+      timeAdded: 2021-07-06T15:00:00+08:00
 ```
 
 placement.yaml:
