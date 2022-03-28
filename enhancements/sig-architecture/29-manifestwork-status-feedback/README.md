@@ -2,11 +2,11 @@
 
 ## Release Signoff Checklist
 
-- [ ] Enhancement is `implementable`
-- [ ] Design details are appropriately documented from clear requirements
-- [ ] Test plan is defined
-- [ ] Graduation criteria for dev preview, tech preview, GA
-- [ ] User-facing documentation is created in [website](https://github.com/open-cluster-management-io/open-cluster-management-io.github.io/)
+- [x] Enhancement is `implemented`
+- [x] Design details are appropriately documented from clear requirements
+- [x] Test plan is defined
+- [x] Graduation criteria for dev preview, tech preview, GA
+- [x] User-facing documentation is created in [website](https://github.com/open-cluster-management-io/open-cluster-management-io.github.io/)
 
 ## Summary
 
@@ -46,11 +46,12 @@ In the spec of `ManifestWork`, add a new field
 // ManifestWorkSpec represents a desired configuration of manifests to be deployed on the managed cluster.
 type ManifestWorkSpec struct {
     ...
-	// StatusFeedback defines the option to return status of applied resource
-	StatusFeedbacks []StatusFeedbackOption `json:"statusFeedbacks,omitempty"`
+	// ManifestConfigs represents the configurations of manifests defined in workload field.
+	// +optional
+	ManifestConfigs []ManifestConfigOption `json:"manifestConfigs,omitempty"`
 }
 
-type StatusFeedbackOption struct {
+type ManifestConfigOption struct {
 	// ResourceIdentifier represents the group, resource, name and namespace of a resoure.
 	// +required
 	ResourceIdentifier ResourceIdentifier `json:"resourceIdentifier"`
@@ -117,7 +118,7 @@ spec:
             - name: hello
               image: quay.io/asmacdo/busybox
               command: ['sh', '-c', 'echo "Hello, World!" && sleep 3600']
-  statusFeedbackOptions:
+  manifestConfigs:
   - resourceIdentifier:
       group: apps
       resource: deployments
@@ -142,22 +143,24 @@ type ManifestCondition struct {
 	// +required
 	ResourceMeta ManifestResourceMeta `json:"resourceMeta"`
 
-	// StatusFeedback represents the values of the status feedback
-	StatusFeedback StatusFeedback `json:"statusFeeback,omitempty"`
+	// StatusFeedback represents the values of the feild synced back defined in statusFeedbacks
+	// +optional
+	StatusFeedbacks StatusFeedbackResult `json:"statusFeedback"`
 
 	// Conditions represents the conditions of this resource on a managed cluster.
 	// +required
 	Conditions []metav1.Condition `json:"conditions"`
 }
 
-type StatusFeedback struct {
-    // InterestedValue represents the value of the interested field
-	// If the relates interestedPath returns a empty, nil or non-single value,
-	// The InterestedValue will not be added.
-    InterestedValues []InterestedValue `json:"interestedValues"`
+type StatusFeedbackResult struct {
+  // Values represents the synced value of the interested field.
+	// +listType:=map
+	// +listMapKey:=name
+	// +optional
+	Values []FeedbackValue `json:"values,omitempty"`
 }
 
-type InterestedValue struct {
+type FeedbackValue struct {
     // name represents the aliase name for this field
 	// +required
 	Name string `json:"name"`
@@ -171,13 +174,13 @@ type FieldValue struct {
 	Type ValueType `json:"type"`
 
 	// +optional
-	Integer int32 `json:"integer,omitempty"`
+	Integer *int64 `json:"integer,omitempty"`
 
 	// +optional
-	String string `json:"string,omitempty"`
+	String *string `json:"string,omitempty"`
 
 	// +optional
-	Boolean bool `json:"boolean,omitempty"`
+	Boolean *bool `json:"boolean,omitempty"`
 }
 
 ```
@@ -200,7 +203,7 @@ status:
           status: "True"
           type: Available
         statusFeeback:
-          interestedValues:
+          values:
           - fieldValue:
               integer: 1
               type: integer
