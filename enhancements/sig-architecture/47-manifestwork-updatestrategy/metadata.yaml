@@ -1,0 +1,12 @@
+title: return-resource-status-in-manifestwork
+authors:
+  - "@qiujian16"
+reviewers:
+  - "@deads2k"
+  - "@elgnay"
+  - "@yue9944882"
+approvers:
+  - "@deads2k"
+creation-date: 2021-10-18
+last-updated: 2021-10-18
+status: implementable
