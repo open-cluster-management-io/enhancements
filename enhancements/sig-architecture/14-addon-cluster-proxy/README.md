@@ -2,7 +2,7 @@
 
 ## Release Signoff Checklist
 
-- [ ] Enhancement is `implementable`
+- [ ] Enhancement is `implemented`
 - [ ] Design details are appropriately documented from clear requirements
 - [ ] Test plan is defined
 - [ ] Graduation criteria for dev preview, tech preview, GA
