@@ -50,6 +50,25 @@ from the hub cluster".
 - This proposal doesn't put any requirement to the selection of executor/owner in
   the "ManifestWork", which allows hub admin to reference any valid Kubernetes 
   user/role to be the executor/owner.
+  
+## Terms
+
+- `Executor Subject`: The subject which is used by the work agent when actually 
+  applying resources in the spoke cluster.
+
+
+## Function Spec
+
+1. A hub admin can limit the scope of the dispatch'able resources for a 
+   `ManifestWork` by setting a non-empty executor subject, so the work agent
+   in the spoke cluster can report failure when applying/modifying out-of-scope 
+   resources.
+2. A spoke admin can expand the permission scope of the executor subject 
+   (e.g. a service-account) by binding more ClusterRole/Role to it.
+3. (beta phase) A hub user should pass the authorization before writing
+   the resources in the work object. The hub cluster holds a policy configuration
+   of "which hub user has write access to which work resource" and a validating
+   admission webhook will handle the execution of that policy.
 
 ## Proposal
 
@@ -152,8 +171,7 @@ the work agent keeps using the original service account.
 #### Admission control via `SubjectAccessReview`
 
 A validating webhook admission controller that checks whether the requesting
-hub users has sufficient RBAC permission to write certain resources to a
-managed cluster:
+hub users has sufficient permission to manipulate the work object:
 
 ```yaml
 apiVersion: authentication.open-cluster-management.io/v1alpha1
@@ -163,16 +181,16 @@ spec:
   groups: <requester groups>
   resourceAttributes:
     # virtual verb
-    verb: useOnManagedCluster
-    name: <the target managed cluster name>
+    verb: execute-as
     # the GVR tuple of the requesting resources
-    group: <api group>
-    version: <api version>
-    resource: <api resource name>
+    group: work.open-cluster-management.io
+    version: v1
+    resource: manifestworks
+    namespace: <cluster namespace>
     # the object identifier
-    namespace: <resource namespace if applicable>
+    # For "ServiceAccount" type, it will follow the format "system:serviceaccount:<sa namespace>:<sa name>"
+    name: <the unique identifier of the executor subject>
 ```
-
 
 #### (Alternative) Admission control via `ManagedServiceAccountBinding`
 
