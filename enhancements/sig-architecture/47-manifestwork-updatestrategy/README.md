@@ -57,24 +57,23 @@ We propose to update `ManifestWork` API so the user can specify upstrategy for e
 1. by default, work-agent update resource as what is implemented today.
 2. user can choose not to update the resource, work-agent will only check the existence of the resource, but not keep its spec update.
 3. user can choose to use server side apply when work-agent update the resource.
-4. to support lowner version of kube, we may also cosider allowing user to choose json merge approach to update the resource.
 
 ### Design Details
 
 #### API change
 
-We could add an updateStraty for each manifest as below:
+We could add an updateStrategy for each manifest as below:
 
 ```go
 type UpdateStrategy struct {
 	// type defines the strategy to update this manifest, default value is Update.
 	// Update type means to update resource by an update call.
-	// None type means do not update resource based on current manifest.
+	// CreateOnly type means do not update resource based on current manifest.
 	// ServerSideApply type means to update resource using server side apply as fieldManager of work-controller.
 	// If there is conflict, the related Applied confition of manifest will in the status of False with the
 	// reason of ApplyConflict.
-	// +kubebuilder:default=60
-	// +kubebuilder:validation:Enum=Update;None;ServerSideApply
+	// +kubebuilder:default=Update
+	// +kubebuilder:validation:Enum=Update;CreateOnly;ServerSideApply
 	// +kubebuilder:validation:Required
 	// +required
 	Type string `json:"type"`
@@ -164,7 +163,7 @@ status:
           version: v1
 ```
 
-When the user see this status condition, the user can update the `ManifestWork` by removing the replica field, which will turn the applied status condition to true again.
+When the user see this status condition, the user can update the `ManifestWork` by removing the replica field, which will turn the applied status condition to true again. The message of of `Applied` condition should have the details to tell user that the update of which field is conflict with which field manager. It should also show specific message when the spoke does not support server side apply.
 
 ```yaml
 kind: ManifestWork
@@ -201,14 +200,25 @@ spec:
       type: ServerSideApply   
 ```
 
-#### JSON merge
+Service side apply has some limitations comparing with legacy update strategy. User cannot remove a field in the resources with
+server side apply in some scenarios. For example, if the merge stratefy defined for a certain field in api schema is `merge`,
+user will not be able to remove an item in the list of this field.
 
-Server side apply is GA in 1.22. User may need to choose a different mechanism on the managed cluster with a lower version. 
+#### Create Only
 
-TBD
+Create only strategy defines that work agent will only ensure the existence of the resource on the managed
+cluster, and ignore the update of resource upon any change on the manifestwork. Compared with server side apply
+strategy, create only strategy gives ownership of all the fields in the resource to the admin or controllers
+on the managedcluster, while server side apply strategy has finer grained control on resource fiels ownership.
+Create only strategy is useful in the older version cluster on which server side apply is not supported,
+but the user on hub still want the controllers on the managed cluster to be able to managed resources
+created by the manifestwork.
+
 
 ### Test Plan
-
+- test different update strategy
+- test update strategy in the manifestwork
+- test resource apply conflict case and ensure that the message returned is correct
 
 ### Graduation Criteria
 N/A
