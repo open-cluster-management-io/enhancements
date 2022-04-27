@@ -105,7 +105,8 @@ explicitly check whether that "ambassador" has sufficient RBAC permission
 in the managed cluster via SubjectAccessReview api. Due to the limit of 
 the SubjectAccessReview api, we need to send (# of contained objects) times 
 SAR requests to the spoke cluster, but this should be fine b/c the work-agent 
-is working asynchronously. 
+is working asynchronously, caching the SAR result will be helpful for shortening
+the time cost.
 
 Note that the authorization via subject access review api doesn't require the
 service account to be actually present in the managed cluster, so in the cases
@@ -115,12 +116,12 @@ accounts resources in the managed cluster is bounded.
 A sample of the requesting `SubjectAccessReview` payload is:
 
 ```yaml
-apiVersion: authentication.open-cluster-management.io/v1alpha1
+apiVersion: authorization.k8s.io/v1
 kind: SubjectAccessReview
 spec:
   # requester is the referenced service-account in executor subject
   user: "system:serviceaccount:<sa namespace>:<sa name>"
-  groups: ["system:serviceaccounts", "system:authenticated"]
+  groups: ["system:serviceaccounts", "system:authenticated", "system:serviceaccounts:<sa namespace>"]
   # requesting resource attributes
   resourceAttributes:
     # verb
@@ -145,16 +146,34 @@ The overall architecture is shown in the picture below:
 The following is what will happen when a `ManifestWork` with non-nil executor
 subject specified is applied to the hub cluster:
 
+
+##### Create/Update sequence
+
 0. Create a "ManifestWork" with non-nil executor subject
 1. The work-agent observes the new resource via watch event
 2. The work-agent builds a SubjectAccessReview request which:
    - The target subject is the executor subject from `ManifestWork`
-   - The target attribute should contain the "*" verbs for all the inlined
-     objects in the spec of `ManifestWork`. Note that the "resourceNames"
-     should also be specified.
+   - The target attribute should contain the "create", "update", "patch", 
+     "get", "list" verbs for all the inlined objects in the spec of 
+     `ManifestWork`. Note that the "resourceNames" should also be specified. 
 3. The work-agent writes the objects to the managed cluster if SAR passes.
-   3.1 Otherwise set the failure condition to the `ManifestWork`.
-4. The work-agent reports the results back to the hub cluster.
+   3.1 Otherwise no objects will be written to the managed cluster and set the 
+       failure condition to the `ManifestWork`.
+4. The work-agent ensures a finalizer upon the `ManifestWork`   
+5. The work-agent reports the results back to the hub cluster.
+   
+
+##### Delete sequence
+
+1. Delete a "ManifestWork" with non-nil executor subject
+2. The work-agent builds a SubjectAccessReview request which:
+    - The target subject is the executor subject from `ManifestWork`
+    - The target attribute should be the "delete" verbs for all the inlined 
+      objects in the spec of `ManifestWork` with  "resourceNames" specified.
+3. The work-agent deletes the objects to the managed cluster if SAR passes.
+    3.1 Otherwise all the objects will not be deleted until the executor subject
+        is granted the "delete" permission upon the target object.
+4. The work-agent removes the finalizer when the objects are all deleted.
 
 ### Proposing changes to the work agent
 
@@ -174,7 +193,7 @@ A validating webhook admission controller that checks whether the requesting
 hub users has sufficient permission to manipulate the work object:
 
 ```yaml
-apiVersion: authentication.open-cluster-management.io/v1alpha1
+apiVersion: authorization.k8s.io/v1
 kind: SubjectAccessReview
 spec:
   user: <requester username>
@@ -186,6 +205,9 @@ spec:
     group: work.open-cluster-management.io
     version: v1
     resource: manifestworks
+    # The namespace is the cluster namespace
+    # So that an admin from the managed cluster can delegate the permission
+    # upon ManifestWork.
     namespace: <cluster namespace>
     # the object identifier
     # For "ServiceAccount" type, it will follow the format "system:serviceaccount:<sa namespace>:<sa name>"
