@@ -12,14 +12,16 @@
 
 A common repository / module will contain common API validation, structs, and
 methods that multiple policy controllers can use. This will simplify creating
-new controllers, and assist in maintenance of existing ones. 
+new controllers, and assist in maintenance of existing ones. This repository
+will also describe the policy-framework behavior for developers, since the
+website/docs are currently more user-focused.
 
 ## Motivation
 
 Current policy controllers rely on detailed knowledge from the policy framework 
-implementation, that is not clear to new users. Most notably, the format needed
+implementation, that is not clear to new developers. Most notably, the format
 for events to be picked up by the policy framework is not well documented. Other
-details will be more consistent if maintained in a single place.
+details will be more consistent if maintained in a single place.x
 
 ### Goals
 
@@ -37,20 +39,26 @@ specific behavior, not the details of interacting with the framework.
 
 1. Custom Controller Tutorial: it will be easier to create custom controllers,
 but it is not a requirement that we maintain a tutorial around this process.
+(This may become a goal at some point.)
 1. Custom Controller Template: we will not maintain a template/sdk like the 
 operator-sdk for new policy controllers.
 
 ## Proposal
 
 Create a new repository in open-cluster-mangement-io to provide implementations
-of common APIs and functions for controllers to work with the policy framework.
+of common APIs and functions for controllers to work with the policy framework,
+and describe the behavior of the policy framework, similar to some of the docs
+in https://github.com/stolostron/governance-policy-framework.
 
 ### User Stories
 
 #### Story 1
 
 As a developer of a policy controller, I can ensure consistent behavior with
-other policies by incorporating the common API types.
+other policies by incorporating the common API types. For example, if the
+behavior of wildcards in the common `spec.namespaceSelector` field changes, I
+should not have to adjust my controller's code to be consistent, other than
+updating the version of the common library.
 
 #### Story 2
 
@@ -77,11 +85,68 @@ be well-documented.
 
 ## Design Details
 
+Here is an part of the common struct and validation from a
+[prototype](https://github.com/JustinKuli/policycore-test/blob/main/api/v1/policycore_types.go)
+of this proposal:
+
+```golang
+type PolicyCoreSpec struct {
+	Severity          Severity          `json:"severity,omitempty"`
+	RemediationAction RemediationAction `json:"remediationAction,omitempty"`
+	NamespaceSelector NamespaceSelector `json:"namespaceSelector,omitempty"`
+}
+
+//+kubebuilder:validation:Enum=low;medium;high;critical
+type Severity string
+
+const (
+	LowSeverity      Severity = "low"
+	MediumSeverity   Severity = "medium"
+	HighSeverity     Severity = "high"
+	CriticalSeverity Severity = "critical"
+)
+
+// ... other types omitted for brevity
+```
+
+With this struct, a new policy controller could implement their type like this,
+in order to get the same validation automatically:
+
+```golang
+import policycore "github.com/open-cluster-management-io/policycore/api/v1" // example import - this repo does not exist
+
+type MyNewPolicySpec struct {
+    policycore.PolicyCoreSpec `json:",inline"`
+
+    Foo string `json:"foo"`
+}
+```
+
+Common behavior could be implemented in the common library through methods on 
+these new types, for example, utilizing the `spec.namespaceSelector` field could
+be a method with this signature and doc:
+
+```golang
+// GetNamespaces fetches all namespaces in the cluster and returns a list of the
+// namespaces that match the NamespaceSelector. The client.Reader needs access
+// for viewing namespaces, like the access given by this kubebuilder tag:
+// `//+kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch`
+func (sel NamespaceSelector) GetNamespaces(ctx context.Context, r client.Reader) ([]string, error) {
+    // ... implementation ...
+}
+```
+
+At least one additional function would cover creating the compliance event that
+the status-sync component watches for.
+
 ### Open Questions
 
-1. What policy features should be included?
+1. What policy features should be included? Types / behavior required by the
+policy framework should be included, but what about things that aren't required,
+like status fields on policy types?
 1. Should new features proposed for policy controllers be implemented here, or 
-in a specific controller first?
+in a specific controller first? Can/should there be an experimental folder or
+branch for potential new features?
 
 ### Test Plan
 
@@ -148,10 +213,15 @@ The idea is to find the best form of an argument why this enhancement should _no
 
 ## Alternatives
 
-Similar to the `Drawbacks` section the `Alternatives` section is used to
-highlight and record other possible approaches to delivering the value proposed
-by an enhancement.
+Each piece of the policy framework could expose types/methods for behavior that
+that piece requires. For example, the status-sync could expose a function for
+creating the events that it is watching for, and the template-sync could expose
+a type with the common fields it requires like `remediationAction`. In this
+case, the policy controllers would need to import each piece of the framework,
+and keep each updated to match each other if changes were made. There would
+also not be a clear place for non-required, but commonly used fields like the
+`spec.namespaceSelector`, and their behavior.
 
 ## Infrastructure Needed
 
-A new repository, name TBD.
+A new repository, name TBD. Maybe `policy-framework`?
