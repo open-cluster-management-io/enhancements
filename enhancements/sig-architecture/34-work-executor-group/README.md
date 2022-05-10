@@ -87,11 +87,12 @@ apiVersion: work.open-cluster-management.io/v1
 kind: ManifestWork
 metadata: ...
 spec:
-  executorSubject:
-    type: [ServiceAccount] # union discriminator for extensibility
-    serviceAccount:
-      name: ...
-      namespace: ...
+  executor:
+    subject:
+      type: [ServiceAccount] # union discriminator for extensibility
+      serviceAccount:
+        name: ...
+        namespace: ...
   workload:
     manifests: [...]
 ```
