@@ -1,0 +1,16 @@
+title: selective-policy-enforcement
+authors:
+  - "@imiller0"
+  - "@jc-rh"
+reviewers:
+  - "@mprahl"
+  - TBD
+approvers:
+  - TBD
+creation-date: 2022-05-17
+last-updated: 2022-05-17
+status: provisional
+see-also:
+  - "https://github.com/openshift-kni/cluster-group-upgrades-operator"
+replaces: []
+superseded-by: []
