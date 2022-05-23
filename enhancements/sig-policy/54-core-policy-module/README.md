@@ -12,16 +12,15 @@
 
 A common repository / module will contain common API validation, structs, and
 methods that multiple policy controllers can use. This will simplify creating
-new controllers, and assist in maintenance of existing ones. This repository
-will also describe the policy-framework behavior for developers, since the
-website/docs are currently more user-focused.
+new controllers, adding features that all the controllers can benefit from, and
+maintaining the controllers.
 
 ## Motivation
 
 Current policy controllers rely on detailed knowledge from the policy framework 
 implementation, that is not clear to new developers. Most notably, the format
 for events to be picked up by the policy framework is not well documented. Other
-details will be more consistent if maintained in a single place.x
+details will be more consistent if maintained in a single place.
 
 ### Goals
 
@@ -34,12 +33,14 @@ these in a struct that policy types embed will ensure they are implemented.
 events for the policy framework will have a common implementation. This will
 reduce bugs from inconsistency, and allow policy controllers to focus on their
 specific behavior, not the details of interacting with the framework.
+1. Automated tests to ensure the features/methods listed above work properly
+when used by custom controllers.
+1. Custom Controller tutorial: we will create and maintain documentation showing
+how to create a new custom policy controller, and use the main features of this
+module.
 
 ### Non-Goals
 
-1. Custom Controller Tutorial: it will be easier to create custom controllers,
-but it is not a requirement that we maintain a tutorial around this process.
-(This may become a goal at some point.)
 1. Custom Controller Template: we will not maintain a template/sdk like the 
 operator-sdk for new policy controllers.
 
@@ -79,13 +80,19 @@ pull RBAC permissions on methods into the project. So RBAC requirements on
 common functions (eg `get namespaces` for selecting namespaces) will need to
 be well-documented.
 
+This module can include features that aren't strictly required or currently used
+by the policy framework. For example, storing additional structured information
+about k8s objects that the policy looks at in a `status.relatedObjects` field.
+Experimental features can be added, but should be marked as such by the
+versioning of the repository.
+
 ### Risks and Mitigation
 
 (unknown)
 
 ## Design Details
 
-Here is an part of the common struct and validation from a
+Here is a part of the common struct and validation from a
 [prototype](https://github.com/JustinKuli/policycore-test/blob/main/api/v1/policycore_types.go)
 of this proposal:
 
@@ -140,13 +147,6 @@ At least one additional function would cover creating the compliance event that
 the status-sync component watches for.
 
 ### Open Questions
-
-1. What policy features should be included? Types / behavior required by the
-policy framework should be included, but what about things that aren't required,
-like status fields on policy types?
-1. Should new features proposed for policy controllers be implemented here, or 
-in a specific controller first? Can/should there be an experimental folder or
-branch for potential new features?
 
 ### Test Plan
 
