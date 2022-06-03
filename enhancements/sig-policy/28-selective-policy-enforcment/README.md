@@ -93,11 +93,9 @@ clusters. The effect of this would be the equivalent of setting the
 complianceType of child (cluster namespace copy) policies to enforce.
 
 The proposed API would be the addition of a remediationAction of
-“manual” to Policy. In this mode the policy would act as an inform
+“controlled” to Policy. In this mode the policy would act as an inform
 policy until the user, controller, or higher level orchestration
-enables remediation directly on the child policy. As long as
-remediation is enabled on the child policy, changes to the parent
-policy are immediately remediated.
+enables remediation directly on the child policy.
 
 The mechanism to enable enforcement of a child policy would be to add
 an annotation to the child policy which enables enforcement
@@ -105,8 +103,27 @@ an annotation to the child policy which enables enforcement
 ```
 metadata:
   annotations:
-    manual-policy-enforcement: true
+    versioned-policy-enable: [any|<generation>]
 ```
+
+The values of the annotation govern how the controller will handle
+modifications to the parent policy specification while the child
+policy is in enforcing mode.
+
+The values of the annotation can take either of these forms:
++ The value of `any` indicates that changes to the parent policy are
+immediately passed through to the enforcement of the child policy. As
+long as this annotation has the value of `any` remediation is enabled
+on the child policy and changes to the parent policy are immediately
+enforced to the cluster.
++ An integer `generation` value indicates that the child policy will
+continue enforcing as long as the child policy `metadata/generation`
+value is equal to the specified value. In this way the user of this
+feature has control over whether changes to the parent policy happen
+immediately or require additional intervention by the user. At the
+expense of this additional complexity the behavior closes race
+conditions on a user/controller enabling/disabling enforcement and
+near-concurrent changes to the parent policy specification.
 
 The overall pattern follows a similar one in OLM operator updates
 where a manual installPlanApproval is explicitly enabled by the user
@@ -140,13 +157,13 @@ progressive rollout to my network. The rollout proceeds as follows:
 1. My controller/operator selects, based on its criteria, a set of
    clusters which should receive the configuration update.
 1. My controller/orchestrator annotates the child policy for the
-   selected clusters with manual-policy-enforcement: true
+   selected clusters with `versioned-policy-enable: <value>`
 1. The GRC policy controller remediates the policy on only the
    selected clusters according to existing "enforce" mode rules. The
    other bound clusters continue evaluating the policy under "inform"
    mode rules.
 1. My controller recognizes the child policy moving to the compliant
-   state and removes the manual-policy-enforcement annotation.
+   state and removes the `versioned-policy-enable` annotation.
 1. The GRC policy controller reverts to existing "inform" mode
    handling of the policy for the selected, and now compliant,
    clusters.
@@ -210,9 +227,9 @@ here.
 ### Risks and Mitigation
 
 1. Additional complexity in policy remediation. This proposal adds a
-   3rd state to policies ("manual") which users would need to be aware
-   of when investigating why clusters aren't in compliance. This risk
-   is mitigated by the new state being "opt-in" and immediately
+   3rd state to policies ("controlled") which users would need to be
+   aware of when investigating why clusters aren't in compliance. This
+   risk is mitigated by the new state being "opt-in" and immediately
    visible in the Policy object remediationAction field.
 
 ## Design Details
@@ -282,11 +299,12 @@ may cause loss of data during downgrade.
 ### Version Skew Strategy
 
 If the policy controller on spoke clusters is out of sync with the hub
-it is possible a manual policy would be handled by a spoke which does
-not support manual policies. The spoke policy controller would ignore
-the policy as malformed with an unknown remediationAction. When the
-spoke policy controller is updated to the current version the policy
-enforcement would occur as expected/defined by the policy.
+it is possible a controlled policy would be handled by a spoke which
+does not support controlled policies. The spoke policy controller
+would ignore the policy as malformed with an unknown
+remediationAction. When the spoke policy controller is updated to the
+current version the policy enforcement would occur as expected/defined
+by the policy.
 
 ## Implementation History
 
