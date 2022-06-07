@@ -139,10 +139,10 @@ With this struct, a new policy controller could implement their type like this,
 in order to get the same validation automatically:
 
 ```golang
-import policycore "github.com/open-cluster-management-io/policycore/api/v1" // example import - this repo does not exist
+import nucleusv1 "open-cluster-management.io/policy-nucleus/api/v1" // example import - this repo does not exist
 
 type MyNewPolicySpec struct {
-    policycore.PolicyCoreSpec `json:",inline"`
+    nucleusv1.PolicyCoreSpec `json:",inline"`
 
     Foo string `json:"foo"`
 }
@@ -243,4 +243,4 @@ also not be a clear place for non-required, but commonly used fields like the
 
 ## Infrastructure Needed
 
-A new repository, name TBD. Maybe `policy-framework`?
+A new repository, name TBD. Maybe `policy-nucleus`?
