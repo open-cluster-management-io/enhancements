@@ -65,7 +65,8 @@ updating the version of the common library.
 
 As a creator of a new policy controller, I can focus on my controller's 
 specialized detection of violations, and rely on common implementations of
-functions in order to interact with the policy framework.
+functions in order to interact with the policy framework. For example, the
+reporting of compliance through events should not require a new implementation.
 
 #### Story 3
 
@@ -98,22 +99,40 @@ of this proposal:
 
 ```golang
 type PolicyCoreSpec struct {
-	Severity          Severity          `json:"severity,omitempty"`
+	// Severity defines how serious the situation is when the policy is not
+	// compliant. The severity should not change the behavior of the policy, but
+	// may be read and used by other tools. Accepted values include: low,
+	// medium, high, and critical.
+	Severity Severity `json:"severity,omitempty"`
+
+	// RemediationAction indicates what the policy controller should do when the
+	// policy is not compliant. Note that policy controllers are not required to
+	// automatically remediate a policy, even when set to "enforce". Accepted 
+	// values include inform, and enforce.
 	RemediationAction RemediationAction `json:"remediationAction,omitempty"`
+
+	// NamepaceSelector indicates which namespaces on the cluster this policy
+	// should apply to, when the policy applies to namespaced objects.
 	NamespaceSelector NamespaceSelector `json:"namespaceSelector,omitempty"`
 }
 
-//+kubebuilder:validation:Enum=low;medium;high;critical
+//+kubebuilder:validation:Enum=Low;low;Medium;medium;High;high;Critical;critical
 type Severity string
 
-const (
-	LowSeverity      Severity = "low"
-	MediumSeverity   Severity = "medium"
-	HighSeverity     Severity = "high"
-	CriticalSeverity Severity = "critical"
-)
+//+kubebuilder:validation:Enum=Inform;inform;Enforce;enforce
+type RemediationAction string
 
-// ... other types omitted for brevity
+type NamespaceSelector struct {
+	// Include is a list of namespaces the policy should apply to. UNIX style
+	// wildcards will be expanded, for example "kube-*" will include both
+	// "kube-system" and "kube-public".
+	Include []string `json:"include,omitempty"`
+
+	// Exclude is a list of namespaces the policy should _not_ apply to. UNIX
+	// style wildcards will be expanded, for example "*openshift*" will exclude
+	// any namespace that includes with "openshift" in its name.
+	Exclude []string `json:"exclude,omitempty"`
+}
 ```
 
 With this struct, a new policy controller could implement their type like this,
