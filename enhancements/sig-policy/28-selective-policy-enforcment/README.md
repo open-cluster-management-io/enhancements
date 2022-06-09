@@ -132,18 +132,7 @@ when an update is desired.
 The implementation is relatively simple and defers the “selection”
 flexibility to the user/orchestrator/controller
 
-To improve user visibility the dashboard view of policies should be
-enhanced to show the current enforcement state of the policy. This
-would be reflected in the Clusters tab of the Policies/_policyName_
-page and the specific child policy view
-Policies/_policyName_/_cluster-policy-name_
-
 ### User Stories
-
-Detail the things that people will be able to do if this is
-implemented.  Include as much detail as possible so that people can
-understand the "how" of the system. The goal here is to make this feel
-real for users without getting bogged down.
 
 #### Story 1
 I have a custom controller/operator which is responsible for applying
