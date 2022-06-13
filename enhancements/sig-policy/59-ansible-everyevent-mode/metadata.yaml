@@ -1,0 +1,10 @@
+title: ansible-everyevent-mode
+authors:
+  - "@mprahl"
+reviewers:
+  - TBD
+approvers:
+  - TBD
+creation-date: 2022-07-13
+last-updated: 2022-07-14
+status: implementable
