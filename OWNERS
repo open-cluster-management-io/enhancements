@@ -1,11 +1,11 @@
 approvers:
 - deads2k
-- pmorie
-- mdelder
 - qiujian16
+
+emeritus_approvers:
+- mdelder # 2022-07-14
+- pmorie # 2022-07-14
 
 reviewers:
 - deads2k
-- pmorie
 - qiujian16
-- mdelder
