@@ -1,4 +1,4 @@
-title: detached-mode
+title: hosted-mode
 authors:
   - "@xuezhaojun"
   - "@zhujian7"
@@ -11,5 +11,5 @@ approvers:
   - "@zhiweiyin318"
   - "@elgnay"
 creation-date: 2021-11-16
-last-updated: 2022-02-09
-status: provisional
+last-updated: 2022-06-20
+status: implemented

@@ -30,7 +30,7 @@ This ability will bring some additional possible benefits:
 
 ### Non-Goals
 
-* Support deploy addons agents outside of the managed cluster.(TBD)
+* Support deploy addons agents outside of the managed cluster.
 * Authenticate managed cluster without using CSR(CertificateSigningRequest).
 
 ## User Stories
@@ -41,30 +41,31 @@ As a managed cluster administrator, I hope as few as possible workloads running 
 
 ### Story2
 
-As an administrator of several Hubs, I want to run all deployments in one place for a better management experience,
+As an administrator of several Hubs, I want to run all deployments in one place for a better management experience.
+
 ### Story3
 
 As a hub cluster administrator, on the premise that an untrusted cluster can be managed, I do not want the cluster to talk to the hub cluster directly. 
 
-### The Comparison Between "Detached mode" and "Push mode"
+### The Comparison Between "Hosted mode" and "Push mode"
 
 They both can solve the same "untrusted cluster" issue in the network. 
 
 But the "push mode" will need listwatch on multiple spokes, which has been proven to be not scalable in kubefed since a single controller will consume a lot of memory.
 
-However, in the "detached mode", there is no such a "center controller" to "monitor" every spoke. Instead, it could even distribute the computation in multiple nodes. 
+However, in the "hosted mode", there is no such a "center controller" to "monitor" every spoke. Instead, it could even distribute the computation in multiple nodes. 
 
 ## Proposal
 
-Introduce a mode of deploying, named "Detached" mode, which means deploying cluster-manager/klusterlet outside of the hub/managed cluster.
+Introduce a mode of deploying, named "Hosted" mode, which means deploying cluster-manager/klusterlet outside of the hub/managed cluster.
 
 ### Architecture
 
-#### Architecture of Detached cluster-manager
+#### Architecture of Hosted cluster-manager
 
 ```
         +---------------------------------------------------------+                                               
-        |  management-cluster                                     |                                               
+        |  hosting-cluster                                        |                                               
         |                                                         |                                               
         |  +----------------+  +-------------+ +------------+     |                                               
         |  |deployment:     |  | deployment: | |deployment: |     |                                               
@@ -89,11 +90,11 @@ Introduce a mode of deploying, named "Detached" mode, which means deploying clus
 
 The **hub-cluster** is where hub is installed and where the cluster agent should register.
  
-The **management-cluster** is the cluster where deployments are actually running on. The deployments of several hub-clusters could run in one management-cluster and be divided by different namespaces.
+The **hosting-cluster** is the cluster where deployments are actually running on. The deployments of several hub-clusters could run in one hosting-cluster and be divided by different namespaces.
 
-Note that cluster-manager is deploy on **management-cluster** but configed with a kubeconfig secret named ”external-hub-kubeconfig”. The secret is a cluster-admin kubeconfig of the **hub-cluster** and installed in the same namespace as other hub components.
+Note that cluster-manager is deploy on **hosting-cluster** but configured with a kubeconfig secret named `external-hub-kubeconfig`. The secret is a cluster-admin kubeconfig of the **hub-cluster** and installed in the same namespace as other hub components.
 
-#### Architecture of Detached klusterlet
+#### Architecture of Hosted klusterlet
 
 ```
                       +--------------+                                                                            
@@ -103,7 +104,7 @@ Note that cluster-manager is deploy on **management-cluster** but configed with 
                               |                                                                                   
                               |                                                                                   
 +-----------------------------|------------------------------------+                                              
-|  management-cluster                                              |                                              
+|  hosting-cluster                                                 |                                              
 |                                                                  |                                              
 | +--------------+  +--------------------+  +---------------+      |                                              
 | | deployment:  |  | deployment:        |  | deployment:   |  etc.|                                              
@@ -127,22 +128,22 @@ Note that cluster-manager is deploy on **management-cluster** but configed with 
 +------------------------------------------------------------------+  
 ```
 
-- The managed-cluster is the cluster managed by the hub cluster, manifestwork will be deployed onto this cluster.
-- The management-cluster is the cluster where Klusterlet related deployments are actually running.
+The **managed-cluster** is the cluster managed by the hub cluster, manifestwork will be deployed onto this cluster.
+The **hosting-cluster** is the cluster where Klusterlet related deployments are actually running.
 
-The managed cluster will not connect to the hub cluster, all things done by the management cluster. The management cluster could be the hub cluster, it could be another third-party cluster as well.
+The managed cluster will not connect to the hub cluster, all things done by the hosting cluster. The hosting cluster could be the hub cluster, it could be another third-party cluster as well.
 
-In Detached mode, the "klusterlet.spec.namespace" will be ignored, all agent components will be installed to the namespace with the same name as klusterlet. The other thing to note is that users are responsible for creating an `external-managed-kubeconfig` in the agent installation namespace, Klusterlet-operator will use this kubeconfig to get a new minimum permission kubeconfig for the managed cluster, then render it to registration-agent and work-agent.
+In Hosted mode, the "klusterlet.spec.namespace" will only be used on the managed cluster, all agent components will be installed to the namespace with the same name as klusterlet on the hosting cluster. The other thing to note is that users are responsible for creating an `external-managed-kubeconfig` in the agent installation namespace, Klusterlet-operator will use this kubeconfig to get a new minimum permission kubeconfig for the managed cluster, then render it to registration-agent and work-agent.
 
 In addition, the addons agents are not considered to be deployed outside of the managed cluster currently. Here are some reasons:
-* In Detached mode, the deploying of addon-agent will be more complex: the addon-agents deployment runs on the management cluster; the role, service account, rolebindings runs on the managed cluster; maybe there will be some other things that need to be deployed and we don’t know where they should be deployed.
-* We are not sure that all addons agents pods can run on the management cluster, maybe some addons agents running on the management cluster will cause the function to fail.
+* In Hosted mode, the deploying of addon-agent will be more complex: the addon-agents deployment runs on the hosting cluster; the role, service account, rolebindings runs on the managed cluster; maybe there will be some other things that need to be deployed and we don’t know where they should be deployed.
+* We are not sure that all addons agents pods can run on the hosting cluster, maybe some addons agents running on the hosting cluster will cause the function to fail.
 
 #### Architecture of a combined usage of both side
 
 ```
                     +-----------------------------------------------------------------+                                 
-                    | mnagement-cluster                                               |                                 
+                    | hosting-cluster                                                 |                                 
                     |                                                                 |                                 
                     | cluster-manager                         klusterlet              |                                 
                     | +-------------------+                   +-------------------+   |                                 
@@ -167,13 +168,13 @@ In addition, the addons agents are not considered to be deployed outside of the 
 
 A real use case would be: The hub cluster is installed in a **private network** while the managed cluster is in a public cloud. right now, the managed cluster cannot connect to the hub cluster. **It also means deployments on managed cluster can not apply any resources to the hub cluster directly**.
 
-But with our proposal, as you can see in the above diagram: The components of cluster-manager and the components of klusterlet are installed in the same cluster -- the management cluster which is also in the private cloud.
+But with our proposal, as you can see in the above diagram: The components of cluster-manager and the components of klusterlet are installed in the same cluster -- the hosting cluster which is also in the private cloud.
 
-Therefore, instead of applying resources such as `ManagedCluster`  from the managed cluster in the private cluster, the klusterlet is applying the resources from the management cluster, and the hub cluster is accessible for the management cluster.
+Therefore, instead of applying resources such as `ManagedCluster`  from the managed cluster in the private cluster, the klusterlet is applying the resources from the hosting cluster, and the hub cluster is accessible for the hosting cluster.
 
 #### Minimize the permission of the external kubeconfig
 
-In Detached mode, users are required to provide a external-hub/managed-kubeconfig, klusterlet-operator will use this kubeconfig to create roles, service accounts, rolebindings with the minimum permission that the registration/work needs in the hub/managed cluster, and retrieve a token from the secret that the created service account relates in the hub/managed cluster to construct the external hub/managed cluster kubeconfig for registration and work.
+In Hosted mode, users are required to provide an `external-hub/managed-kubeconfig`, klusterlet-operator will use this kubeconfig to create roles, service accounts, rolebindings with the minimum permission that the registration/work needs in the hub/managed cluster, and retrieve a token from the secret that the created service account relates in the hub/managed cluster to construct the external hub/managed cluster kubeconfig for registration and work.
 
 
 ### API Changes
@@ -183,14 +184,14 @@ At API level, we add a field "DeployOption" to the "ClusterManagerSpec" and "Klu
 ```golang
 // DeployOption describes the deploy options for cluster-manager or klusterlet
 type DeployOption struct {
-	// Mode can be Default or Detached.
+	// Mode can be Default or Hosted.
 	// For cluster-manager:
 	//   - In Default mode, the Hub is installed as a whole and all parts of Hub are deployed in the same cluster.
-	//   - In Detached mode, only crd and configurations are installed on one cluster(defined as hub-cluster). Controllers run in another cluster (defined as management-cluster) and connect to the hub with the kubeconfig in secret of "external-hub-kubeconfig"(a kubeconfig of hub-cluster with cluster-admin permission).
+	//   - In Hosted mode, only crd and configurations are installed on one cluster(defined as hub-cluster). Controllers run in another cluster (defined as hosting-cluster) and connect to the hub with the kubeconfig in secret of "external-hub-kubeconfig"(a kubeconfig of hub-cluster with cluster-admin permission).
 	// For klusterlet:
 	//   - In Default mode, all klusterlet related resources are deployed on the managed cluster.
-	//   - In Detached mode, only crd and configurations are installed on the spoke/managed cluster. Controllers run in another cluster (defined as management-cluster) and connect to the mangaged cluster with the kubeconfig in secret of "external-managed-kubeconfig"(a kubeconfig of managed-cluster with cluster-admin permission).
-	// The purpose of Detached mode is to give it more flexibility, for example we can install a hub on a cluster with no worker nodes, meanwhile running all deployments on another more powerful cluster.
+	//   - In Hosted mode, only crd and configurations are installed on the spoke/managed cluster. Controllers run in another cluster (defined as hosting-cluster) and connect to the mangaged cluster with the kubeconfig in secret of "external-managed-kubeconfig"(a kubeconfig of managed-cluster with cluster-admin permission).
+	// The purpose of Hosted mode is to give it more flexibility, for example we can install a hub on a cluster with no worker nodes, meanwhile running all deployments on another more powerful cluster.
 	// And we can also register a managed cluster to the hub that has some firewall rules preventing access from the managed cluster.
 	//
 	// Note: Do not modify the Mode field once it's applied.
@@ -199,16 +200,16 @@ type DeployOption struct {
 	// +default=Default
 	// +kubebuilder:validation:Required
 	// +kubebuilder:default=Default
-	// +kubebuilder:validation:Enum=Default;Detached
+	// +kubebuilder:validation:Enum=Default;Hosted
 	Mode InstallMode `json:"mode"`
 
-	// Detached includes configurations we needs for clustermanager in the detached mode.
+	// Hosted includes configurations we needs for clustermanager in the hosted mode.
 	// +optional
-	Detached *DetachedClusterManagerConfiguration `json:"detached,omitempty"`
+	Hosted *HostedClusterManagerConfiguration `json:"hosted,omitempty"`
 }
 
-// DetachedClusterManagerConfiguration represents customized configurations we need to set for clustermanager in the detached mode.
-type DetachedClusterManagerConfiguration struct {
+// HostedClusterManagerConfiguration represents customized configurations we need to set for clustermanager in the hosted mode.
+type HostedClusterManagerConfiguration struct {
 	// RegistrationWebhookConfiguration represents the customized webhook-server configuration of registration.
 	// +optional
 	RegistrationWebhookConfiguration WebhookConfiguration `json:"registrationWebhookConfiguration,omitempty"`
@@ -244,9 +245,9 @@ const (
 	// The cluster-manager will be deployed in the hub-cluster, the klusterlet will be deployed in the managed-cluster.
 	InstallModeDefault InstallMode = "Default"
 
-	// InstallModeDetached means deploying components outside.
+	// InstallModeHosted means deploying components outside.
 	// The cluster-manager will be deployed outside of the hub-cluster, the klusterlet will be deployed outside of the managed-cluster.
-	InstallModeDetached InstallMode = "Detached"
+	InstallModeHosted InstallMode = "Hosted"
 )
 ```
 
@@ -255,7 +256,7 @@ We also need to make the `Mode` field immutable by setting up a webhook server.
 ### Graduation Criteria
 
 Alpha:
-* Detached mode is implement and works well on KinD cluster for both cluster-manager and klusterlet
+* Hosted mode is implement and works well on KinD cluster for both cluster-manager and klusterlet
 
 ### Test Plan
 
