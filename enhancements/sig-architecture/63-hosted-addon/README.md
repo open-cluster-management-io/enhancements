@@ -55,8 +55,10 @@ agent to talk to the hub cluster directly.
 
 ### Terms
 
-- `Hosted` mode: deploy addons agents deployments outside the managed cluster.
-- `Hosting cluster`: The cluster where the addons agents deployments runn.
+- `Hosted mode`: deploy addons agents deployments outside the managed cluster.
+- `Hosting cluster`: The cluster where the addons agents deployments runn. A Hosting cluster is a managed cluster of 
+the hub, which is to host the addon agent to manage another managed cluster's addon.
+- `Addon deployer`: A person or a component responsible for deploying an addon.
 
 ### Constraints
 
@@ -74,7 +76,7 @@ runs
 
 We propose to add a label `addon.open-cluster-management.io/manifest-type` for the addon agent manifests to mark which 
 manifests should be deployed where in Hosted mode:
-- No matter in Default mode or Hosted mode, all manifests will be deployed on the managed cluster
+- No matter what the label's value is, all manifests will be deployed on the managed cluster in Default mode.
 
 - When the label does not exist or its value is `hosted-mode-managed`: the manifest will be deployed on the managed 
 cluster in Hosted mode
@@ -197,6 +199,16 @@ hosting/managed namespace according to the label, then work-agents will apply th
        -----------------------------------------------|                                                        
 ```
 
+#### Process of deploying an addon in hosted mode
+1. Addon deployer create a ManagedClusterAddon CR with annotation 
+`addon.open-cluster-management.io/hosting-cluster-name`
+2. Addon-framework checks whether the hosting cluster is valid and reflects the result to the condition of the 
+ManagedClusterAddon CR
+3. Addon-framework gets the valid hosting cluster name
+4. Addon-framework reads all manifests to be deployed and decides which should be deployed where by the
+ `addon.open-cluster-management.io/manifest-type`
+5. Addon-framework deploys these manifests to the correct cluster by manifestworks
+
 ### Guidance for transforming Default mode addon to hosted mode
 
 Here are some guidelines for transforming addons, which are built with addon-framework in Default mode, to Hosted mode. 
@@ -206,6 +218,8 @@ After transforming, the addon should be deployed successfully either in Default 
 running outside the managed cluster? If the answer is no, stop.
 2. Refactor the code of the addon agent to accept a flag like `managed-kubeconfig`, and use the kubeconfig received 
 with the flag to build the managed cluster kube client, and use this client to process resources on the managed cluster.
+This kubeconfig should be different from the `local` kubeconfig or `in-cluster` kubeconfig which is mainly used for 
+leader election.
 3. Refactor the deployment manifest of the addon agent, use `if...end...` statement to add the `managed-kubeconfig` 
 flag only in the Hosted mode deploying.
 ```
