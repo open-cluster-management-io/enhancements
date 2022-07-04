@@ -50,8 +50,8 @@ functionality is not affected.
 
 #### Story 2
 
-As a hub cluster administrator, on the premise that the addon functionality is not affected, I do not want the addon 
-agent to talk to the hub cluster directly. 
+As a hub cluster administrator, on the premise that the addon functionality is not affected, I do not want the managed 
+cluster to talk to the hub cluster directly.
 
 ### Terms
 
@@ -65,29 +65,28 @@ the hub, which is to host the addon agent to manage another managed cluster's ad
 There are several constraints:
 - The managed cluster must be exposed to the hosting cluster
 - The managed cluster(Klusterlet) must be imported to hub in `Hosted` mode
-- The hosting cluster must be a managed cluster of the hub, hosting cluster should be managed by the hub
-- The hosting cluster must be the same cluster where the managed cluster klusterlet(registration-agent & work-agent) 
-runs
+- The hosting cluster must be a managed cluster of the hub
+- The hosting cluster of the addon must be the same hosting cluster of the klusterlet
 - After the addon is deployed, the deployment mode cannot be switched
 
 ## Design Details
 
 ### For addon developers
 
-We propose to add a label `addon.open-cluster-management.io/manifest-type` for the addon agent manifests to mark which 
-manifests should be deployed where in Hosted mode:
+We propose to add a label `addon.open-cluster-management.io/hosted-manifest-location` for the addon agent manifests to 
+mark which manifests should be deployed where in Hosted mode:
 - No matter what the label's value is, all manifests will be deployed on the managed cluster in Default mode.
 
-- When the label does not exist or its value is `hosted-mode-managed`: the manifest will be deployed on the managed 
-cluster in Hosted mode
-- When the label's value is `hosted-mode-hosting`: the manifest will be deployed on the hosting cluster in Hosted mode
-- When the label's value is `hosted-mode-none`: the manifest will not be deployed in Hosted mode
+- When the label does not exist or its value is `managed`: the manifest will be deployed on the managed cluster in 
+Hosted mode
+- When the label's value is `hosting`: the manifest will be deployed on the hosting cluster in Hosted mode
+- When the label's value is `none`: the manifest will not be deployed in Hosted mode
 
 
 <table class="tg">
 <thead>
   <tr>
-    <th class="tg-0pky" rowspan="2"><br>Label Value</th>
+    <th class="tg-0pky" rowspan="2"><br>Label existence/value</th>
     <th class="tg-c3ow">Default Mode</th>
     <th class="tg-c3ow" colspan="2">Hosted Mode</th>
     <th class="tg-c3ow" rowspan="2"><br>Example</th>
@@ -100,21 +99,21 @@ cluster in Hosted mode
 </thead>
 <tbody>
   <tr>
-    <td class="tg-0pky"><span style="font-weight:400;font-style:normal">nonexist | hosted-mode-managed</span></td>
+    <td class="tg-0pky"><span style="font-weight:400;font-style:normal">nonexist | managed</span></td>
     <td class="tg-c3ow">Y</td>
     <td class="tg-c3ow">Y</td>
     <td class="tg-c3ow"></td>
     <td class="tg-c3ow">CRD owned by the addon</td>
   </tr>
   <tr>
-    <td class="tg-0pky"><span style="font-weight:400;font-style:normal">hosted-mode-hosting</span></td>
+    <td class="tg-0pky"><span style="font-weight:400;font-style:normal">hosting</span></td>
     <td class="tg-c3ow">Y</td>
     <td class="tg-c3ow"></td>
     <td class="tg-c3ow">Y</td>
     <td class="tg-c3ow">deployment</td>
   </tr>
   <tr>
-    <td class="tg-0pky"><span style="font-weight:400;font-style:normal">hosted-mode-none</span></td>
+    <td class="tg-0pky"><span style="font-weight:400;font-style:normal">none</span></td>
     <td class="tg-c3ow">Y</td>
     <td class="tg-c3ow"></td>
     <td class="tg-c3ow"></td>
@@ -125,10 +124,11 @@ cluster in Hosted mode
 
 ### For addon deployers
 
-Once the managed cluster is imported to the hub in `Hosted` mode, we propose to add an annotation 
-`addon.open-cluster-management.io/hosting-cluster-name` for `ManagedClusterAddon` to 
-indicate the addon should be deployed in Hosted mode, and the value of the annotation is the hosting cluster which 
-should:
+Once the managed cluster is imported to the hub in `Hosted` mode, the addon deployers can choose to run addon in Hosted
+mode or Default mode, By default the addon agent will run on the managed cluster(Default mode), the addon deployers can 
+add an annotation `addon.open-cluster-management.io/hosting-cluster-name` for `ManagedClusterAddon` so that the addon 
+agent will be deployed on the certain hosting cluster(Hosted mode), the value of the annotation is the hosting cluster 
+which should:
 - be a managed cluster of the hub as well
 - be the same cluster where the managed cluster klusterlet(registration-agent & work-agent) runs
 
@@ -143,11 +143,11 @@ Some potential ways to provide the secret:
 - The addon deployer asks the managed cluster administrator for a specific permission kubeconfig, then create it on the 
 hosting cluster. Because the kubeconfig is generated by the managed cluster administrator, the addon developer does not 
 need to deploy any service-account, role, rolebinding on the managed cluster, labels these resources 
-`addon.open-cluster-management.io/manifest-type: hosted-mode-none`
-- The addon developer deploys service-account, role, rolebinding on the managed cluster, labels these resources 
-`addon.open-cluster-management.io/manifest-type: hosted-mode-managed`(or does not add this label, keep this label 
-non-exist), then develops a component to get the service account on the remote managed cluster, and retrieve the token 
-back to the hosting cluster to generate a kubeconfig.
+`addon.open-cluster-management.io/hosted-manifest-location: none`
+- The addon developer deploys service-account, role, rolebinding on the managed cluster,labels these resources 
+`addon.open-cluster-management.io/hosted-manifest-location: managed`(or does not add this label, keep the label 
+non-exist), keep this label non-exist, then develop a component to get the service account on the remote managed 
+cluster, and retrieve the token back to the hosting cluster to generate a kubeconfig.
 
 ### Architecture
 
@@ -206,7 +206,7 @@ hosting/managed namespace according to the label, then work-agents will apply th
 ManagedClusterAddon CR
 3. Addon-framework gets the valid hosting cluster name
 4. Addon-framework reads all manifests to be deployed and decides which should be deployed where by the
- `addon.open-cluster-management.io/manifest-type`
+ `addon.open-cluster-management.io/hosted-manifest-location`
 5. Addon-framework deploys these manifests to the correct cluster by manifestworks
 
 ### Guidance for transforming Default mode addon to hosted mode
@@ -219,7 +219,7 @@ running outside the managed cluster? If the answer is no, stop.
 2. Refactor the code of the addon agent to accept a flag like `managed-kubeconfig`, and use the kubeconfig received 
 with the flag to build the managed cluster kube client, and use this client to process resources on the managed cluster.
 This kubeconfig should be different from the `local` kubeconfig or `in-cluster` kubeconfig which is mainly used for 
-leader election.
+leader election and addon lease.
 3. Refactor the deployment manifest of the addon agent, use `if...end...` statement to add the `managed-kubeconfig` 
 flag only in the Hosted mode deploying.
 ```
@@ -248,7 +248,7 @@ flag only in the Hosted mode deploying.
           ...
 ```
 4. Consider each agent manifest need to be deployed where in Hosted mode, and label them with 
-`addon.open-cluster-management.io/manifest-type`, Usually, deployments need to be deployed in the hosting 
+`addon.open-cluster-management.io/hosted-manifest-location`, Usually, deployments need to be deployed in the hosting 
 cluster and CRDs owned by the addon need to be deployed in the managed cluster.
 5. Service account, (cluster)role, (cluster)rolebinding are a little special. In general, there is only one copy of 
 these resources in default mode, but now we need to consider splitting them into two copies, one for the hosting 
