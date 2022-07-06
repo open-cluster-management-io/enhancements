@@ -9,7 +9,7 @@
 ## Summary
 
 OCM's use of a CSR based mechanism for registering spoke clusters with the hub cluster is incompatible with Kubernetes environments that cannot issue client auth certificates such as Amazon Elastic Kubernetes Service (EKS).
-This enhancement provides a secondary Service Account Token based registration mechanism that is universally supported, and can be used as an alternative CSR in such environments. 
+This enhancement provides a secondary Service Account Token based registration mechanism that is universally supported, and can be used as an alternative to CSR in such environments. 
 
 ## Motivation
 
@@ -34,11 +34,11 @@ As such, OCM needs to support an alternative registration mechanism to CSRs that
 
 ### User Stories
 
-#### Story 1 - Join spoke to hub cluster using Service Account Token
+#### Story 1 - Spoke administrator joins a cluster to the hub using Service Account Token
 
 It must be possible for the cluster administrator to specify they wish to use `token` registration in the `clusteradm join` command:
 
-```shell
+```
 % clusteradm join \
      --registration=token \
      --hub-token XXX \
@@ -46,20 +46,20 @@ It must be possible for the cluster administrator to specify they wish to use `t
      --cluster-name spoke-0
 ```
 
-#### Story 2 - Default registration continues to utilize CSRs
+#### Story 2 - Spoke administrator joins a cluster to the hub using the default (csr) mechanism
 
 When not specified, we should continue to default to the `csr` registration mechanism. 
 
-```shell
+```
 % clusteradm join \
      --hub-token XXX \
      --hub-apiserver https://spoke-0.k8s.example.com \
      --cluster-name spoke-0 # default to csr registration
 ```
 
-This can also be explicitly set, by setting `--registration=csr` :
+This can also be explicitly set to csr, using `--registration=csr` :
 
-```shell
+```
 % clusteradm join \
      --registration=csr \
      --hub-token XXX \
@@ -67,60 +67,40 @@ This can also be explicitly set, by setting `--registration=csr` :
      --cluster-name spoke-0
 ```
 
-#### Story 3 - Tokens are refreshed automatically prior to expiry
+#### Story 3 - Hub administrator accepts a spoke cluster using csr or token registration in the same way
 
-#### Story 4 - It should be possible to mix registration types within a single hub cluster
+From a hub administrator point of viw, the existing `clusteradm accept` command will continue to work, regardless of whether the spoke cluster is using csr or token registration.
 
-In order to future-proof OCM for additional registration types, it should be possible for a spoke cluster's to use different registration types for each worker cluster.
-
-#### Story 4a - Spoke administrator should be able to list available registration types, and should receive an error message when using an unavailable type
-
-Ideally it should be possible to list available registration types:
-
-```shell
-% clusteradm join \
-     --hub-token XXX \
-     --hub-apiserver https://spoke-0.k8s.example.com \
-     --list-registration-types
-
-Hub cluster supports the following registration types: ['token']
+```
+% clusteradm accept --clusters spoke-0 # No additional options required if spoke-0 used token registration
 ```
 
-#### Story 4b - Spoke administrator should receive an error message when using an unavailable type
+#### Story 3 - Spoke Service Account Tokens are refreshed automatically prior to expiry
 
-If the spoke administrator attempts to join the hub with an unsupported registration type, a self explanatory error should be returned:
+When the service account token is nearing expiry, the spoke cluster should retrieve a replacement token from the hub, without administrator intervention. 
 
-```shell
-% clusteradm join \
-     --registration=csr \
-     --hub-token XXX \
-     --hub-apiserver https://spoke-0.k8s.example.com \
-     --cluster-name spoke-0
+#### Story 4 - Hub administrator can accept both csr and token registrations on a single hub cluster
 
-[ERROR] 'csr' registration is unavailable - available registration types are ['token']
-```
+In order to future-proof OCM for additional registration types (e.g. cloud provider IAM), it must be possible for a hub to support registered spoke clusters using both csr and token registration.
 
-#### Story 4c - Hub administrator can configure enabled registration types
+#### Story 5 - Hub administrator unjoining a spoke cluster, results in the associated cluster service account being deleted
 
-Hub administrator should be able to determine the supported registration types in their environment, and configure OCM appropriately.
+When a spoke cluster is unjoined, it must no longer be possible to authenticate with the hub using the spoke's Service Account token
 
-To enable both `csr` and `token` the following would be used:
+#### Story 6 - Procedure for administrators to follow should a token expire/be deleted and the spoke cluster was unable to refresh the token
 
-```shell
-% clusteradm init --registration-type csr --registration-type token 
-```
+There needs to be a procedure to follow covering scenarios where the spoke cluster is unable to refresh its service account token, and has lost its ability to authenticate with the hub.
+It should be possible for administrators to restore functionality to the spoke cluster.
 
-The default would remain only `csr`:
+Some example scenarios:
 
-```shell
-% clusteradm init
-```
-
-#### Story 5 - Hub administrator can enable token registration on an existing hub cluster
-
-TBD
+1. OCM agents in the spoke cluster were offline (e.g. due to an outage) during which its service account token expired
+2. A network outage resulted in the spoke cluster loosing connectivity to the hub api server for an extended period of time
+3. A service account was intentionally deleted (e.g. the associated token was compromised) and replaced.
 
 ### Implementation Details/Notes/Constraints [optional]
+
+TODO - from 
 
 ### Risks and Mitigation
 
@@ -141,13 +121,21 @@ to implement the design.  For instance,
 
 **Note:** *Section not required until targeted at a release.*
 
+TODO
+
 ### Graduation Criteria
 
 **Note:** *Section not required until targeted at a release.*
 
+TODO
+
 ### Upgrade / Downgrade Strategy
 
+TODO
+
 ### Version Skew Strategy
+
+TODO
 
 ## Implementation History
 
@@ -156,6 +144,7 @@ to implement the design.  For instance,
 ## Alternatives
 
 - Cloud provider native IAM support - this will be covered in a new enhancement.
+- CSR remains the preferred approach to spoke cluster authentication with the hub, where usable.
 
 ## Infrastructure Needed [optional]
 
