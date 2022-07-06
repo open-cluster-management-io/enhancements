@@ -81,7 +81,7 @@ When the service account token is nearing expiry, the spoke cluster should retri
 
 #### Story 4 - Hub administrator can accept both csr and token registrations on a single hub cluster
 
-In order to future-proof OCM for additional registration types (e.g. cloud provider IAM), it must be possible for a hub to support registered spoke clusters using both csr and token registration.
+In order to future-proof OCM for additional registration types (e.g. cloud provider IAM), it must be possible for a hub to support spoke clusters using both csr and token registration.
 
 #### Story 5 - Hub administrator unjoining a spoke cluster, results in the associated cluster service account being deleted
 
