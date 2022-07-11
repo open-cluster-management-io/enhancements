@@ -57,7 +57,7 @@ When not specified, we should continue to default to the `csr` registration mech
      --cluster-name spoke-0 # default to csr registration
 ```
 
-This can also be explicitly set to csr, using `--registration=csr` :
+This can also be explicitly set to `csr`, using `--registration=csr` :
 
 ```
 % clusteradm join \
@@ -87,7 +87,7 @@ In order to future-proof OCM for additional registration types (e.g. cloud provi
 
 When a spoke cluster is unjoined, it must no longer be possible to authenticate with the hub using the spoke's Service Account token
 
-#### Story 6 - Procedure for administrators to follow should a token expire/be deleted and the spoke cluster was unable to refresh the token
+#### Story 6 - Procedure for administrators to follow should a token expire or be deleted and the spoke cluster was unable to refresh the token
 
 There needs to be a procedure to follow covering scenarios where the spoke cluster is unable to refresh its service account token, and has lost its ability to authenticate with the hub.
 It should be possible for administrators to restore functionality to the spoke cluster.
@@ -100,7 +100,7 @@ Some example scenarios:
 
 ### Implementation Details/Notes/Constraints [optional]
 
-TODO - from 
+TODO
 
 ### Risks and Mitigation
 
