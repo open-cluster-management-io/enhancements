@@ -60,7 +60,7 @@ cluster to talk to the hub cluster directly.
 the hub, which is to host the addon agent to manage another managed cluster's addon.
 - `Addon deployer`: A person or a component responsible for deploying an addon.
 
-### Constraints
+### <a name="constraints"></a> Constraints
 
 There are several constraints:
 - The managed cluster must be exposed to the hosting cluster
@@ -268,6 +268,10 @@ the addon agent deployment can be successfully installed on the hosting cluster.
 Alpha:
 * Hosted mode addon is implemented and works well on KinD cluster for at least one addon
 * E2E tests exists
+
+Beta:
+* The addon deployer only describes the deploying mode, does not specify the specific hosting cluster name, and the addon-framework figures out the hosting cluster name by itself. Because these [constraints](#constraints) determine 
+that the hosting cluster is unique.
 
 ## Alternatives
 
