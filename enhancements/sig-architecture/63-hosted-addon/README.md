@@ -82,6 +82,12 @@ Hosted mode
 - When the label's value is `hosting`: the manifest will be deployed on the hosting cluster in Hosted mode
 - When the label's value is `none`: the manifest will not be deployed in Hosted mode
 
+If manifests will be deployed on the hosting cluster in Hosted mode, then Developers are required to ensure the 
+existence of the addon agent namespace(for example, developers can add a namespace YAML file into manifests).
+
+And developers also should add the label `addon.open-cluster-management.io/namespace: true` on the namespace, 
+otherwise, addon-framework will NOT copy the image pull secret to the namespace and developers need to provide the 
+image pull secret by themselves.
 
 <table class="tg">
 <thead>
