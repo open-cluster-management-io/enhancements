@@ -87,50 +87,208 @@ Out of scope for this feature
 
 ## Proposal
 
-The Selective Policy Enforcement feature adds an API to the policy
-framework to allow enforcement of inform policies to selected
-clusters. The effect of this would be the equivalent of setting the
-complianceType of child (cluster namespace copy) policies to enforce.
+The Selective Policy Enforcement feature extends the policy APIs to
+allow enforcement of inform policies to selected clusters. The effect
+of this would be the equivalent of setting the remediationAction of
+child (cluster namespace copy) policies to enforce for those selected
+clusters.
 
-The proposed API would be the addition of a remediationAction of
-“controlled” to Policy. In this mode the policy would act as an inform
-policy until the user, controller, or higher level orchestration
-enables remediation directly on the child policy.
-
-The mechanism to enable enforcement of a child policy would be to add
-an annotation to the child policy which enables enforcement
+There are two proposed API changes to allow for selective policy
+enforcement shown in this sample:
 
 ```
-metadata:
-  annotations:
-    versioned-policy-enable: [any|<generation>]
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+...
+remediationActionOverride:
+    remediationAction: [null|enforce]
+    subFilter: [fale|true]
+placementRef:
+  apiGroup: apps.open-cluster-management.io
+  kind: PlacementRule
+  name: override-placementrule
+subjects:
+- apiGroup: policy.open-cluster-management.io
+  kind: Policy
+  name: test-policy-1
 ```
 
-The values of the annotation govern how the controller will handle
-modifications to the parent policy specification while the child
-policy is in enforcing mode.
+### Action override in PlacementBinding
+The PlacementBinding CRD will be extended to include a
+`remediationActionOverride` section. Allowable values for the
+`remediationAction` field would be unset (no override) and `enforce`.
 
-The values of the annotation can take either of these forms:
-+ The value of `any` indicates that changes to the parent policy are
-immediately passed through to the enforcement of the child policy. As
-long as this annotation has the value of `any` remediation is enabled
-on the child policy and changes to the parent policy are immediately
-enforced to the cluster.
-+ An integer `generation` value indicates that the child policy will
-continue enforcing as long as the child policy `metadata/generation`
-value is equal to the specified value. In this way the user of this
-feature has control over whether changes to the parent policy happen
-immediately or require additional intervention by the user. At the
-expense of this additional complexity the behavior closes race
-conditions on a user/controller enabling/disabling enforcement and
-near-concurrent changes to the parent policy specification.
+An `enforce` override causes all clusters bound by this
+PlacementBinding to have the remediationAction set to `enforce`.
 
-The overall pattern follows a similar one in OLM operator updates
-where a manual installPlanApproval is explicitly enabled by the user
-when an update is desired.
+For policies with multiple PlacementBindings the set of clusters to
+which the policy is bound is the union of all the binding decisions
+(this is the current behavior and remains unchanged). When one or
+multiple PlacementBindings include a remediationActionOverride of
+`enforce` the set of clusters set to `remediationAction: enforce` is
+the union of those bindings.
 
-The implementation is relatively simple and defers the “selection”
-flexibility to the user/orchestrator/controller
+If the bound policy is already defined with `remediationAction:
+enforce` any remediationActionOverride setting in the
+PlacementBindings has no additional effect on that policy. All bound
+clusters will have the policy set to `enforce`.
+
+### Sub filtering option in PlacementBinding
+The PlacementBinding CRD will be extended to include a
+`remediationActionOverride.subFilter: [false|true]` field. When set to
+`true` this option restricts the set of clusters considered for a
+remediationActionOverride. When true, the set of clusters that are
+considered when evaluating the PlacementRule for the specific
+PlacementBinding is restricted to the set that are selected by all
+other PlacementBindings for the policy where the `subFilter` field is
+false (examples below).
+
+To preserve the existing semantics of multiple placement bindings
+attached to a single policy this option defaults to `false`.
+
+
+### Examples
+In the following examples an inform Policy is bound to
+`placementrule-initial` which selects clusters [ "A", "B", "C", "D"
+]. Additional placement rules are defined and used in the examples
+below:
++ `placementrule-sub` selects clusters [ "A", "B" ]
++ `placementrule-sub-2` selects clusters [ "E", "F" ]
++ `placementrule-extended` selects clusters [ "A", "B", "E", "F" ]
+
+#### Example 1: Simple selection
+```
+kind: PlacementBinding
+placementRef:
+  apiGroup: apps.open-cluster-management.io
+  kind: PlacementRule
+  name: placementrule-sub
+remediationActionOverride:
+    remediationAction: enforce
+subjects:
+- apiGroup: policy.open-cluster-management.io
+  kind: Policy
+  name: test-policy-1
+```
+
+The initial policy binds to clusters A, B, C, and D. The
+placementrule-sub selects clusters A and B. Based on the override the
+policy is switched to `enforce` mode for clusters A and B. The policy
+remains in `inform` mode for clusters C and D.
+
+#### Example 2: No sub filtering
+```
+kind: PlacementBinding
+placementRef:
+  apiGroup: apps.open-cluster-management.io
+  kind: PlacementRule
+  name: placementrule-extended
+remediationActionOverride:
+    remediationAction: enforce
+    subFilter: false
+subjects:
+- apiGroup: policy.open-cluster-management.io
+  kind: Policy
+  name: test-policy-1
+```
+
+The `subFilter` field is false so all clusters in all placementrules
+which are bound to the policy are considered. In this case the bound
+PlacementRules are placementrule-initial and placementrule-extended
+(in this binding).
+
+Clusters A, B, C, D, E, and F are all set to enforce mode.
+
+#### Example 3: With sub filtering
+```
+kind: PlacementBinding
+placementRef:
+  apiGroup: apps.open-cluster-management.io
+  kind: PlacementRule
+  name: placementrule-extended
+remediationActionOverride:
+    remediationAction: enforce
+    subFilter: true
+subjects:
+- apiGroup: policy.open-cluster-management.io
+  kind: Policy
+  name: test-policy-1
+```
+
+The `subFilter` field is true in this example so only clusters in
+placementrules with `subFilter` that is false are considered. In this
+case that is only the placementrule-initial with clusters A, B, C, and
+D. The PlacementRule in this CR is `placementrule-extended` which
+includes A, B, E, and F.
+
+The set of clusters set to enforce mode is the intersection of these
+two sets. Clusters A and B are set to enforce mode.
+
+#### Example 4: Multiple placements with sub filtering
+```
+kind: PlacementBinding
+placementRef:
+  apiGroup: apps.open-cluster-management.io
+  kind: PlacementRule
+  name: placementrule-sub-2
+subjects:
+- apiGroup: policy.open-cluster-management.io
+  kind: Policy
+  name: test-policy-1
+---
+kind: PlacementBinding
+placementRef:
+  apiGroup: apps.open-cluster-management.io
+  kind: PlacementRule
+  name: placementrule-extended
+remediationActionOverride:
+    remediationAction: enforce
+    subFilter: true
+subjects:
+- apiGroup: policy.open-cluster-management.io
+  kind: Policy
+  name: test-policy-1
+```
+
+The `subFilter` field is true on the extended PlacementBinding and
+false on both the initial and sub-2 PlacementBindings. The union of
+the initial and sub-2 PlacementRules become the set from which the
+extended PlacementBinding is subFiltering.
+
+Clusters A, B, E, and F are set to enforce mode. C and D remain in
+inform mode.
+
+#### Example 5: No overlap
+```
+kind: PlacementBinding
+placementRef:
+  apiGroup: apps.open-cluster-management.io
+  kind: PlacementRule
+  name: placementrule-sub-2
+remediationActionOverride:
+    remediationAction: enforce
+    subFilter: true
+subjects:
+- apiGroup: policy.open-cluster-management.io
+  kind: Policy
+  name: test-policy-1
+```
+
+The PlacementBinding is set to `subFilter: true`. The clusters under
+consideration are those in placementrule-initial (A, B, C, and D). The
+override PlacementBinding uses placementrule-sub-2 which includes
+clusters E and F. There is no overlap between the non-subFilter
+clusters and the subFilter set.
+
+No clusters are set to enforce mode.
+
+### Effect of policy changes
+The behavior of policies when changes are made does not change from
+current behavior when a remediationActionOverride is in effect. For
+clusters switched to enforce mode by the override the change made in
+the policy will "flow through" and be immediately enforced on the
+selected clusters. For clusters bound with inform mode the policy will
+immediately inform based on the changed content.
 
 ### User Stories
 
@@ -143,16 +301,25 @@ progressive rollout to my network. The rollout proceeds as follows:
    network.
 1. The policy is created in inform mode and I can see/verify the scope
    and impact of the changes.
-1. My controller/operator selects, based on its criteria, a set of
+1. My controller/orchestrator identifies that one or more clusters
+   need to be remediated.
+1. My controller/orchestrator creates a PlacementRule which is
+   initially empty (selects no clusters)
+1. My controller/orchestrator creates a a PlacementBinding with
+   `remediationActionOverride.remediationAction: enforce` and
+   `remediationActionOverride.subFilter: true`. The
+   `placementRef.name` is set to the created PlacementRule.
+1. My controller/orchestrator selects, based on its criteria, a set of
    clusters which should receive the configuration update.
-1. My controller/orchestrator annotates the child policy for the
-   selected clusters with `versioned-policy-enable: <value>`
+1. My controller/orchestrator updates the created PlacementRule to
+   this set of clusters
 1. The GRC policy controller remediates the policy on only the
    selected clusters according to existing "enforce" mode rules. The
    other bound clusters continue evaluating the policy under "inform"
    mode rules.
-1. My controller recognizes the child policy moving to the compliant
-   state and removes the `versioned-policy-enable` annotation.
+1. My controller recognizes the child policy(ies) moving to the
+   compliant state and removes the set of clusters from the created
+   PlacementRule
 1. The GRC policy controller reverts to existing "inform" mode
    handling of the policy for the selected, and now compliant,
    clusters.
@@ -187,12 +354,30 @@ impact/downtime.
 
 ### Implementation Details/Notes/Constraints [optional]
 
-The proposal seeks to add this functionality without creating a
-separate/parallel cluster-to-policy placement/decision. This would add
-complexity and be error prone. The existing Policy placement logic
-governs the association of policies with clusters. This proposal seeks
-to sub-select from the existing placement a set of clusters for
-modified remediationAction.
+Several factors were considered when choosing this mechanism for
+selecting clusters for enforcement.
+
++ Avoiding multiple controllers managing a CR. With approaches where
+  the child Policy is directly manipulated by the user/orchestrator
+  there are multiple owners of that portion of the CR which must be
+  managed.
++ Supporting multiple users/controllers enabling enforcement. In the
+  anticipated, large scale, use cases it is likely that multiple
+  controllers (or a single controller with multiple instances) will
+  seek to enforce policies. This approach allows each of those
+  controllers to own a PlacementBinding/PlacementRule independent of
+  the other controllers. With approaches manipulating the child policy
+  there is only a single mechanism (CR) being affected by multiple
+  controllers and conflicts would be difficult to resolve.
++ Familiar semantics. This approach preserves the existing behavior of
+  multiple PlacementRule and PlacementBinding CRs applied to one
+  policy when the subFilter setting is disabled (which is the default
+  behavior). The additional, opt-in, APIs allow variants of the use
+  cases to be supported without corrupting the existing semantics.
++ Supporting selection of groups of clusters. By using the existing
+  placement APIs the user/orchestrator has the full range of logic to
+  use when selecting clusters for enforcement. In large fleets of
+  clusters this is particularly useful.
 
 For several reasons the proposal provides a feature that could
 otherwise be implemented using multiple policies, placement rules
@@ -215,21 +400,23 @@ here.
 
 ### Risks and Mitigation
 
-1. Additional complexity in policy remediation. This proposal adds a
-   3rd state to policies ("controlled") which users would need to be
-   aware of when investigating why clusters aren't in compliance. This
-   risk is mitigated by the new state being "opt-in" and immediately
-   visible in the Policy object remediationAction field.
+1. Additional complexity in policy binding computation. This proposal
+   adds complexity to the computation of bound policies. The policy
+   logic needs to account for this computation.
+1. When debugging the state of their system users will need to be
+   aware of the remediationActionOverride. This is mitigated by the
+   opt-in default state of this option. This risk can be further
+   mitigated by additional information in the binding status of the
+   policy
 
 ## Design Details
 
 ### Open Questions [optional]
 
-1. The mechanism of enabling a enforcement of the policy to a cluster
-   involves directly manipulating the child policy. The child policy
-   is, however, a direct copy of the parent policy. Manipulating the
-   child brings it out of sync with the parent. The controller would
-   need to be aware of this and not overwrite the annotation when:
+1. When a policy is set to enforce mode the child policy is slightly
+   out of sync with the parent policy due to the updated
+   remediationAction. The controller needs to be aware of this
+   discrepancy and not overwrite the remediationAction when:
   1. Syncing future changes to the parent policy
   1. Periodic audits or triggered watches (due to the change)
 
@@ -246,7 +433,7 @@ that would count as tricky in the implementation and anything particularly
 challenging to test should be called out.
 
 All code is expected to have adequate tests (eventually with coverage
-expectations). 
+expectations).
 
 All code is expected to have sufficient e2e tests.
 
@@ -276,28 +463,24 @@ In general, we try to use the same stages (alpha, beta, stable), regardless how 
 
 ### Upgrade / Downgrade Strategy
 
-The proposal is an opt-in extension of the remediationAction for a
-policy. On upgrade from a release without this feature there will be
-no use of this additional feature.
+The proposal is an opt-in extension of the PolicyBinding. On upgrade
+from a release without this feature there will be no use of this
+additional feature.
 
-On downgrade the new remediationAction would be invalid and should be
-rejected by CR validation against the Policy CRD. Users should be
-aware that use of a feature which does not exist in a prior release
-may cause loss of data during downgrade.
+On downgrade the new remediationActionOverride section would be
+invalid and should be rejected by CR validation against the
+PolicyBinding CRD. Users should be aware that use of a feature which
+does not exist in a prior release may cause loss of data during
+downgrade.
 
 ### Version Skew Strategy
 
-If the policy controller on spoke clusters is out of sync with the hub
-it is possible a controlled policy would be handled by a spoke which
-does not support controlled policies. The spoke policy controller
-would ignore the policy as malformed with an unknown
-remediationAction. When the spoke policy controller is updated to the
-current version the policy enforcement would occur as expected/defined
-by the policy.
 
 ## Implementation History
 
-2022-05-17 Initial proposal
++ 2022-05-17 Initial proposal
++ 2022-07-14 Update with remediationActionOverride mechanism for
+  cluster selection.
 
 ## Drawbacks
 
@@ -313,29 +496,19 @@ action. This approach supports the use case. The user would need
 to manage the additional placement APIs.
 
 ### Alternative 2
-Extending the placement API with a remediationAction override. As the
-placement is evaluated the child policy remediationAction would be set
-to the override value. To support a progressive rollout without
-detaching most clusters from the policy there would need to be
-multiple placement APIs (one for inform and one for enforce). This
-approach would also require users to be aware that the
-remediationAction in the Policy could be overridden when
-debugging/evaluating when/why policies are applied. The controller
-would also need to be aware of the intended difference between child
-and parent policy.
+Directly manipulating the child policy remediationAction. As noted
+above there are two issues with this approach.
++ When multiple controllers are taking advantage of the Selective
+  Policy Enforcement feature it is very difficult to manage a single
+  shared "enforce" switch.
++ Multiple controllers own/share the child policy CR. This requires
+  careful attention to overwrite scenarios.
 
 ### Alternative 3
 New CR, similar to PlacementBinding to represent “enforcement
 action”. Uses the same Placement APIs (PlacementRule or newer
-Placement) and binds with policy. The key here is to NOT create a
-parallel binding decision tree which could get out of sync with the
-desired bindings. This would be a sub-selection from the already made
-decision.  This preserves flexibility and re-uses existing placement
-APIs, however it adds complexity to the remediation decision. A user
-would have to ensure a specific cluster is included in both the
-“binding” placement rule as well as the “enforcement” placement
-rule. This is likely to be error prone and adds a level of indirection
-that the user would need to be aware of.
+Placement) and binds with policy. The key here is to NOT create
+additional APIs but to leverage existing ones.
 
 *The following alternatives describe drawbacks of using existing policy
 features to achieve the stated goals.*
