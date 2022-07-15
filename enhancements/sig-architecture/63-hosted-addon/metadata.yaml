@@ -1,0 +1,15 @@
+title: hosted-addon-deploy-mode
+authors:
+  - "@zhujian7"
+reviewers:
+  - "@qiujian16"
+  - TBD
+approvers:
+  - "@qiujian16"
+  - TBD
+creation-date: 2022-06-21
+last-updated: 2022-06-21
+status: provisional
+see-also:
+  - "/enhancements/sig-architecture/33-hosted-deploy-mode"
+  - "/enhancements/sig-architecture/8-addon-framework"
