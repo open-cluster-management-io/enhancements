@@ -93,8 +93,8 @@ of this would be the equivalent of setting the remediationAction of
 child (cluster namespace copy) policies to enforce for those selected
 clusters.
 
-There are two proposed API changes to allow for selective policy
-enforcement shown in this sample:
+The proposal extends the API with `remediationActionOverride` and
+includes two configurable elements as shown in this sample:
 
 ```
 apiVersion: policy.open-cluster-management.io/v1
@@ -114,38 +114,64 @@ subjects:
 ```
 
 ### Action override in PlacementBinding
-The PlacementBinding CRD will be extended to include a
-`remediationActionOverride` section. Allowable values for the
-`remediationAction` field would be unset (no override) and `enforce`.
+The `remediationActionOverride.remediationAction` field allows users
+to override the remediationAction specified in the bound policy. Valid
+values for this field include unset (no override) and `enforce`.
 
-An `enforce` override causes all clusters bound by this
-PlacementBinding to have the remediationAction set to `enforce`.
+The behavior of this field is:
 
-For policies with multiple PlacementBindings the set of clusters to
-which the policy is bound is the union of all the binding decisions
-(this is the current behavior and remains unchanged). When one or
-multiple PlacementBindings include a remediationActionOverride of
-`enforce` the set of clusters set to `remediationAction: enforce` is
-the union of those bindings.
-
-If the bound policy is already defined with `remediationAction:
-enforce` any remediationActionOverride setting in the
-PlacementBindings has no additional effect on that policy. All bound
-clusters will have the policy set to `enforce`.
++ An `enforce` override sets the remediationAction of the bound Policy
+  to `enforce` for all clusters bound by this PlacementBinding.
++ The behavior of multiple PlacementBindings for the same policy and
+  cluster remains unchanged (they are additive).
+  + For reducing resources the implementation should de-duplicate any
+    child policies created
++ A policy bound to the same cluster under multiple PlacementBindings
+  will be set to `enforce` if _any_ of those bindings has
+  `remediationActionOverride.remediationAction` set to enforce.
++ A policy with `remediationAction` already set to `enforce` is
+  unaffected by a PlacementBinding with
+  `remediationActionOverride.remediationAction` set to enforce.
 
 ### Sub filtering option in PlacementBinding
-The PlacementBinding CRD will be extended to include a
-`remediationActionOverride.subFilter: [false|true]` field. When set to
+The `remediationActionOverride.remediationAction` field allows users
+to control what clusters can be selected for a
+remediationActionOverride. This field is a boolean with valid values
+of `remediationActionOverride.subFilter: [false|true]`. To preserve
+the existing semantics of multiple placement bindings attached to a
+single policy this option defaults to `false`.
+
+The behavior of the `remediationActionOverride` when the `subFilter`
+is `true` is:
+
++ For the bound Policy, only clusters selected by another
+  PlacementBinding where `subFilter` is false will be considered for
+  `remediationAction` override.
+  + A cluster must be bound by both this `subFilter: true` binding
+    _and_ at least one `subFilter: false` PlacementBinding for the
+    override to be applied.
+
+The subFilter option is specified to allow a user to ensure that a
+single PlacementBinding can be used to define the set of potentially
+affected clusters. Without the subFilter option, it is possible to
+erroneously select additional clusters in the "override"
+PlacementBinding and accidentally enforce the policy to those
+additional clusters. The `subFilter` option, when set true, ensures
+that a second PlacementBinding used to enforce the policy to a smaller
+number of clusters will respect the intent of the initial binding.
+
+The behavior of the `remediationActionOverride` when the `subFilter`
+is `false` is:
+
++ For the bound Policy, all selected clusters will have the
+  `remediationAction` overridden.
+
 `true` this option restricts the set of clusters considered for a
 remediationActionOverride. When true, the set of clusters that are
 considered when evaluating the PlacementRule for the specific
 PlacementBinding is restricted to the set that are selected by all
 other PlacementBindings for the policy where the `subFilter` field is
 false (examples below).
-
-To preserve the existing semantics of multiple placement bindings
-attached to a single policy this option defaults to `false`.
-
 
 ### Examples
 In the following examples an inform Policy is bound to
