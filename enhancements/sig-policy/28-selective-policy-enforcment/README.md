@@ -115,8 +115,9 @@ subjects:
 
 ### Action override in PlacementBinding
 The `remediationActionOverride.remediationAction` field allows users
-to override the remediationAction specified in the bound policy. Valid
-values for this field include unset (no override) and `enforce`.
+to override the remediationAction specified in the bound Policy or
+PolicySet. Valid values for this field include unset (no override) and
+`enforce`.
 
 The behavior of this field is:
 
@@ -144,7 +145,7 @@ single policy this option defaults to `false`.
 The behavior of the `remediationActionOverride` when the `subFilter`
 is `true` is:
 
-+ For the bound Policy, only clusters selected by another
++ For the bound Policy or PolicySet, only clusters selected by another
   PlacementBinding where `subFilter` is false will be considered for
   `remediationAction` override.
   + A cluster must be bound by both this `subFilter: true` binding
@@ -163,8 +164,8 @@ number of clusters will respect the intent of the initial binding.
 The behavior of the `remediationActionOverride` when the `subFilter`
 is `false` is:
 
-+ For the bound Policy, all selected clusters will have the
-  `remediationAction` overridden.
++ For the bound Policy or PolicySet, all selected clusters will have
+  the `remediationAction` overridden.
 
 `true` this option restricts the set of clusters considered for a
 remediationActionOverride. When true, the set of clusters that are
