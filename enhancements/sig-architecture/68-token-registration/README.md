@@ -98,6 +98,12 @@ Some example scenarios:
 2. A network outage resulted in the spoke cluster loosing connectivity to the hub api server for an extended period of time
 3. A service account was intentionally deleted (e.g. the associated token was compromised) and replaced.
 
+#### Story 7 - Support for add-ons using token authentication
+
+The [AddOn Framework](https://github.com/open-cluster-management-io/addon-framework) along with existing add-ons will also require the ability to use tokens to authenticate against the hub cluster.
+
+The add-on should automatically use the same registration method (i.e. csr or token) as the Klusterlet. 
+
 ### Implementation Details/Notes/Constraints [optional]
 
 TODO
