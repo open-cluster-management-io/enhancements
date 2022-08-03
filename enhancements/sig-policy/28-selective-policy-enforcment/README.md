@@ -102,7 +102,7 @@ kind: PlacementBinding
 ...
 remediationActionOverride:
     remediationAction: [null|enforce]
-    subFilter: [fale|true]
+    subFilter: [false|true]
 placementRef:
   apiGroup: apps.open-cluster-management.io
   kind: PlacementRule
@@ -132,10 +132,10 @@ The behavior of this field is:
   `remediationActionOverride.remediationAction` set to enforce.
 + A policy with `remediationAction` already set to `enforce` is
   unaffected by a PlacementBinding with
-  `remediationActionOverride.remediationAction` set to enforce.
+  `remediationActionOverride`.
 
 ### Sub filtering option in PlacementBinding
-The `remediationActionOverride.remediationAction` field allows users
+The `remediationActionOverride.subFilter` field allows users
 to control what clusters can be selected for a
 remediationActionOverride. This field is a boolean with valid values
 of `remediationActionOverride.subFilter: [false|true]`. To preserve
@@ -173,6 +173,23 @@ considered when evaluating the PlacementRule for the specific
 PlacementBinding is restricted to the set that are selected by all
 other PlacementBindings for the policy where the `subFilter` field is
 false (examples below).
+
+For a given Policy, when there are multiple PlacementBindings
+containing a `remediationActionOverride` the decision of whether to
+override the enforcement action follows this algorithm (on a per
+Policy basis):
+1. Create set "P" of all clusters that are placed with placement
+   bindings with subFilter: false.
+1. Create set "Q" of all clusters that are placed with placement
+   bindings with subFilter: false and
+   remediationActionOverride.remediationAction: enforce. Note that all
+   clusters in "Q" are also included in set "P".
+1. Create set "R" of all clusters that are placed with placement
+   bindings with subFilter: true and
+   remediationActionOverride.remediationAction: enforce.
+1. Create set "S" which is the intersection of set "P" and set "R".
+1. The clusters which have the remediationAction overridden is the
+   union of set "Q" and set "S".
 
 ### Examples
 In the following examples an inform Policy is bound to
@@ -222,9 +239,12 @@ subjects:
 The `subFilter` field is false so all clusters in all placementrules
 which are bound to the policy are considered. In this case the bound
 PlacementRules are placementrule-initial and placementrule-extended
-(in this binding).
+(in this binding) so that clusters A, B, C, D, E, and F are all
+considered.
 
-Clusters A, B, C, D, E, and F are all set to enforce mode.
+This PlacementBinding includes placmentrule-extended which includes A,
+B, E, and F. This means clusters A, B, E and F will be set to enforce
+mode. Clusters B and C remain in inform mode.
 
 #### Example 3: With sub filtering
 ```
