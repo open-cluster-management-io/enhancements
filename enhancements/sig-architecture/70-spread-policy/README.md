@@ -237,7 +237,7 @@ Two types of spread constraints require different logics. Hence, they will be im
 **Implementation of (Cluster) Affinity/Anti-affinity.** An `AffinitySpreadPriorititizer` will be implemented as follows:
 
 1. for each cluster, score it according to `topologyWeights` in the cluster affinity rules
-2. normalize the cluster affinity scores to [0, 100]
+2. normalize the cluster affinity scores to [-100, 100]
 
 **Implementation of Even Spread.** The current scheduling framework contains two types of plugins, i.e., `Filter`s and `Prioritizer`s. `Filter`s are invoked *before* `Prioritizer`s to express hard constrains, filtering the clusters. `Prioritizer`s express soft constraints, scoring the clusters. The even spread constraints can be hard constraints (when `maxSkew` is not omitted) or soft constraints (when `maxSkew` is omitted). For a hard even spread constraint, the scheduler need to perform the hard decision logic (i.e., decide to schedule or not according to `maxSkew`) *after* scoring the clusters, which is unable to implement in a `Filter`.
 
