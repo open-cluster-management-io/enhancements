@@ -102,7 +102,7 @@ kind: PlacementBinding
 ...
 remediationActionOverride:
     remediationAction: [null|enforce]
-    subFilter: [false|true]
+subFilter: [false|true]
 placementRef:
   apiGroup: apps.open-cluster-management.io
   kind: PlacementRule
@@ -135,22 +135,47 @@ The behavior of this field is:
   `remediationActionOverride`.
 
 ### Sub filtering option in PlacementBinding
-The `remediationActionOverride.subFilter` field allows users
-to control what clusters can be selected for a
-remediationActionOverride. This field is a boolean with valid values
-of `remediationActionOverride.subFilter: [false|true]`. To preserve
+The `subFilter` field allows users to control what clusters can be
+considered when evaluating this PlacementBinding. This field is a
+boolean with valid values of `subFilter: [false|true]`. To preserve
 the existing semantics of multiple placement bindings attached to a
 single policy this option defaults to `false`.
 
-The behavior of the `remediationActionOverride` when the `subFilter`
-is `true` is:
+The behavior of a PlacementBinding with `subFilter: true` is:
 
 + For the bound Policy or PolicySet, only clusters selected by another
   PlacementBinding where `subFilter` is false will be considered for
-  `remediationAction` override.
-  + A cluster must be bound by both this `subFilter: true` binding
-    _and_ at least one `subFilter: false` PlacementBinding for the
-    override to be applied.
+  binding by this PlacementBinding. In other words, a PlacementBinding
+  with `subFilter: true` will not bind any additional clusters to the
+  policy.
+
+The behavior of a PlacementBinding with `subFilter: false` is
+unchanged from the current PlacementBinding behavior.
+
+Including the `subFilter` at the top level of the CR allows for
+additional override actions or transformations of the bound policy in
+the future to make use of the same subFiltering functionality.
+
+When `subFilter` is combined with the `remediationActionOverride` the
+behavior is:
+
++ A PlacementBinding without
+  `remediationActionOverride.remediationAction` and with
+  `subFilter:false` (which are the defaults for both) behaves exactly
+  as it does without this enhancement.
++ A PlacementBinding without
+  `remediationActionOverride.remediationAction` and with
+  `subFilter:true` is effectively a "no-op". No additional clusters
+  are bound. No override is performed.
++ A PlacementBinding with
+  `remediationActionOverride.remediationAction: enforce` and with
+  `subFilter:false` will override the remediationAction of all
+  policies bound by this PlacementBinding.
++ A PlacementBinding with
+  `remediationActionOverride.remediationAction: enforce` and with
+  `subFilter:true` will override the remediationAction of any policies
+  bound by both this PlacementBinding _and_ at least one `subFilter:
+  false` PlacementBinding.
 
 The subFilter option is specified to allow a user to ensure that a
 single PlacementBinding can be used to define the set of potentially
@@ -160,19 +185,6 @@ PlacementBinding and accidentally enforce the policy to those
 additional clusters. The `subFilter` option, when set true, ensures
 that a second PlacementBinding used to enforce the policy to a smaller
 number of clusters will respect the intent of the initial binding.
-
-The behavior of the `remediationActionOverride` when the `subFilter`
-is `false` is:
-
-+ For the bound Policy or PolicySet, all selected clusters will have
-  the `remediationAction` overridden.
-
-`true` this option restricts the set of clusters considered for a
-remediationActionOverride. When true, the set of clusters that are
-considered when evaluating the PlacementRule for the specific
-PlacementBinding is restricted to the set that are selected by all
-other PlacementBindings for the policy where the `subFilter` field is
-false (examples below).
 
 For a given Policy, when there are multiple PlacementBindings
 containing a `remediationActionOverride` the decision of whether to
@@ -229,7 +241,7 @@ placementRef:
   name: placementrule-extended
 remediationActionOverride:
     remediationAction: enforce
-    subFilter: false
+subFilter: false
 subjects:
 - apiGroup: policy.open-cluster-management.io
   kind: Policy
@@ -242,8 +254,9 @@ PlacementRules are placementrule-initial and placementrule-extended
 (in this binding) so that clusters A, B, C, D, E, and F are all
 considered.
 
-This PlacementBinding includes placmentrule-extended which includes A,
-B, E, and F. This means clusters A, B, E and F will be set to enforce
+This PlacementBinding specifies the override `remediationAction:
+enforce` and includes placmentrule-extended which includes A, B, E,
+and F. This means clusters A, B, E and F will be set to enforce
 mode. Clusters B and C remain in inform mode.
 
 #### Example 3: With sub filtering
@@ -255,7 +268,7 @@ placementRef:
   name: placementrule-extended
 remediationActionOverride:
     remediationAction: enforce
-    subFilter: true
+subFilter: true
 subjects:
 - apiGroup: policy.open-cluster-management.io
   kind: Policy
@@ -263,10 +276,11 @@ subjects:
 ```
 
 The `subFilter` field is true in this example so only clusters in
-placementrules with `subFilter` that is false are considered. In this
-case that is only the placementrule-initial with clusters A, B, C, and
+placementrules with `subFilter: false` are considered. In this case
+that is only the placementrule-initial with clusters A, B, C, and
 D. The PlacementRule in this CR is `placementrule-extended` which
-includes A, B, E, and F.
+includes A, B, E, and F. Clusters E and F are _not_ bound by this
+PlacementBinding because of the subFilter setting.
 
 The set of clusters set to enforce mode is the intersection of these
 two sets. Clusters A and B are set to enforce mode.
@@ -290,7 +304,7 @@ placementRef:
   name: placementrule-extended
 remediationActionOverride:
     remediationAction: enforce
-    subFilter: true
+subFilter: true
 subjects:
 - apiGroup: policy.open-cluster-management.io
   kind: Policy
@@ -314,7 +328,7 @@ placementRef:
   name: placementrule-sub-2
 remediationActionOverride:
     remediationAction: enforce
-    subFilter: true
+subFilter: true
 subjects:
 - apiGroup: policy.open-cluster-management.io
   kind: Policy
@@ -354,12 +368,12 @@ progressive rollout to my network. The rollout proceeds as follows:
    initially empty (selects no clusters)
 1. My controller/orchestrator creates a a PlacementBinding with
    `remediationActionOverride.remediationAction: enforce` and
-   `remediationActionOverride.subFilter: true`. The
-   `placementRef.name` is set to the created PlacementRule.
+   `subFilter: true`. The `placementRef.name` is set to the created
+   PlacementRule.
 1. My controller/orchestrator selects, based on its criteria, a set of
    clusters which should receive the configuration update.
 1. My controller/orchestrator updates the created PlacementRule to
-   this set of clusters
+   include this set of clusters
 1. The GRC policy controller remediates the policy on only the
    selected clusters according to existing "enforce" mode rules. The
    other bound clusters continue evaluating the policy under "inform"
@@ -528,6 +542,7 @@ downgrade.
 + 2022-05-17 Initial proposal
 + 2022-07-14 Update with remediationActionOverride mechanism for
   cluster selection.
++ 2022-08-05 Update to place subFilter at the top level.
 
 ## Drawbacks
 
