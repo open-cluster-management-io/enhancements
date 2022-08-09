@@ -45,7 +45,7 @@ support this level of control natively within the policy framework. By
 supporting this as a feature users, or higher level
 controllers/orchestrators, do not have to implement a procedural
 pattern of copying policies and manipulating bindings/labels to
-progressivly enforce the policy on clusters.
+progressively enforce the policy on clusters.
 
 *Progressive Policy Rollout*
 
@@ -202,6 +202,9 @@ Policy basis):
 1. Create set "S" which is the intersection of set "P" and set "R".
 1. The clusters which have the remediationAction overridden is the
    union of set "Q" and set "S".
+
+This diagram shows the selection algorithm:
+![Multiple Placement Selection](./subFilterSelection.png "Multiple PlacementBinding Selection")
 
 ### Examples
 In the following examples an inform Policy is bound to
