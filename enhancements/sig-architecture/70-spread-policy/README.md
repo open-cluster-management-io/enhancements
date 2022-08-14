@@ -183,6 +183,9 @@ spec:
     # affinity rules of the same topologyKey together,
     # which may be more clear.
     topologyWeights:
+    # The weight here indicates the relative score that the clusters
+    # get when meeting the expression from the prioritizer for Affinity
+    # constraints.
     - weight: 20
       operator: In
       values:
@@ -202,6 +205,22 @@ spec:
     topologyKeyType: Label
     topologyWeights:
     - # ...
+  # I plan not to exclude the Affinity and Even constraints in Additive mode.
+  # In Exact mode, users need to specify the weight of them manually. Affinity
+  # constraints only work when there is a ClusterAffinitySpread score coordinate
+  # in prioritizerPolicy. Even constraints only work when there is a ClusterEvenSpread
+  # coordinate in prioritizerPolicy.
+  prioritizerPolicy:
+    mode: Exact
+    configurations:
+      - scoreCoordinate:
+          builtIn: ResourceAllocatableMemory
+      - scoreCoordinate:
+          builtIn: ClusterAffinitySpread
+        weight: 2
+      - scoreCoordinate:
+          builtIn: ClusterEvenSpread
+        weight: 2
 ```
 
 #### Example 2: Joint use of multiple Even rules
@@ -229,6 +248,14 @@ spec:
     topologyKey: region
     topologyKeyType: Label
     order: 2
+  prioritizerPolicy:
+    mode: Exact
+    configurations:
+      - scoreCoordinate:
+          builtIn: ResourceAllocatableMemory
+      - scoreCoordinate:
+          builtIn: ClusterEvenSpread
+        weight: 2
 ```
 
 ### Implementation
