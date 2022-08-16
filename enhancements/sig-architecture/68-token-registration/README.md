@@ -106,7 +106,16 @@ The add-on should automatically use the same registration method (i.e. csr or to
 
 ### Implementation Details/Notes/Constraints [optional]
 
-TODO
+#### Cluster Join Process
+
+The [Cluster Join Process document](https://github.com/open-cluster-management-io/api/blob/main/docs/clusterjoinprocess.md) outlines the registration process and key capabilities that should be carried over into the implementation of this proposal. 
+
+- The subject has a group associated with the managedcluster and the name has an agent associated with the process on that managedcluster
+- An agent on the managedcluster is able to get new agent credentials by using shared (non-agent) credentials to create a request and the hub admin can approve or reject.
+- An agent on the managedcluster is able to renew credentials to identify itself. This also allows for non-shared credential flows.
+- Different agents on the managed cluster are members of the same group and have different names, with the agent clearly identified
+- The hub admin gets a choice about whether to allow a particular managecluster to get a valid credential
+- The hub admin can control expiry/removal of a particular agent. In this case, by rotating the signing credential.
 
 ### Risks and Mitigation
 
