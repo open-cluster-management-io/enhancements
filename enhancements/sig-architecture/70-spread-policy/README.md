@@ -2,15 +2,21 @@ Spread Policy across Failure-domains in Placement APIs
 ---
 
 ## Summary
-This document proposes relevant API and code changes to apply for the OCM project [Topology-aware scheduling in cloud-native multi-cluster/multi-cloud environments](https://summer-ospp.ac.cn/#/org/prodetail/221390086) in OSPP 2022. This work is based on [previous community discussions](https://github.com/open-cluster-management-io/community/issues/49#issuecomment-857743027) on spread policy with several modifications.
+This document proposes relevant API and code changes to apply for the OCM project [Topology-aware scheduling in cloud-native multi-cluster/multi-cloud environments](https://summer-ospp.ac.cn/#/org/prodetail/221390086) in OSPP 2022.
+This work is based on [previous community discussions](https://github.com/open-cluster-management-io/community/issues/49#issuecomment-857743027) on spread policy with several modifications.
 
 ## Background
-Modern cloud providers typically provide K8s clusters in different datacenters and cities. Besides, as a user, a company may want to use clusters from different providers plus some self-hosted clusters. Here, three failure domains appeared (i.e., zone, region, and provider). To achieve fault-tolerance and better resource utilization, it is natural that users want to distribute workloads among these failure domains using a spread policy.
+Modern cloud providers typically provide K8s clusters in different datacenters and cities.
+Besides, as a user, a company may want to use clusters from different providers plus some self-hosted clusters.
+Here, three failure domains appeared (i.e., zone, region, and provider).
+To achieve fault-tolerance and better resource utilization, it is natural that users want to distribute workloads among these failure domains using a spread policy.
 
-K8s itself supports spread policy (by [PodTopologySpread](https://web.archive.org/web/20200507113854/https://kubernetes.io/blog/2020/05/introducing-podtopologyspread/)). The support on other multicluster management systems [like Karmada](https://github.com/karmada-io/karmada/pull/1646) is on the way. Hence, it seems necessary for OCM to support a spread policy.
+K8s itself supports spread policy (by [PodTopologySpread](https://web.archive.org/web/20200507113854/https://kubernetes.io/blog/2020/05/introducing-podtopologyspread/)).
+The support on other multicluster management systems [like Karmada](https://github.com/karmada-io/karmada/pull/1646) is on the way. Hence, it seems necessary for OCM to support a spread policy.
 
 ## Motivation
-In this section, some use cases will be presented to motivate potential features we need for spread policy. Generally, by using the spread policy, we want to spread the workload across different failure domains.
+In this section, some use cases will be presented to motivate potential features we need for spread policy.
+Generally, by using the spread policy, we want to spread the workload across different failure domains.
 
 Through this document, the following failure domain topology is used for example.
 
@@ -36,54 +42,61 @@ Through this document, the following failure domain topology is used for example
     <td>us-west-1a</td>
   </tr>
   <tr>
-    <td rowspan="2">alibaba<br></td>
+    <td>alibaba<br></td>
     <td>cn-hangzhou</td>
     <td>cn-hangzhou-e</td>
-  </tr>
-  <tr>
-    <td>cn-shenzhen</td>
-    <td>cn-shenzhen-a</td>
   </tr>
 </tbody>
 </table>
 
 ### Use Case 1: User-defined Topology of Failure Domains
 
-Different companies may manage clusters with different topology structures of failure domains. Hence, we use labels or claims to denote the failure domain where a ManagedCluster belongs. The label key is named topology key. Notably, all examples will be given with labels in this document.
+Different companies may manage clusters with different topology structures of failure domains.
+Hence, we use labels or claims to denote the failure domain where a ManagedCluster belongs.
+The label key is named topology key.
+Notably, all examples will be given with labels in this document.
 
 **Example.** A company with only self-hosted clusters may only have “region” and “zone” labels for the clusters, while a company that also uses the public cloud has an extra “provider”.
 
 ### Use Case 2: Even Spread
 
-The most intuitional way to spread the workload within a topology key is to break the workload into several identical parts and assign each failure domain the same number of parts. In the model of OCM Placement, this means that we need to select the same numbers of clusters for use from the different failure domains within the same topology key.
+The most intuitional way to spread the workload within a topology key is to break the workload into several identical parts and assign each failure domain the same number of parts.
+In the model of OCM Placement, this means that we need to select the same numbers of clusters for use from the different failure domains within the same topology key.
 
-**Example.** We have a backend service to deploy in the clusters located in the region us-east-1. We want to spread the workload across the zones to achieve disaster tolerance, and we need four clusters in total. The final placement decision should contain two from us-east-1a and other two from us-east-1b.
+**Example.** We have a backend service to deploy in the clusters located in the region us-east-1.
+We want to spread the workload across the zones to achieve disaster tolerance, and we need four clusters in total.
+The final placement decision should contain two from us-east-1a and other two from us-east-1b.
 
 ### Use Case 3: Max Skew
 
 When the even spread is unsatisfiable to a certain degree, we may want the scheduler not to schedule the workload.
 
-**Example.** We want a even spread across the zones in us-east-1 (i.e., us-east-1a and us-east-1b) and four clusters in total. If us-east-1a can provide three clusters and us-east-1b can only provide one cluster, then the even spread cannot be satisfied strictly.
+**Example.** We want a even spread across the zones in us-east-1 (i.e., us-east-1a and us-east-1b) and four clusters in total.
+If us-east-1a can provide three clusters and us-east-1b can only provide one cluster, then the even spread cannot be satisfied strictly.
 
-Following K8s's PodTopologySpread, we define the skew of a topoloy to be selected_clusters_in_current_topology - **min** selected_clusters_in_a_topology. For the above example, max skew is 3 - 1 = 2. If we want the max skew to be smaller than 2, then the scheduler should report an error.
-
-### Use Case 4: (Cluster) Affinity/Anti-affinity Spread
-
-Except for even spread, we may want to put the workload first to a specified topology A, and then to another specified topology B if the clusters provided by A are insufficient. Besides, we want to try the best not to put our workload to topology C if other topologies can provide enough clusters.
-
-**Example.** We have a backend service to deploy to the public cloud. We prefer aws than other vendors for some reasons. The scheduler will first try to select only aws clusters then clusters from other vendors only if aws cannot provide enough clusters.
+Following K8s's PodTopologySpread, we define the skew of a topoloy to be selected_clusters_in_current_topology - **min** selected_clusters_in_a_topology.
+For the above example, max skew is 3 - 1 = 2.
+If we want the max skew to be smaller than 2, then the scheduler should not schedule the workload.
+The max skew constraint is a hard constraint if specified. 
 
 ### Use Case 5: Joint Spread
 
 To express hierarchical topology structure, clusters are labeled with multiple topology keys (i.e., region, zone, etc.), we want them to work jointly to determine the spread decision.
 
-**Example.** We want four clusters from aws to put our backend service. Further, we want an even spread across regions and an affinity spread across zones. Specifically, for the region us-east-1, we want to first put the workload to us-east-1a then us-east-1b. Assuming all zones here can provide enough clusters. Then, the scheduling result should contain two clusters from us-east-1a and other two clusters from us-west-1a.
+**Example.** We want four clusters from aws to put our backend service.
+Further, we want to spread the workload first across regions and then across zones.
+Assuming all zones here can provide enough clusters.
+Then, the scheduling result should contain one cluster from us-east-1a, one cluster from us-east-1b, and other two clusters from us-west-1a.
 
 ### Use Case 6: Spread with Ratio (Out of Scope)
 
-Sometimes, we may need to spread the workload with a specified ratio. Let us consider a scenario where most of the access to the workload is from the east coast of the US, even spread between us-east-1 and us-west-1 would be inappropriate. Instead, we want to place more workload on us-east-1 than us-west-1. Besides, we want to control such preferences by user-specified configurations.
+Sometimes, we may need to spread the workload with a specified ratio.
+Let us consider a scenario where most of the access to the workload is from the east coast of the US, even spread between us-east-1 and us-west-1 would be inappropriate.
+Instead, we want to place more workload on us-east-1 than us-west-1.
+Besides, we want to control such preferences by user-specified configurations.
 
-**Example.** We want six clusters to deploy our backend service. Moreover, we want 2/3 of them to be located in us-east-1 and 1/3 to be located in us-west-1 since there are more clients from the east coast of the US.
+**Example.** We want six clusters to deploy our backend service.
+Moreover, we want 2/3 of them to be located in us-east-1 and 1/3 to be located in us-west-1 since there are more clients from the east coast of the US.
 
 ## Goal
 Generally, we have two goals for the spread policy:
@@ -97,17 +110,13 @@ Generally, we have two goals for the spread policy:
 type PlacementSpec struct {
 	// ...
 
-	// SpreadConstraints defines how placement decision should be distributed among a
+	// SpreadPolicy defines how placement decision should be distributed among a
 	// set of clusters.
-	SpreadConstraints []SpreadConstraintsTerm `json:"spreadConstraints,omitempty"`
+	SpreadPolicy []SpreadPolicyTerm `json:"spreadPolicy,omitempty"`
 }
 
-// SpreadConstraintsTerm defines a terminology to spread placement decisions
-type SpreadConstraintsTerm struct {
-	// Type is the type of SpreadConstraintsTerm. It could be Even or Affinity.
-	// +required
-	Type string `json:"type"`
-
+// SpreadPolicyTerm defines a terminology to spread placement decisions
+type SpreadPolicyTerm struct {
 	// TopologyKey is either a label key or a cluster claim name of ManagedClusters
 	// +required
 	TopologyKey string `json:"topologyKey"`
@@ -116,42 +125,20 @@ type SpreadConstraintsTerm struct {
 	// +required
 	TopologyKeyType string `json:"topologyKeyType"`
 
-	// TopologyWeights indicates the optional weights of topologies, valid when Type
-	// is Affinity.
-	TopologyWeights []TopologyWeightTerm `json:"topologyWeights,omitempty"`
-
-	// MaxSkew describes the degree to which the workload may be unevenly distributed,
-	// valid when Type is Even. If omitted, the scheduler treat the even constraint a soft
-	// constraint.
+	// MaxSkew describes the degree to which the workload may be unevenly distributed.
+	// If omitted, the scheduler treat this term a soft constraint. Otherwise, the
+	// scheduler would not schedule if MaxSkew cannot be satisfied (i.e., a hard constraint).
 	MaxSkew *int32 `json:"maxSkew,omitempty"`
 
-	// Order indicates the order of even constraints. It is valid when Type is Even and
-	// required only when multiple even constraints are used. To spread the workload,
-	// the scheduler takes the even constraints with a smaller order value into prior consideration.
-	Order int32 `json:"order,omitempty"`
-}
-
-// TopologyWeightTerm defines a terminology for the weight of topologies
-type TopologyWeightTerm struct {
-	// Weight defines the relative number of clusters to schedule in this topology.
-	// +required
-	Weight int32 `json:"weight"`
-
-	// Operator represents a key's relationship to a set of values.
-	// Valid operators are In, NotIn, Exists and DoesNotExist.
-	// +required
-	Operator metav1.LabelSelectorOperator `json:"operator"`
-
-	// Values is an array of string values. If the operator is In or NotIn,
-	// the values array must be non-empty. If the operator is Exists or DoesNotExist,
-	// the values array must be empty.
-	Values []string `json:"values,omitempty"`
+	// Weight indicates the weight of the SpreadPolicyTerm. It is required only when multiple
+	// terms are used. To spread the workload, the scheduler takes the even constraints with
+	// higher weight into prior consideration.
+	Weight int32 `json:"weight,omitempty"`
 }
 ```
 
 ### API Example
 
-#### Example 1: Joint use of a Even constraint and Affinity constraints
 ```yaml
 apiVersion: cluster.open-cluster-management.io/v1alpha1
 kind: Placement
@@ -160,115 +147,53 @@ metadata:
 spec:
   # numberOfClusters is required if spreadConstraints contains
   # a constraint of Even type.
-  numberOfClusters: 10
+  numberOfClusters: 4
   # Prediates work before the spread constraints to filter
   # out some undesired topologies.
   predicates:
   - # ...
-  # SpreadConstraints contain two constraints, which work
+  # SpreadPolicy contain two terms, which work
   # independently and jointly.
-  spreadConstraints:
-    # order is omitted for this Even constraint as there is only
-    # one of it.
-  - type: Even
-    topologyKey: provider
+  spreadPolicy:
+    # When multiple terms are used, the user should specify their weights.
+    # The scheduler will consider to first do the spread according to the
+    # terms with higher weight.
+    # In this example, the scheduler will first spread the workload
+    # by providers.
+    # Within each provider, the scheduler then spread the workload by
+    # regions. 
+  - topologyKey: provider
     topologyKeyType: Label
     maxSkew: 2
-    # Affininy constraints do not have a maxSkew field.
-  - type: Affinity
-    topologyKey: region
+    weight: 20
+    # maxSkew is omitted as this term is a soft constraint
+  - topologyKey: region
     topologyKeyType: Label
-    # The cluster affinity api doesn't use LabelSelector
-    # directly in order to force users to organize the
-    # affinity rules of the same topologyKey together,
-    # which may be more clear.
-    topologyWeights:
-    # The weight here indicates the relative score that the clusters
-    # get when meeting the expression from the prioritizer for Affinity
-    # constraints.
-    - weight: 20
-      operator: In
-      values:
-      - us-east-1
-      - cn-hangzhou
-    - weight: 10
-      operator: In
-      values:
-      - us-west-1
-    - weight: 20
-      # NotIn expresses anti-affinity.
-      operator: NotIn
-      values:
-      - cn-shenzhen
-  - type: Affinity
-    topologyKey: zone
-    topologyKeyType: Label
-    topologyWeights:
-    - # ...
-  # I plan not to exclude the Affinity and Even constraints in Additive mode.
-  # In Exact mode, users need to specify the weight of them manually. Affinity
-  # constraints only work when there is a ClusterAffinitySpread score coordinate
-  # in prioritizerPolicy. Even constraints only work when there is a ClusterEvenSpread
-  # coordinate in prioritizerPolicy.
+    weight: 10
+  # I plan to exclude the spread policy in Additive mode.
+  # In Exact mode, users need to specify the weight of them manually.
+  # The spread policy only work when there is a SpreadPolicy coordinate
+  # in prioritizerPolicy.
   prioritizerPolicy:
     mode: Exact
     configurations:
       - scoreCoordinate:
           builtIn: ResourceAllocatableMemory
       - scoreCoordinate:
-          builtIn: ClusterAffinitySpread
-        weight: 2
-      - scoreCoordinate:
-          builtIn: ClusterEvenSpread
-        weight: 2
-```
-
-#### Example 2: Joint use of multiple Even rules
-```yaml
-apiVersion: cluster.open-cluster-management.io/v1alpha1
-kind: Placement
-metadata:
-  name: demo-placement
-spec:
-  numberOfClusters: 10
-  predicates:
-  - # ...
-  spreadConstraints:
-    # When multiple Even constraints are used, the user should
-    # specify their orders. The scheduler will consider to first
-    # do the spread according to the Even constraints with smaller
-    # order value.
-  - type: Even
-    topologyKey: provider
-    topologyKeyType: Label
-    maxSkew: 2
-    order: 1
-    # maxSkew is omitted as this one is a soft Even constraint
-  - type: Even
-    topologyKey: region
-    topologyKeyType: Label
-    order: 2
-  prioritizerPolicy:
-    mode: Exact
-    configurations:
-      - scoreCoordinate:
-          builtIn: ResourceAllocatableMemory
-      - scoreCoordinate:
-          builtIn: ClusterEvenSpread
+          builtIn: SpreadPolicy
         weight: 2
 ```
 
 ### Implementation
-Two types of spread constraints require different logics. Hence, they will be implemented separately. Affinity constraints are implemented by a `Prioritizer` to calculate the scores of the clusters using the information conveyed via `topologyWeights`. However, it seems that the scheduler's current design of the plugin framework makes it difficult to express the logic of even spreads. Therefore, an extra `Selector` plugin type is proposed.
+The current scheduling framework contains two types of plugins, i.e., `Filter`s and `Prioritizer`s. 
+`Filter`s are invoked *before* `Prioritizer`s to express hard constrains, filtering the clusters. 
+`Prioritizer`s express soft constraints, scoring the clusters. The spread policy can be a hard constraint (when `maxSkew` is not omitted for some terms) or a soft constraint (when `maxSkew` is omitted for all terms).
+For a hard spread constraint, the scheduler need to perform the hard decision logic (i.e., decide to schedule or not according to `maxSkew`) *after* scoring the clusters, which is unable to implement in a `Filter`.
+Besides, we cannot just implement the hard decision logic in a `Prioritizer` in some way.
+The reason is that each `Prioritizer` score the clusters individually, while the `maxSkew` constraint should apply to the final scheduling result, which can be affected by all the `Prioritizer`s.
 
-**Implementation of (Cluster) Affinity/Anti-affinity.** An `AffinitySpreadPriorititizer` will be implemented as follows:
-
-1. for each cluster, score it according to `topologyWeights` in the cluster affinity rules
-2. normalize the cluster affinity scores to [-100, 100]
-
-**Implementation of Even Spread.** The current scheduling framework contains two types of plugins, i.e., `Filter`s and `Prioritizer`s. `Filter`s are invoked *before* `Prioritizer`s to express hard constrains, filtering the clusters. `Prioritizer`s express soft constraints, scoring the clusters. The even spread constraints can be hard constraints (when `maxSkew` is not omitted) or soft constraints (when `maxSkew` is omitted). For a hard even spread constraint, the scheduler need to perform the hard decision logic (i.e., decide to schedule or not according to `maxSkew`) *after* scoring the clusters, which is unable to implement in a `Filter`.
-
-Hence, a new plugin type, `Selector`, is proposed to express hard constrains *after* `Prioritizer`s. The `Selector` interface is showed below.
+Hence, a new plugin type, `Selector`, is proposed to express hard constrains *after* `Prioritizer`s.
+The `Selector` interface is showed below.
 
 ```go
 // Selector defines a selector plugin that selects clusters after scoring them.
