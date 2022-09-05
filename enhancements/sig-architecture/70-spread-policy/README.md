@@ -246,3 +246,16 @@ Then, a `EvenSpreadSelector` will be implemented as follows to select n clusters
 ⇥5.6 `resultClusterSet.add(pickedCluster)`, exclude the `pickedCluster` from cluster candidates permanently, and update `selectedCount`  
 
 6 return `resultClusterSet`  
+
+### Graduation Criteria
+
+#### Alpha
+1. Demonstrate proposed features at the community meeting (last week in Sept 2022);
+2. The new APIs are reviewed and accepted.
+
+#### Beta
+1. Implementation is completed to support all the functionalities; 
+2. Develop test cases to cover all the cases including corner cases.
+
+#### GA
+1. Pass the performance/scalability testing.
