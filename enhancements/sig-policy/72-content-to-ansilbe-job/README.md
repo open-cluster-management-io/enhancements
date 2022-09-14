@@ -27,14 +27,15 @@ describe the policy violation status. The following fields could be added:
 1. The violated policy name
 2. The namespace of the root policy
 3. The hub cluster name
-4. The policy violation message
-5. The replicated policy status for each non-compliant cluster
+4. The policy set name
+5. The policy violation message
+6. The replicated policy status for each non-compliant cluster
 
 
 ### Goals
 
-Adding the name of the violated policy, the root policy namespace, the hub cluster name, the violation message, and 
-the replicated policy status for each non-compliant cluster into the Ansible Job.
+Adding the name of the violated policy, the root policy namespace, the hub cluster name, the policy_set name, 
+the violation message, and the replicated policy status for each non-compliant cluster into the Ansible Job.
 
 ### Non-Goals
 
@@ -67,7 +68,11 @@ The new content structure will pass more information:
   ],
   "policy_name": "policy1",
   "namespace": "policy-namespace",
-  "hubcluster": "acm-hub-cluster",
+  "hub_cluster": "acm-hub-cluster",
+  "policy_set": [
+    "policyset-1",
+    "policyset-2",
+  ]
   "violation_message": "NonCompliant; violation - xxxxxx",
   "policy_violation_context" : {
     "cluster1": {
@@ -99,7 +104,10 @@ The new content structure will pass more information:
 
 - `namespace` is the namespace of the root policy, which is from `rootPolicy.GetNamespace()`
 
-- `hubcluster` is the name of the hub cluster, which is from `rootPolicy.GetClusterName()`
+- `hub_cluster` is the name of the hub cluster, which is from `rootPolicy.GetClusterName()`
+
+- `policy_set` contains all associated policy set names of the root policy, which are from `metadata.name`
+  under `kind: PolicySet`. If the policy doesn't belong to any policy set, `policy_set` will be empty.
 
 - `policy_violation_context` is a map. The keys are non-compliant cluster names, and the value is the raw replicated 
  policy status for each non-compliant cluster.
