@@ -110,31 +110,53 @@ Generally, we have two goals for the spread policy:
 type PlacementSpec struct {
 	// ...
 
-	// SpreadPolicy defines how placement decision should be distributed among a
+	// SpreadPolicy defines how placement decisions should be distributed among a
 	// set of clusters.
-	SpreadPolicy []SpreadPolicyTerm `json:"spreadPolicy,omitempty"`
+	SpreadPolicy SpreadPolicy `json:"spreadPolicy,omitempty"`
 }
 
-// SpreadPolicyTerm defines a terminology to spread placement decisions
-type SpreadPolicyTerm struct {
+// SpreadPolicy defines how placement decisions should be spreaded among the
+// clusters.
+type SpreadPolicy struct {
+	// SpreadConstraints defines how placement decision should be distributed among a
+	// set of clusters.
+	SpreadConstraints []SpreadConstraintsTerm `json:"spreadConstraints,omitempty"`
+}
+
+// SpreadConstraintsTerm defines a terminology to spread placement decisions
+type SpreadConstraintsTerm struct {
 	// TopologyKey is either a label key or a cluster claim name of ManagedClusters
 	// +required
+	// +kubebuilder:validation:Pattern=^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]$
 	TopologyKey string `json:"topologyKey"`
 
 	// TopologyKeyType indicates the type of TopologyKey. It could be Label or Claim.
 	// +required
-	TopologyKeyType string `json:"topologyKeyType"`
+	// +kubebuilder:validation:Enum=Label;Claim
+	TopologyKeyType TopologyKeyType `json:"topologyKeyType"`
 
 	// MaxSkew describes the degree to which the workload may be unevenly distributed.
-	// If omitted, the scheduler treat this term a soft constraint. Otherwise, the
-	// scheduler would not schedule if MaxSkew cannot be satisfied (i.e., a hard constraint).
+	// If not omitted, the scheduler would not schedule if MaxSkew cannot be satisfied.
+	// The minimum possible value is 1.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
 	MaxSkew *int32 `json:"maxSkew,omitempty"`
 
 	// Weight indicates the weight of the SpreadPolicyTerm. It is required only when multiple
 	// terms are used. To spread the workload, the scheduler takes the even constraints with
 	// higher weight into prior consideration.
+	// +optional
 	Weight int32 `json:"weight,omitempty"`
 }
+
+type TopologyKeyType string
+
+const (
+	// TopologyKeyType is Claim.
+	TopologyKeyTypeClaim TopologyKeyType = "Claim"
+	// TopologyKeyType is Label.
+	TopologyKeyTypeLabel TopologyKeyType = "Label"
+)
 ```
 
 ### API Example
@@ -152,9 +174,10 @@ spec:
   # out some undesired topologies.
   predicates:
   - # ...
-  # SpreadPolicy contain two terms, which work
-  # independently and jointly.
   spreadPolicy:
+    # spreadConstraints contain two terms, which work
+    # independently and jointly.
+    spreadConstraints:
     # When multiple terms are used, the user should specify their weights.
     # The scheduler will consider to first do the spread according to the
     # terms with higher weight.
@@ -162,18 +185,17 @@ spec:
     # by providers.
     # Within each provider, the scheduler then spread the workload by
     # regions. 
-  - topologyKey: provider
-    topologyKeyType: Label
-    maxSkew: 2
-    weight: 20
-    # maxSkew is omitted as this term is a soft constraint
-  - topologyKey: region
-    topologyKeyType: Label
-    weight: 10
-  # I plan to exclude the spread policy in Additive mode.
-  # In Exact mode, users need to specify the weight of them manually.
-  # The spread policy only work when there is a SpreadPolicy coordinate
-  # in prioritizerPolicy.
+    - topologyKey: provider
+      topologyKeyType: Label
+      maxSkew: 2
+      weight: 20
+      # maxSkew is omitted as this term is a soft constraint
+    - topologyKey: region
+      topologyKeyType: Label
+      weight: 10
+  # The spread policy has a scoreCoordinate in prioritizerPolicy.
+  # In Additive mode, the weight of SpreadPolicy is 0 by default.
+  # In Exact mode, the weight of SpreadPolicy should be set by users.
   prioritizerPolicy:
     mode: Exact
     configurations:
@@ -186,13 +208,11 @@ spec:
 
 ### Implementation
 The current scheduling framework contains two types of plugins, i.e., `Filter`s and `Prioritizer`s. 
-`Filter`s are invoked *before* `Prioritizer`s to express hard constrains, filtering the clusters. 
-`Prioritizer`s express soft constraints, scoring the clusters. The spread policy can be a hard constraint (when `maxSkew` is not omitted for some terms) or a soft constraint (when `maxSkew` is omitted for all terms).
-For a hard spread constraint, the scheduler need to perform the hard decision logic (i.e., decide to schedule or not according to `maxSkew`) *after* scoring the clusters, which is unable to implement in a `Filter`.
-Besides, we cannot just implement the hard decision logic in a `Prioritizer` in some way.
-The reason is that each `Prioritizer` score the clusters individually, while the `maxSkew` constraint should apply to the final scheduling result, which can be affected by all the `Prioritizer`s.
-
-Hence, a new plugin type, `Selector`, is proposed to express hard constrains *after* `Prioritizer`s.
+`Filter`s are invoked *before* `Prioritizer`s to handle hard constrains, filtering the clusters. 
+Then, the `Prioritizer`s score the clusters.
+To implement `maxSkew`, we need to first score the clusters (i.e., do the spread), then ensure the `maxSkew` is not exceeded by some filter-like operations for hard constraints.
+This cannot be implemented in the current framework.
+Hence, a new plugin type, `Selector`, is proposed to implement hard constrains *after* `Prioritizer`s.
 The `Selector` interface is showed below.
 
 ```go
