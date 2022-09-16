@@ -112,6 +112,7 @@ type PlacementSpec struct {
 
 	// SpreadPolicy defines how placement decisions should be distributed among a
 	// set of clusters.
+	// +optional
 	SpreadPolicy SpreadPolicy `json:"spreadPolicy,omitempty"`
 }
 
@@ -120,6 +121,8 @@ type PlacementSpec struct {
 type SpreadPolicy struct {
 	// SpreadConstraints defines how placement decision should be distributed among a
 	// set of clusters.
+	// +optional
+	// +kubebuilder:validation:MaxItems=64
 	SpreadConstraints []SpreadConstraintsTerm `json:"spreadConstraints,omitempty"`
 }
 
@@ -127,12 +130,14 @@ type SpreadPolicy struct {
 type SpreadConstraintsTerm struct {
 	// TopologyKey is either a label key or a cluster claim name of ManagedClusters
 	// +required
-	// +kubebuilder:validation:Pattern=^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]$
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]$`
+	// +kubebuilder:validation:MaxLength=316
 	TopologyKey string `json:"topologyKey"`
 
 	// TopologyKeyType indicates the type of TopologyKey. It could be Label or Claim.
 	// +required
-	// +kubebuilder:validation:Enum=Label;Claim
+	// +kubebuilder:validation:Required
 	TopologyKeyType TopologyKeyType `json:"topologyKeyType"`
 
 	// MaxSkew describes the degree to which the workload may be unevenly distributed.
@@ -146,15 +151,17 @@ type SpreadConstraintsTerm struct {
 	// terms are used. To spread the workload, the scheduler takes the even constraints with
 	// higher weight into prior consideration.
 	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=1
 	Weight int32 `json:"weight,omitempty"`
 }
 
+// +kubebuilder:validation:Enum=Label;Claim
 type TopologyKeyType string
 
 const (
-	// TopologyKeyType is Claim.
+	// Valid TopologyKeyType value is Claim, Label.
 	TopologyKeyTypeClaim TopologyKeyType = "Claim"
-	// TopologyKeyType is Label.
 	TopologyKeyTypeLabel TopologyKeyType = "Label"
 )
 ```
