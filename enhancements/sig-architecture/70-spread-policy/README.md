@@ -122,7 +122,7 @@ type SpreadPolicy struct {
 	// SpreadConstraints defines how placement decision should be distributed among a
 	// set of clusters.
 	// +optional
-	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:MaxItems=8
 	SpreadConstraints []SpreadConstraintsTerm `json:"spreadConstraints,omitempty"`
 }
 
@@ -141,7 +141,7 @@ type SpreadConstraintsTerm struct {
 	TopologyKeyType TopologyKeyType `json:"topologyKeyType"`
 
 	// MaxSkew describes the degree to which the workload may be unevenly distributed.
-	// If not omitted, the scheduler would not schedule if MaxSkew cannot be satisfied.
+	// If present, the scheduler will not schedule if the MaxSkew cannot be satisfied.
 	// The minimum possible value is 1.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
@@ -174,8 +174,8 @@ kind: Placement
 metadata:
   name: demo-placement
 spec:
-  # numberOfClusters is required if spreadConstraints contains
-  # a constraint of Even type.
+  # Optional. If numberOfClusters is not specified, it means to
+  # select all clusters which meet the placement requirements.
   numberOfClusters: 4
   # Prediates work before the spread constraints to filter
   # out some undesired topologies.
@@ -228,15 +228,13 @@ type Selector interface {
 	Plugin
 
 	// Select returns the selected clusters.
-	Select(ctx context.Context, placement *clusterapiv1beta1.Placement, clusters []*clusterapiv1.ManagedCluster, scores map[string]int64) PluginSelectResult
+	Select(ctx context.Context, placement *clusterapiv1beta1.Placement, scores map[string]int64, clusters []*clusterapiv1.ManagedCluster) (PluginSelectResult, *framework.Status)
 }
 
 // PluginSelectResult contains the details of a select plugin result.
 type PluginSelectResult struct {
 	// Selected contains the selected ManagedCluster.
 	Selected []*clusterapiv1.ManagedCluster
-	// Err contains the select plugin error message.
-	Err error
 }
 ```
 
@@ -254,8 +252,8 @@ Then, a `EvenSpreadSelector` will be implemented as follows to select n clusters
 5 iterate n iterations, where n is the required number of clusters:  
 
 // **STEP 1: exclude the clusters whose selection would cause the violation to `maxSkew`**  
-⇥5.1 iterate over the sorted spread policies, for each one (as `curPolicy`) that contains a `maxSkew` field:
-⇥⇥5.1.1 iterate over the cluster candidates for each one (as `curCluster`), exclude it temporarily (for the current loop of 5.) if the selection of it would cause the violation to `maxSkew`
+⇥5.1 iterate over the sorted spread policies, for each one (as `curPolicy`) that contains a `maxSkew` field:  
+⇥⇥5.1.1 iterate over the cluster candidates for each one (as `curCluster`), exclude it temporarily (for the current loop of 5.) if the selection of it would cause the violation to `maxSkew`  
 ⇥⇥5.1.2 if the candidate cluster set is empty, report an error and return
 
 // **STEP 2: calculate the spread score of each cluster according to the current skewness**  
@@ -282,7 +280,8 @@ Then, a `EvenSpreadSelector` will be implemented as follows to select n clusters
 
 #### Beta
 1. Implementation is completed to support all the functionalities; 
-2. Develop test cases to cover all the cases including corner cases.
+2. Develop test cases to cover all the cases including corner cases;
+3. Build a simulator for deterministic output and integration test.
 
 #### GA
 1. Pass the performance/scalability testing.
