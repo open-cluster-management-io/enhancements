@@ -41,23 +41,24 @@ to avoid issues with older policies
 
 1. Status message matching: we plan to only allow users to conditionally process policy
 templates based on compliance state, so users will not be able to specify that they want a
-policy to be processed if another policy 
+policy to be processed if another policy has a specific status message
 
 ## Proposal
 
-We would add an optional new `dependencies` field to the spec on the policy level as
-well as an `extraDependencies` field on the template level to allow users to specify
-conditions for policy processing on both the policy and template level. When these
-fields are set and their conditions are not met, the policy templates will not be
-picked up by template-sync and the affected policy templates will enter a "pending"
-state. When the conditions are met or the fields are not set, the policy templates
-will be processed normally.
+We would add an optional new `dependencies` field to the spec on the configuration 
+policy level as well as an `extraDependencies` field on the template level to
+allow users to specify conditions for policy processing on both the policy and
+template level. When these fields are set and their conditions are not met, 
+the policy templates will not be applied on the managed cluster and the affected
+policy will enter a "pending" state. If this happens, any policy sets that contain
+the pending policy will also be marked as pending. When the conditions are met or
+the fields are not set, the policy templates will be processed normally.
 
 ### User Stories
 
 1. As an author of a ConfigurationPolicy, I don’t want resources to be wasted when
 I know one object depends on another. If an object cannot be cleanly applied before
-another is created, I want to specify this in the ConfigurationPolicy, and not waste
+another is created, I want to specify this in my Policy, and not waste
 resources (CPU, k8s API requests) in the policy controllers.
 2. As an author of a ConfigurationPolicy, I want to specify the order resources are
 applied in a policy when the API is not declarative. For some APIs (eg OLM), if
@@ -81,10 +82,23 @@ We will leverage the new dynamic watcher library (enhancement 71) to watch all
 policy template dependencies. When a policy is created with a dependency, we
 can start to watch the policy object that it is dependent on. If the compliance
 of the dependency matches up with what the policy wants, we will add process it
-normally in the template sync. If not, we will assign a "Pending" state to the
-policy compliance, and the watcher library will continuously check the dependency
-until the condition is met. This logic will be added into the new combined
-governance-policy-framework-addon repository.
+normally in the template sync. If not, we will assign a `Pending` state to the
+policy compliance, and the watcher library will notify us when the dependency
+changes, so we can re-evaluate the decision. This logic will be added into the
+new combined governance-policy-framework-addon repository.
+
+These dependencies will be able to accept any object that has a
+`status.complianceState` field - policies, policy sets, all current policy
+types, and anything that might use the policy nucleus in the future. If an
+object in `dependencies` or `extraDependencies` does not contain that status
+field, the policy will be noncompliant with a status message indicating that
+an invalid dependency was specified.
+
+We plan on writing info about templates that fail the dependency check, such
+as what objects the template is waiting on, to the policy status in addition
+to setting the compliance state for that policy to `Pending`. In the UI, we
+will need logic to remove the "view details" link when a template is pending,
+since the policy object for a pending template will not exist on the cluster.
 
 ### Risks and Mitigation
 
@@ -101,11 +115,10 @@ status to update correctly
 Here is what the new spec field will look like in a policy. The top-level
 `dependencies` field applies to all policy templates in the policy, while
 the template-level `extraDependencies` field can be used to set up
-dependencies for a specific policy template. Like the policy namespace
-selector, the top-level `dependencies` will take priority over the 
-template-level `extraDependencies`, so policy templates that have
-`extraDependencies` satisfied but not `dependencies` will still be marked
-as `pending`.
+dependencies for a specific policy template. The top-level `dependencies`
+will take priority over the template-level `extraDependencies`, so policy
+templates that have `extraDependencies` satisfied but not `dependencies`
+will still be marked as `pending`.
 
 ```
 apiVersion: policy.open-cluster-management.io/v1
@@ -146,26 +159,19 @@ If a policy template meets its dependencies and gets processed properly, but at 
 afterward the state of the cluster changes and those dependencies are no longer met, we do
 not want the template to be active anymore. Utilizing the watch library should allow us to
 follow the dependencies for each template and put the template back into a pending state
-when this happens. We might want to update the policy object deletion logic in the
-configuration policy controller to prune any deletable objects in configuration policies that
-are in a pending state, so that if a dependency is no longer satisfied, any objects created
+when this happens. When the template is put into a pending state, the configuration policy
+will be deleted, so if a dependency is no longer satisfied, any objects created
 on the cluster as a result of that dependency will be deleted.
 
 ### Open Questions
-
-How will the "pending" status for policy templates that have not had their conditions met work?
-We know we want to set the compliance of the policy template object to "pending", but different
-policy templates have differently arranged status fields, so there is not a standard field
-to add a message saying why the evaluation of the policy is pending. We also need to investigate
-if this status will have any issues showing up in the hub cluster templates, and how it will look
-in the UI - will we be able to have a "view details" link to the dependency that is causing the
-issue?
 
 Is setting an `apiGroup` field in `dependencies/extraDependencies` necessary? Currently we should
 not have any issues with conficting `kind` for policy templates, but in theory users could create
 a custom policy controller for a kind that has a name conflict with one of the build-in policy
 templates. This isn't likely to happen, but if we think the `apiGroup` might be necessary in the
 future, it's probably better to add it now rather than later.
+- Update: We do not plan to add `apiGroup` now as it can be added in a backwards-compatible way
+in the future if we feel it is needed.
 
 ### Test Plan
 
