@@ -26,8 +26,10 @@ policies and manually create them in order. This is more resource intensive as u
 can have to create duplicate policies and more time consuming if users have to manually
 manage policy processing order. If a user elects to group the templates in one policy,
 there is no guarantee the templates will be processed in order, which could leave
-the policy in a bad state if a required resource has not yet been processed. Allowing
-users to specify policy dependencies will alleviate these issues.
+the policy in a bad state if a required resource has not yet been processed. For example,
+when using a policy to install an operator, if some objects are created before others it
+can cause the operator to not be installed properly. Allowing users to specify policy
+dependencies will alleviate these issues.
 
 ### Goals
 
@@ -75,6 +77,8 @@ them together)
 5. As a cluster administrator, I want to do a declarative action on a managed
 cluster when a policy becomes non-compliant. So I want to “activate” a
 ConfigurationPolicy based on the state of another policy in the cluster.
+6. As a user of the policy generator, I want to be able to generate policies that
+will have their templates be processed in a certain order.
 
 ### Implementation Details/Notes/Constraints 
 
