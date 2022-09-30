@@ -85,18 +85,18 @@ will have their templates be processed in a certain order.
 We will leverage the new dynamic watcher library (enhancement 71) to watch all
 policy template dependencies. When a policy is created with a dependency, we
 can start to watch the policy object that it is dependent on. If the compliance
-of the dependency matches up with what the policy wants, we will add process it
+of the dependency matches up with what the policy wants, we will process it
 normally in the template sync. If not, we will assign a `Pending` state to the
 policy compliance, and the watcher library will notify us when the dependency
 changes, so we can re-evaluate the decision. This logic will be added into the
 new combined governance-policy-framework-addon repository.
 
 These dependencies will be able to accept any object that has a
-`status.complianceState` field - policies, policy sets, all current policy
-types, and anything that might use the policy nucleus in the future. If an
-object in `dependencies` or `extraDependencies` does not contain that status
-field, the policy will be noncompliant with a status message indicating that
-an invalid dependency was specified.
+`status.complianceState` field - policies, policy sets and, all other policy
+types. If an object in `dependencies` or `extraDependencies` does not contain
+that status field, the policy will remain in a pending state until the status
+field appears with the correct value, but we will notify the user that
+`status.complianceState` is missing in the policy status message.
 
 We plan on writing info about templates that fail the dependency check, such
 as what objects the template is waiting on, to the policy status in addition
@@ -113,6 +113,12 @@ take longer to show status than normal policies. This shouldn't be a big issue
 most of the time, but if the config policy controller is at its saturation point
 (500+ configuration policies) it could take over a minute for the dependent policy
 status to update correctly
+- Circular dependencies: it is possible for users to create a loop where policy A
+has a dependency on policy B, and policy B has a dependency on policy A so they
+will both get stuck in a pending state. We don't plan to check for this since it
+is user error and we expect the status message accompanying a pending policy
+to be detailed enough that a user who has created a circular dependency would
+be able to trace their chain of dependencies to find the issue.
 
 ## Design Details
 
@@ -122,7 +128,9 @@ the template-level `extraDependencies` field can be used to set up
 dependencies for a specific policy template. The top-level `dependencies`
 will take priority over the template-level `extraDependencies`, so policy
 templates that have `extraDependencies` satisfied but not `dependencies`
-will still be marked as `pending`.
+will still be marked as `pending`. This means that the dependencies for
+a policy will be the union of its `dependencies` and `extraDependencies`
+fields.
 
 ```
 apiVersion: policy.open-cluster-management.io/v1
