@@ -86,10 +86,16 @@ We will leverage the new dynamic watcher library (enhancement 71) to watch all
 policy template dependencies. When a policy is created with a dependency, we
 can start to watch the policy object that it is dependent on. If the compliance
 of the dependency matches up with what the policy wants, we will process it
-normally in the template sync. If not, we will assign a `Pending` state to the
-policy compliance, and the watcher library will notify us when the dependency
-changes, so we can re-evaluate the decision. This logic will be added into the
-new combined governance-policy-framework-addon repository.
+normally in the template sync. If the dependencies are not met, we will assign a
+`Pending` state to the policy compliance, and the watcher library will notify us 
+when the dependency changes, so we can re-evaluate the decision. However, if some
+templates in the policy have their dependencies satisfied and evaluate to
+NonCompliant, we will display the NonCompliant status in the policy status instead
+of Pending, since users will need to be able to see any violations at a glance.
+If some templates have evaluated to Compliant while others are still Pending, we
+will display Pending in the policy status, so we do not report Compliant unless
+all templates have been processed. This logic will be added into the new combined
+governance-policy-framework-addon repository.
 
 These dependencies will be able to accept any object that has a
 `status.complianceState` field - policies, policy sets and, all other policy
@@ -100,9 +106,19 @@ field appears with the correct value, but we will notify the user that
 
 We plan on writing info about templates that fail the dependency check, such
 as what objects the template is waiting on, to the policy status in addition
-to setting the compliance state for that policy to `Pending`. In the UI, we
+to setting the compliance state for that policy to `Pending` if needed. In the UI, we
 will need logic to remove the "view details" link when a template is pending,
 since the policy object for a pending template will not exist on the cluster.
+
+There are some instances where users might set a policy template to only
+activate when the cluster deviates from a "normal" state. For example, an inform
+policy could be set to watch for the existence of a deployment on a cluster, and
+a policy template dependent on that inform policy could re-create the deployment
+if the inform policy enters a NonCompliant state. If the dependent template is
+in a policy with other compliant templates, we do not want that parent policy to have a
+Pending status because the normal state of the pending template is inactive. We
+plan on adding a `spec.policyTemplates[].ignorePending` field so that users can
+ignore if a template is pending while calculating the overall compliance of a policy.
 
 ### Risks and Mitigation
 
@@ -139,14 +155,17 @@ metadata:
   name: my-complicated-policy
 spec:
   dependencies: //for all policy templates
-    - kind: Policy
+    - apiVersion: policy.open-cluster-management.io/v1
+      kind: Policy
       name: namespace-foo-setup-policy
       compliance: Compliant
   policy-templates:
     - extraDependencies: //for this policy template only
-        - kind: ConfigurationPolicy
+        - apiVersion: policy.open-cluster-management.io/v1
+          kind: ConfigurationPolicy
           name: bar
           compliance: NonCompliant
+      ignorePending: true
       objectDefinition:
         apiVersion: policy.open-cluster-management.io/v1
         kind: ConfigurationPolicy
@@ -182,8 +201,10 @@ not have any issues with conficting `kind` for policy templates, but in theory u
 a custom policy controller for a kind that has a name conflict with one of the build-in policy
 templates. This isn't likely to happen, but if we think the `apiGroup` might be necessary in the
 future, it's probably better to add it now rather than later.
-- Update: We do not plan to add `apiGroup` now as it can be added in a backwards-compatible way
-in the future if we feel it is needed.
+- Update: Since we plan on supporting policySet, which is `v1beta1`, as well as new policy types
+in the future, we will add a field to specify the group and version of the kubernetes resource in
+each dependency. This field will be called `apiVersion` to match the similar field that is set in
+Kubernetes manifests.
 
 ### Test Plan
 
