@@ -158,12 +158,14 @@ spec:
     - apiVersion: policy.open-cluster-management.io/v1
       kind: Policy
       name: namespace-foo-setup-policy
+      namespace: policies
       compliance: Compliant
   policy-templates:
     - extraDependencies: //for this policy template only
         - apiVersion: policy.open-cluster-management.io/v1
           kind: ConfigurationPolicy
           name: bar
+          namespace: local-cluster
           compliance: NonCompliant
       ignorePending: true
       objectDefinition:
