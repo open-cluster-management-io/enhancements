@@ -10,9 +10,9 @@
 
 ## Summary
 
-The proposal adds a new field `executorSubject` to the spec of `ManifestWork` 
+The proposal adds a new field `executor` to the spec of `ManifestWork` 
 api, to support dynamic identity authentication/authorization upon the execution
-of `ManifestWork` resources. If the `executorSubject` is absent, it means the
+of `ManifestWork` resources. If the `executor` is absent, it means the
 work agent will keep using the mounted service account to raise requests against
 the managed cluster which is also for preserving the backward compatibility.
 
@@ -29,16 +29,6 @@ cluster-scoped configuration to the managed cluster which potentially break/halt
 the cluster. Hence, we need a way to clarify the owner identity/role of the
 "ManifestWork" before it takes effect so that we can explicitly check whether 
 that owner has sufficient permission in the managed cluster.
-
-### Auditing the API request history from work agent
-
-Currently all the API requests raised by work agent in the managed cluster are
-from a fixed service account ("open-cluster-management-agent/klusterlet-work-sa"
-under the default installation). However in some cases, we need to clarify the
-source/owner identity of the `ManifestWork` resource so that we can record the
-api audits in a finer granularity. This will be helpful for the managed
-cluster's admin to be capable of knowing "who is operating that `ManifestWork`
-from the hub cluster".
 
 ### Goals
 
@@ -74,13 +64,13 @@ from the hub cluster".
 
 ### API Changes
 
-This proposal adds a new field `executorSubject` to the `ManifestWork` api, 
+This proposal adds a new field `executor` to the `ManifestWork` api, 
 which is defaulted to nil if absent. A nil executor subject indicates that the 
 work agent doesn't perform any impersonation before requesting the hosting 
 managed cluster.
 
 
-A sample of the new `executorSubject` field in Yaml is shown below:
+A sample of the new `executor` field in Yaml is shown below:
 
 ```yaml
 apiVersion: work.open-cluster-management.io/v1
@@ -155,8 +145,14 @@ subject specified is applied to the hub cluster:
 2. The work-agent builds a SubjectAccessReview request which:
    - The target subject is the executor subject from `ManifestWork`
    - The target attribute should contain the "create", "update", "patch", 
-     "get", "list" verbs for all the inlined objects in the spec of 
-     `ManifestWork`. Note that the "resourceNames" should also be specified. 
+     "get" and "delete"(optional) verbs for all the inlined objects in 
+     the spec of `ManifestWork`. Note: 
+     2.1 the "resourceNames" should also be specified.
+     2.2 Whether need to check "delete" verb depends on the deleteOption of
+         the manifestwork, the dependent resources that need to be cleaned 
+         up when deleting the manifestwork need to check "delete" verb. The 
+         work agent only creates/updates resources for which the executor 
+         has permission to manage the entire lifecycle.
 3. The work-agent writes the objects to the managed cluster if SAR passes.
    3.1 Otherwise no objects will be written to the managed cluster and set the 
        failure condition to the `ManifestWork`.
@@ -167,14 +163,17 @@ subject specified is applied to the hub cluster:
 ##### Delete sequence
 
 1. Delete a "ManifestWork" with non-nil executor subject
-2. The work-agent builds a SubjectAccessReview request which:
-    - The target subject is the executor subject from `ManifestWork`
-    - The target attribute should be the "delete" verbs for all the inlined 
-      objects in the spec of `ManifestWork` with  "resourceNames" specified.
-3. The work-agent deletes the objects to the managed cluster if SAR passes.
-    3.1 Otherwise all the objects will not be deleted until the executor subject
-        is granted the "delete" permission upon the target object.
+2. The work-agent will NOT builds a SubjectAccessReview to check the "delete"
+   permission while deleting manifestwork, instead, the check is advanced to 
+   the create/update phase
+3. The work-agent deletes the objects to the managed cluster directly
 4. The work-agent removes the finalizer when the objects are all deleted.
+
+Because the work-agent will not check the "delete" permission while deleting 
+manifestwork, there may be a gap: A resource will be applied if the executor 
+has the delete permission when applying. and even if the delete permission of 
+the executor is revoked after applying success, the resource will also be 
+deleted when deleting the manifestwork
 
 ### Proposing changes to the work agent
 
