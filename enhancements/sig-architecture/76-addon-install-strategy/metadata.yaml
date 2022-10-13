@@ -1,0 +1,15 @@
+title: neat-enhancement-idea
+authors:
+  - "@qiujian16"
+reviewers:
+  - "@deads2k"
+  - "@yue9944882"
+  - "@jnpacker"
+approvers:
+  - "@deads2k"
+  - "@jnpacker"
+creation-date: 2022-10-13
+last-updated: 2022-10-13
+status: provisional
+see-also:
+  - "/enhancements/8-addon-framework"  
