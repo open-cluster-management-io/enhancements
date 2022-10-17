@@ -204,13 +204,13 @@ spec:
   # In Additive mode, the weight of SpreadPolicy is 0 by default.
   # In Exact mode, the weight of SpreadPolicy should be set by users.
   prioritizerPolicy:
-    mode: Exact
+    mode: Additive
     configurations:
       - scoreCoordinate:
-          builtIn: ResourceAllocatableMemory
-      - scoreCoordinate:
-          builtIn: SpreadPolicy
+          type: BuiltIn
+          builtIn: Spread
         weight: 2
+
 ```
 
 ### Implementation
@@ -238,39 +238,13 @@ type PluginSelectResult struct {
 }
 ```
 
-Then, a `EvenSpreadSelector` will be implemented as follows to select n clusters.
+Then, a `EvenSpreadSelector` will run the following steps n times to select n clusters:
 
-1 sort the spread policies by their weight in descending order  
-2 `selectedCount := make(map[string]map[string]int) // topology key -> { topology -> selected cluster count }`  
+1. Exclude the clusters whose selection would cause the violation to `maxSkew`.  
 
-3 iterate over the sorted spread policies, for each one as `curPolicy`:  
-⇥3.1 `selectedCount[curPolicy.topologyKey] := make(map[string]int)`  
-⇥3.2 iterate over the available clusters, for each one as `curCluster`:  
-⇥⇥3.2.1 `selectedCount[curPolicy.topologyKey][curCluster.labelOrClaims[curPolicy.topologyKey]] = 0`  
+2. Calculate the spread score of each cluster according to the current skewness.  
 
-4 `resultClusterSet := {}`  
-5 iterate n iterations, where n is the required number of clusters:  
-
-// **STEP 1: exclude the clusters whose selection would cause the violation to `maxSkew`**  
-⇥5.1 iterate over the sorted spread policies, for each one (as `curPolicy`) that contains a `maxSkew` field:  
-⇥⇥5.1.1 iterate over the cluster candidates for each one (as `curCluster`), exclude it temporarily (for the current loop of 5.) if the selection of it would cause the violation to `maxSkew`  
-⇥⇥5.1.2 if the candidate cluster set is empty, report an error and return
-
-// **STEP 2: calculate the spread score of each cluster according to the current skewness**  
-⇥5.2 `clusterSpreadScores := make(map[Cluster]uint64)`  
-⇥5.3 iterate over the sorted spread policies, for each one as `curPolicy`:  
-⇥⇥5.3.1 `curSelectedCount := selectedCount[curPolicy.topologyKey]`  
-⇥⇥5.3.2 `minSelectedCount := min{ values in curSelectedCount }`  
-⇥⇥5.3.3 iterate over the available clusters, for each one as `curCluster`:  
-⇥⇥⇥5.3.3.1 `clusterSpreadScores[curCluster] <<= 1`  
-⇥⇥⇥5.3.3.2 `if curSelectedCount[curCluster.labelOrClaims[curPolicy.topologyKey]] == minSelectedCount: clusterSpreadScores[curCluster] += 1`  
-⇥5.4 normalize the scores in `clusterSpreadScores` to [0, 100]  
-
-// **STEP 3: sum the spread scores and the scores from Prioritizers, and select the cluster with highest final score**  
-⇥5.5 calculate final score of each `curCluster` by `clusterSpreadScores[curCluster]` * the weight of spread policy in prioritizerPolicy + the score of `curCluster` from the Prioritizer phase, and pick the cluster (as `pickedCluster`) with the highest final score  
-⇥5.6 `resultClusterSet.add(pickedCluster)`, exclude the `pickedCluster` from cluster candidates permanently, and update `selectedCount`  
-
-6 return `resultClusterSet`  
+3. sum the spread scores and the scores from Prioritizers, and select the cluster with highest final score.  
 
 ### Graduation Criteria
 
