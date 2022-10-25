@@ -238,14 +238,114 @@ type PluginSelectResult struct {
 }
 ```
 
-Then, a `EvenSpreadSelector` will run the following steps n times to select n clusters:
+Then, a `EvenSpreadSelector` will run the following steps (each step is called `selectOne`) n times to select n clusters:
 
 1. Exclude the clusters whose selection would cause the violation to `maxSkew`.  
 
-2. Calculate the spread score of each cluster according to the current skewness.  
+2. Calculate the spread score of each cluster according to the current skew.  
 
-3. sum the spread scores and the scores from Prioritizers, and select the cluster with highest final score.  
+3. Sum the spread scores and the scores from Prioritizers, and select the cluster with highest final score.  
 
+### Implementation Example
+
+We have the following five clusters.
+And we now want to select two clusters and ensure a even spread first across the regions then across the zones.
+For regions, we don't want to set the max skew.
+But for zones, we want to set the max skew to one.
+
+| Cluster Name | Prioritizer Score | Region  | Zone       |
+|--------------|-------------------|---------|------------|
+| c1           | 50                | us-east | us-east-1a |
+| c2           | 50                | us-east | us-east-1a |
+| c3           | 0                 | us-east | us-east-1b |
+| c4           | 0                 | us-west | us-west-1a |
+| c5           | 50                | us-west | us-west-1a |
+
+The selection algorithm first runs `selectOne` to select cluster c1.
+(The selecting process of cluster c1 is not described here as we focus on the selecting process of the next cluster to demonstrate the algorithm.)
+Then, we get some information about the topologies and their already selected clusters (the selected count table).
+
+| Topology Tuple        | Selected Count |
+|-----------------------|----------------|
+| (us-east, *)          | 1              |
+| (us-east, us-east-1a) | 1              |
+| (us-east, us-east-1b) | 0              |
+| (us-west, *)          | 0              |
+| (us-west, us-west-1a) | 0              |
+
+Note that in the table, we organize the topology hierarchy into topology tuples according to:
+
+> ... ensure a even spread first across the regions then across the zones.
+
+Hence, two regions can have a zone with the same name. The algorithm can distinguish them.
+
+We then want to run `selectOne` the second time to get the second cluster.  
+
+**1. Exclude the clusters whose selection would cause the violation to `maxSkew`.**  
+
+We exclude cluster c2 since if we select it, we will get a selected count table:
+
+| Topology              | Selected Count |
+|-----------------------|----------------|
+| (us-east, *)          | 2              |
+| (us-east, us-east-1a) | 2              |
+| (us-east, us-east-1b) | 0              |
+| (us-west, *)          | 0              |
+| (us-west, us-west-1a) | 0              |
+
+In the table, we can see that the skew for the zones under the region us-east is two, which exceeds one and violates the max skew constraint.
+
+**2. Calculate the spread score of each cluster according to the current skew.**  
+
+For cluster c3, c4 and c5, we calculate their spread scores.
+Since the clusters are organized by regions and zones, we have two scores for a cluster (i.e., the region score and the zone score).
+The calculation of them follows a rationale that a cluster in a topology which have less selected count in the selected count table will have a higher score (for zones, this is only valid for the ones in the same region).
+The score range is `[0, 63]` (i.e., `[0b000000, 0b111111]`).
+We get:
+
+| Cluster Name | Region Score | Zone Score |
+|--------------|--------------|------------|
+| c3           | 0            | 63         |
+| c4           | 63           | 0          |
+| c5           | 63           | 0          |
+
+We want to get a single score for each cluster from the region score and the zone score.
+Because
+
+> ... ensure a even spread first across the regions then across the zones.
+
+, we think a higher region score is of more importance than a higher zone score.
+For two clusters, we only compare their zone scores when they have the same region score.
+Hence, the final score is calculated by `region_score << 6 + zone_score`.
+We use `6` here since the max region score or the max zone score `63` can be present in a 6-bit int.
+We get:
+
+| Cluster Name | Spread Score |
+|--------------|--------------|
+| c3           | 63           |
+| c4           | 4032         |
+| c5           | 4032         |
+
+We further normalize the spread scores to `[-100, 100]` since we will later add them with the scores from priorizizers.
+We get:
+
+| Cluster Name | Spread Score (Normalized) |
+|--------------|---------------------------|
+| c3           | -100                      |
+| c4           | 100                       |
+| c5           | 100                       |
+
+**3. Sum the spread scores and the scores from Prioritizers, and select the cluster with highest final score.**  
+
+Here, we need a weight of the spread selector. If it is two:
+
+| Cluster Name | Spread Score (Normalized) | Prioritizer Score | Final Score   |
+|--------------|---------------------------|-------------------|---------------|
+| c3           | -100                      | 0                 | -100*2+0=-200 |
+| c4           | 100                       | 0                 | 100*2+0=200   |
+| c5           | 100                       | 50                | 100*2+50=250  |
+
+Hence, for this `selectOne`, we select cluster c5.
 ### Graduation Criteria
 
 #### Alpha
