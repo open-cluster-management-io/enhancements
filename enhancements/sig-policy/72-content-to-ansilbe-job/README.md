@@ -22,20 +22,22 @@ A non-compliance policy can trigger its Policy Automation to create an Ansible j
 launches a predefined Ansible playbook against an inventory of hosts. During this creation, we can pass the 
 additional information to the Ansible job as `extra_vars`.
 
-The current limitation is that we only pass the non-compliant cluster as `extra_vars`, which isn't enough to 
+The current limitation is that we only pass the non-compliant cluster list as `extra_vars`, which isn't enough to 
 describe the policy violation status. The following fields could be added:
-1. The violated policy name
-2. The namespace of the root policy
-3. The hub cluster name
-4. The policy set name
-5. The policy violation message
-6. The replicated policy status for each non-compliant cluster
+1. policy_name: the violated root policy name
+2. namespace: the namespace of the root policy
+3. hub_cluster: the hub cluster name
+4. policy_set: the policy set name
+5. policy_violation_context: the replicated policy status for each non-compliant cluster
+    - compliant: the replicated policy compliance status
+    - violationMessage: the latest replicated policy violation message
+    - details: the replicated policy violation details on each template
 
 
 ### Goals
 
-Adding the name of the violated policy, the root policy namespace, the hub cluster name, the policy_set name, 
-the violation message, and the replicated policy status for each non-compliant cluster into the Ansible Job.
+Adding the name of the violated root policy, the root policy namespace, the hub cluster name, the policy_set name,
+and the replicated policy status for each non-compliant cluster into the Ansible Job.
 
 ### Non-Goals
 
@@ -68,15 +70,15 @@ The new content structure will pass more information:
   ],
   "policy_name": "policy1",
   "namespace": "policy-namespace",
-  "hub_cluster": "acm-hub-cluster",
+  "hub_cluster": "policy-grc.dev08.red-chesterfield.com",
   "policy_set": [
     "policyset-1",
     "policyset-2",
-  ]
-  "violation_message": "NonCompliant; violation - xxxxxx",
-  "policy_violation_context" : {
+  ],
+  "policy_violation_context": {
     "cluster1": {
       "compliant": "NonCompliant",
+      "violationMessage:": "NonCompliant; violation - xxxxxx",
       "details": [
         {
           "compliant": "NonCompliant",
@@ -90,21 +92,18 @@ The new content structure will pass more information:
       ]
     },
     "cluster2": {
-      ...
+      "..."
     },
-  },
+  }
 }
 ```
 
-- `policy_name` is the name of the non-compliance policy that triggers the ansible job.
- `violation_message` is the latest policy violation message. 
- They are from the root policy on the hub cluster. 
- The field path of `policy_name` is `policy.metadata.name`.
- The field path of `violation_message` is `policy.policyStatus.details[0].history[0].message`
+- `policy_name` is the name of the non-compliance policy that triggers the Ansible job on the hub cluster,
+ which is from `rootPolicy.GetName()`.
 
 - `namespace` is the namespace of the root policy, which is from `rootPolicy.GetNamespace()`
 
-- `hub_cluster` is the name of the hub cluster, which is from `rootPolicy.GetClusterName()`
+- `hub_cluster` is the name of the hub cluster, which is from the Kubernetes configuration Host value.
 
 - `policy_set` contains all associated policy set names of the root policy, which are from `metadata.name`
   under `kind: PolicySet`. If the policy doesn't belong to any policy set, `policy_set` will be empty.
@@ -142,7 +141,7 @@ Since `policy_violation_context` is the replicated policy status for all non-com
 
 To solve this, we will only pass the top `N` replicated policy status into `policy_violation_context`, where `N` is configurable
 via an optional policy automation field called `policyViolationContextLimit`. If this field is not set, `N` will default to the
-first 1000 managed clusters.
+first 1000 managed clusters. When this field is set to 0, it means no limit and every replicated policy status will be passed.
 
 ## Design Details
 
