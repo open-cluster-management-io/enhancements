@@ -110,25 +110,25 @@ Generally, we have two goals for the spread policy:
 type PlacementSpec struct {
 	// ...
 
-	// SpreadPolicy defines how placement decisions should be distributed among a
-	// set of clusters.
+	// SpreadPolicy defines how placement decisions should be distributed among a set of ManagedClusters.
 	// +optional
 	SpreadPolicy SpreadPolicy `json:"spreadPolicy,omitempty"`
 }
 
-// SpreadPolicy defines how placement decisions should be spreaded among the
-// clusters.
+// SpreadPolicy defines how the placement decision should be spread among the ManagedClusters.
 type SpreadPolicy struct {
-	// SpreadConstraints defines how placement decision should be distributed among a
-	// set of clusters.
+	// SpreadConstraints defines how the placement decision should be distributed among a set of ManagedClusters.
+	// The importance of the SpreadConstraintsTerms follows the natural order of their index in the slice.
+	// The scheduler first consider SpreadConstraintsTerms with smaller index then those with larger index
+	// to distribute the placement decision.
 	// +optional
 	// +kubebuilder:validation:MaxItems=8
 	SpreadConstraints []SpreadConstraintsTerm `json:"spreadConstraints,omitempty"`
 }
 
-// SpreadConstraintsTerm defines a terminology to spread placement decisions
+// SpreadConstraintsTerm defines a terminology to spread placement decisions.
 type SpreadConstraintsTerm struct {
-	// TopologyKey is either a label key or a cluster claim name of ManagedClusters
+	// TopologyKey is either a label key or a cluster claim name of ManagedClusters.
 	// +required
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern=`^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]$`
@@ -141,19 +141,12 @@ type SpreadConstraintsTerm struct {
 	TopologyKeyType TopologyKeyType `json:"topologyKeyType"`
 
 	// MaxSkew describes the degree to which the workload may be unevenly distributed.
-	// If present, the scheduler will not schedule if the MaxSkew cannot be satisfied.
-	// The minimum possible value is 1.
+	// Skew is the maximum difference between the number of selected ManagedClusters in a topology and the global minimum.
+	// The global minimum is the minimum number of selected ManagedClusters for the topologies within the same TopologyKey.
+	// The minimum possible value of MaxSkew is 1.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	MaxSkew *int32 `json:"maxSkew,omitempty"`
-
-	// Weight indicates the weight of the SpreadPolicyTerm. It is required only when multiple
-	// terms are used. To spread the workload, the scheduler takes the even constraints with
-	// higher weight into prior consideration.
-	// +optional
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:default=1
-	Weight int32 `json:"weight,omitempty"`
 }
 
 // +kubebuilder:validation:Enum=Label;Claim
@@ -174,8 +167,6 @@ kind: Placement
 metadata:
   name: demo-placement
 spec:
-  # Optional. If numberOfClusters is not specified, it means to
-  # select all clusters which meet the placement requirements.
   numberOfClusters: 4
   # Prediates work before the spread constraints to filter
   # out some undesired topologies.
@@ -195,13 +186,11 @@ spec:
     - topologyKey: provider
       topologyKeyType: Label
       maxSkew: 2
-      weight: 20
-      # maxSkew is omitted as this term is a soft constraint
+      # maxSkew is omitted as this term is a soft constraint.
     - topologyKey: region
       topologyKeyType: Label
-      weight: 10
   # The spread policy has a scoreCoordinate in prioritizerPolicy.
-  # In Additive mode, the weight of SpreadPolicy is 0 by default.
+  # In Additive mode, the weight of SpreadPolicy is 2 by default.
   # In Exact mode, the weight of SpreadPolicy should be set by users.
   prioritizerPolicy:
     mode: Additive
@@ -209,8 +198,31 @@ spec:
       - scoreCoordinate:
           type: BuiltIn
           builtIn: Spread
-        weight: 2
+        weight: 3
+```
 
+### Discussion on `numberOfClusters` and `maxSkew`
+
+Assuming we have only one spread constraint in `spreadConstraints`, then the following behavior will not break the current semantics of `numberOfClusters`:
+
+```
+if (numberOfClusters not specified) {
+  if (maxSkew not specified) {
+    selected all clusters available after filtering
+  } else { // maxSkew specified
+    select as many clusters as possible but keep maxSkew not to be exceeded
+  }
+} else { // numberOfClusters specified
+  if (maxSkew not specified) {
+    select min(the number of all clusters available after filtering, numberOfClusters) clusters
+  } else { // maxSkew specified
+    select as many clusters as possible but keep maxSkew not to be exceeded, and the final selected number of clusters will not exceed min(the number of all clusters available after filtering, numberOfClusters)
+  }
+
+  if (the final selected number of clusters < numberOfClusters) {
+    set the status of condition `PlacementConditionSatisfied` to false
+  }
+}
 ```
 
 ### Implementation
