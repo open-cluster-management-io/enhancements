@@ -269,22 +269,14 @@ spec:
 Assuming we have only one spread constraint in `spreadConstraints`, then the following behavior will not break the current semantics of `numberOfClusters`:
 
 ```java
-if (numberOfClusters not specified) {
-  if (maxSkew not specified) {
-    selected all clusters available after filtering
-  } else { // maxSkew specified
-    select as many clusters as possible but keep maxSkew not to be exceeded
-  }
-} else { // numberOfClusters specified
-  if (maxSkew not specified) {
-    select min(the number of all clusters available after filtering, numberOfClusters) clusters
-  } else { // maxSkew specified
-    select as many clusters as possible but keep maxSkew not to be exceeded, and the final selected number of clusters will not exceed min(the number of all clusters available after filtering, numberOfClusters)
-  }
+if (maxSkew not specified) {
+  select min(the number of all clusters available after filtering, numberOfClusters) clusters
+} else { // maxSkew specified
+  select as many clusters as possible but keep maxSkew not to be exceeded, and the final selected number of clusters will not exceed min(the number of all clusters available after filtering, numberOfClusters)
+}
 
-  if (the final selected number of clusters < numberOfClusters) {
-    set the status of condition `PlacementConditionSatisfied` to false
-  }
+if (the final selected number of clusters < numberOfClusters) {
+  set the status of condition `PlacementConditionSatisfied` to false
 }
 ```
 
