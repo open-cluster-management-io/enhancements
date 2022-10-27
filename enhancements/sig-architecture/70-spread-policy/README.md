@@ -63,7 +63,7 @@ Notably, all examples will be given with labels in this document.
 The most intuitional way to spread the workload within a topology key is to break the workload into several identical parts and assign each failure domain the same number of parts.
 In the model of OCM Placement, this means that we need to select the same numbers of clusters for use from the different failure domains within the same topology key.
 
-**Example.** We have a backend service to deploy in the clusters located in the region us-east-1.
+**Example.** We have a backend service to deploy in the clusters located in the region us-east.
 We want to spread the workload across the zones to achieve disaster tolerance, and we need four clusters in total.
 The final placement decision should contain two from us-east-1a and other two from us-east-1b.
 
@@ -71,7 +71,7 @@ The final placement decision should contain two from us-east-1a and other two fr
 
 When the even spread is unsatisfiable to a certain degree, we may want the scheduler not to schedule the workload.
 
-**Example.** We want a even spread across the zones in us-east-1 (i.e., us-east-1a and us-east-1b) and four clusters in total.
+**Example.** We want a even spread across the zones in us-east (i.e., us-east-1a and us-east-1b) and four clusters in total.
 If us-east-1a can provide three clusters and us-east-1b can only provide one cluster, then the even spread cannot be satisfied strictly.
 
 Following K8s's PodTopologySpread, we define the skew of a topoloy to be selected_clusters_in_current_topology - **min** selected_clusters_in_a_topology.
@@ -79,7 +79,7 @@ For the above example, max skew is 3 - 1 = 2.
 If we want the max skew to be smaller than 2, then the scheduler should not schedule the workload.
 The max skew constraint is a hard constraint if specified. 
 
-### Use Case 5: Joint Spread
+### Use Case 4: Joint Spread
 
 To express hierarchical topology structure, clusters are labeled with multiple topology keys (i.e., region, zone, etc.), we want them to work jointly to determine the spread decision.
 
@@ -88,15 +88,15 @@ Further, we want to spread the workload first across regions and then across zon
 Assuming all zones here can provide enough clusters.
 Then, the scheduling result should contain one cluster from us-east-1a, one cluster from us-east-1b, and other two clusters from us-west-1a.
 
-### Use Case 6: Spread with Ratio (Out of Scope)
+### Use Case 5: Spread with Ratio (Out of Scope)
 
 Sometimes, we may need to spread the workload with a specified ratio.
-Let us consider a scenario where most of the access to the workload is from the east coast of the US, even spread between us-east-1 and us-west-1 would be inappropriate.
-Instead, we want to place more workload on us-east-1 than us-west-1.
+Let us consider a scenario where most of the access to the workload is from the east coast of the US, even spread between us-east and us-west would be inappropriate.
+Instead, we want to place more workload on us-east than us-west.
 Besides, we want to control such preferences by user-specified configurations.
 
 **Example.** We want six clusters to deploy our backend service.
-Moreover, we want 2/3 of them to be located in us-east-1 and 1/3 to be located in us-west-1 since there are more clients from the east coast of the US.
+Moreover, we want 2/3 of them to be located in us-east and 1/3 to be located in us-west since there are more clients from the east coast of the US.
 
 ## Goal
 Generally, we have two goals for the spread policy:
@@ -161,8 +161,10 @@ const (
 
 ### API Example
 
+1. General
+
 ```yaml
-apiVersion: cluster.open-cluster-management.io/v1alpha1
+apiVersion: cluster.open-cluster-management.io/v1beta1
 kind: Placement
 metadata:
   name: demo-placement
@@ -176,9 +178,8 @@ spec:
     # spreadConstraints contain two terms, which work
     # independently and jointly.
     spreadConstraints:
-    # When multiple terms are used, the user should specify their weights.
     # The scheduler will consider to first do the spread according to the
-    # terms with higher weight.
+    # terms with smaller index.
     # In this example, the scheduler will first spread the workload
     # by providers.
     # Within each provider, the scheduler then spread the workload by
@@ -201,11 +202,73 @@ spec:
         weight: 3
 ```
 
+2. For the example in use case 2
+
+```yaml
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Placement
+metadata:
+  name: use-case-2
+spec:
+  numberOfClusters: 4
+  predicates:
+  - requiredClusterSelector:
+      labelSelector:
+        matchLabels:
+          region: us-east
+  spreadPolicy:
+    spreadConstraints:
+    - topologyKey: zone
+      topologyKeyType: Label
+```
+
+3. For the example in use case 3
+
+```yaml
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Placement
+metadata:
+  name: use-case-3
+spec:
+  numberOfClusters: 4
+  predicates:
+  - requiredClusterSelector:
+      labelSelector:
+        matchLabels:
+          region: us-east
+  spreadPolicy:
+    spreadConstraints:
+    - topologyKey: zone
+      topologyKeyType: Label
+      maxSkew: 2
+```
+4. For the example in use case 4
+
+```yaml
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Placement
+metadata:
+  name: use-case-4
+spec:
+  numberOfClusters: 4
+  predicates:
+  - requiredClusterSelector:
+      labelSelector:
+        matchLabels:
+          provider: aws
+  spreadPolicy:
+    spreadConstraints:
+    - topologyKey: region
+      topologyKeyType: Label
+    - topologyKey: zone
+      topologyKeyType: Label
+```
+
 ### Discussion on `numberOfClusters` and `maxSkew`
 
 Assuming we have only one spread constraint in `spreadConstraints`, then the following behavior will not break the current semantics of `numberOfClusters`:
 
-```
+```java
 if (numberOfClusters not specified) {
   if (maxSkew not specified) {
     selected all clusters available after filtering
