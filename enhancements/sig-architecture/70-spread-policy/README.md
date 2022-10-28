@@ -69,15 +69,14 @@ The final placement decision should contain two from us-east-1a and other two fr
 
 ### Use Case 3: Max Skew
 
-When the even spread is unsatisfiable to a certain degree, we may want the scheduler not to schedule the workload.
+When the even spread is unsatisfiable to a certain degree, we may want the scheduler to generate a placement decision whose skew do not exceed the degree.
 
 **Example.** We want a even spread across the zones in us-east (i.e., us-east-1a and us-east-1b) and four clusters in total.
 If us-east-1a can provide three clusters and us-east-1b can only provide one cluster, then the even spread cannot be satisfied strictly.
-
 Following K8s's PodTopologySpread, we define the skew of a topoloy to be selected_clusters_in_current_topology - **min** selected_clusters_in_a_topology.
 For the above example, max skew is 3 - 1 = 2.
-If we want the max skew to be smaller than 2, then the scheduler should not schedule the workload.
-The max skew constraint is a hard constraint if specified. 
+
+If we want the max skew to be 1, then the scheduling result may contain less clusters (like 2 clusters from us-east-1a and 1 cluster from us-east-1b) to ensure the max skew. 
 
 ### Use Case 4: Joint Spread
 
@@ -141,30 +140,41 @@ type SpreadConstraintsTerm struct {
 	// +kubebuilder:validation:Enum=Label;Claim
 	TopologyKeyType TopologyKeyType `json:"topologyKeyType"`
 
-	// MaxSkew describes the degree to which the workload may be unevenly distributed.
+	// MaxSkew represents the degree to which the workload may be unevenly distributed.
 	// Skew is the maximum difference between the number of selected ManagedClusters in a topology and the global minimum.
 	// The global minimum is the minimum number of selected ManagedClusters for the topologies within the same TopologyKey.
-	//
-	// If not specified, the scheduler provides best-effort spread which will not limit the skew of the final placement decision.
-	// The final number of selected clusters will be determined by the number of ManagedClusters meet other placement requirements
-	// and NumberOfClusters.
-	// If specified, the scheduler will ensure that the skew of the final placement decision do not exceed MaxSkew.
-	// If this cannot be satisfied for the expected number of clusters, the scheduler will reduce the number of clusters to be
-	// included in the final placement decision.
-	//
-	// The minimum possible value of MaxSkew is 1.
+	// The minimum possible value of MaxSkew is 1, and the default value is 1.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
-	MaxSkew *int32 `json:"maxSkew,omitempty"`
+	// +kubebuilder:default=1
+	MaxSkew int32 `json:"maxSkew"`
+
+	// WhenUnsatisfiable represents the action of the scheduler when MaxSkew cannot be satisfied.
+	// It could be DoNotSchedule or ScheduleAnyway. The default value is ScheduleAnyway.
+	// DoNotSchedule instructs the scheduler not to schedule more ManagedClusters when MaxSkew is not satisfied.
+	// ScheduleAnyway instructs the scheduler to keep scheduling even if MaxSkew is not satisfied.
+	// +optional
+	// +kubebuilder:validation:Enum=DoNotSchedule;ScheduleAnyway
+	// +kubebuilder:default=ScheduleAnyway
+	WhenUnsatisfiable UnsatisfiableMaxSkewAction `json:"whenUnsatisfiable"`
 }
 
-// TopologyKeyType represents the type of TopologyKey
+// TopologyKeyType represents the type of TopologyKey.
 type TopologyKeyType string
 
 const (
 	// Valid TopologyKeyType value is Claim, Label.
 	TopologyKeyTypeClaim TopologyKeyType = "Claim"
 	TopologyKeyTypeLabel TopologyKeyType = "Label"
+)
+
+// UnsatisfiableMaxSkewAction represents the action when MaxSkew cannot be satisfied.
+type UnsatisfiableMaxSkewAction string
+
+const (
+	// Valid UnsatisfiableMaxSkewAction value is DoNotSchedule, ScheduleAnyway.
+	DoNotSchedule  UnsatisfiableMaxSkewAction = "DoNotSchedule"
+	ScheduleAnyway UnsatisfiableMaxSkewAction = "ScheduleAnyway"
 )
 ```
 
@@ -196,9 +206,10 @@ spec:
     - topologyKey: provider
       topologyKeyType: Label
       maxSkew: 2
-      # maxSkew is omitted as this term is a soft constraint.
+      whenUnsatisfiable: DoNotSchedule
     - topologyKey: region
       topologyKeyType: Label
+      whenUnsatisfiable: ScheduleAnyway # A soft constraint. ScheduleAnyway can be omitted.
   # The spread policy has a scoreCoordinate in prioritizerPolicy.
   # In Additive mode, the weight of SpreadPolicy is 2 by default.
   # In Exact mode, the weight of SpreadPolicy should be set by users.
@@ -250,6 +261,7 @@ spec:
     - topologyKey: zone
       topologyKeyType: Label
       maxSkew: 2
+      whenUnsatisfiable: DoNotSchedule
 ```
 4. For the example in use case 4
 
@@ -273,35 +285,11 @@ spec:
       topologyKeyType: Label
 ```
 
-### Discussion on `numberOfClusters` and `maxSkew`
-
-Assuming we have only one spread constraint in `spreadConstraints`, then the following behavior will not break the current semantics of `numberOfClusters`:
-
-```java
-if (maxSkew not specified) {
-  select min(the number of all clusters available after filtering, numberOfClusters) clusters
-} else { // maxSkew specified
-  select as many clusters as possible but keep maxSkew not to be exceeded, and the final selected number of clusters will not exceed min(the number of all clusters available after filtering, numberOfClusters)
-}
-
-if (the final selected number of clusters < numberOfClusters) {
-  set the status of condition `PlacementConditionSatisfied` to false
-}
-```
-
-**Examples**
-
-We have two regions, `us-east` and `us-west`. There exists one spread constraint to spread the workload to the two regions.
-
-1. `us-east` provides 7 clusters, `us-west` provides 2 clusters, `numberOfClusters` is set to 7, `maxSkew` is not specified, then the scheduling result should contain 5 clusters from `us-east` and 2 clusters from `us-west`.
-
-2. `us-east` provides 7 clusters, `us-west` provides 2 clusters, `numberOfClusters` is set to 7, `maxSkew` is set to 1, then the scheduling result should contain 3 clusters from `us-east` and 2 clusters from `us-west` and the status of condition `PlacementConditionSatisfied` to false.
-
 ### Implementation
 The current scheduling framework contains two types of plugins, i.e., `Filter`s and `Prioritizer`s. 
 `Filter`s are invoked *before* `Prioritizer`s to handle hard constrains, filtering the clusters. 
 Then, the `Prioritizer`s score the clusters.
-To implement `maxSkew`, we need to first score the clusters (i.e., do the spread), then ensure the `maxSkew` is not exceeded by some filter-like operations for hard constraints.
+To implement `maxSkew` (with `whenUnsatisfiable: DoNotSchedule`), we need to first score the clusters (i.e., do the spread), then ensure the `maxSkew` is not exceeded by some filter-like operations for hard constraints.
 This cannot be implemented in the current framework.
 Hence, a new plugin type, `Selector`, is proposed to implement hard constrains *after* `Prioritizer`s.
 The `Selector` interface is showed below.
@@ -324,7 +312,7 @@ type PluginSelectResult struct {
 
 Then, a `EvenSpreadSelector` will run the following steps (each step is called `selectOne`) n times to select n clusters:
 
-1. Exclude the clusters whose selection would cause the violation to `maxSkew`.  
+1. Exclude the clusters whose selection would cause the violation to `maxSkew` (with `whenUnsatisfiable: DoNotSchedule`).  
 
 2. Calculate the spread score of each cluster according to the current skew.  
 
@@ -335,7 +323,7 @@ Then, a `EvenSpreadSelector` will run the following steps (each step is called `
 We have the following five clusters.
 And we now want to select two clusters and ensure a even spread first across the regions then across the zones.
 For regions, we don't want to set the max skew.
-But for zones, we want to set the max skew to one.
+But for zones, we want to set the max skew to 1, and `whenUnsatisfiable` to `DoNotSchedule`.
 
 | Cluster Name | Prioritizer Score | Region  | Zone       |
 |--------------|-------------------|---------|------------|
@@ -365,7 +353,7 @@ Hence, two regions can have a zone with the same name. The algorithm can disting
 
 We then want to run `selectOne` the second time to get the second cluster.  
 
-**1. Exclude the clusters whose selection would cause the violation to `maxSkew`.**  
+**1. Exclude the clusters whose selection would cause the violation to `maxSkew` (with `whenUnsatisfiable: DoNotSchedule`).**  
 
 We exclude cluster c2 since if we select it, we will get a selected count table:
 
