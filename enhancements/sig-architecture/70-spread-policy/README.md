@@ -138,18 +138,27 @@ type SpreadConstraintsTerm struct {
 	// TopologyKeyType indicates the type of TopologyKey. It could be Label or Claim.
 	// +required
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=Label;Claim
 	TopologyKeyType TopologyKeyType `json:"topologyKeyType"`
 
 	// MaxSkew describes the degree to which the workload may be unevenly distributed.
 	// Skew is the maximum difference between the number of selected ManagedClusters in a topology and the global minimum.
 	// The global minimum is the minimum number of selected ManagedClusters for the topologies within the same TopologyKey.
+	//
+	// If not specified, the scheduler provides best-effort spread which will not limit the skew of the final placement decision.
+	// The final number of selected clusters will be determined by the number of ManagedClusters meet other placement requirements
+	// and NumberOfClusters.
+	// If specified, the scheduler will ensure that the skew of the final placement decision do not exceed MaxSkew.
+	// If this cannot be satisfied for the expected number of clusters, the scheduler will reduce the number of clusters to be
+	// included in the final placement decision.
+	//
 	// The minimum possible value of MaxSkew is 1.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	MaxSkew *int32 `json:"maxSkew,omitempty"`
 }
 
-// +kubebuilder:validation:Enum=Label;Claim
+// TopologyKeyType represents the type of TopologyKey
 type TopologyKeyType string
 
 const (
@@ -279,6 +288,14 @@ if (the final selected number of clusters < numberOfClusters) {
   set the status of condition `PlacementConditionSatisfied` to false
 }
 ```
+
+**Examples**
+
+We have two regions, `us-east` and `us-west`. There exists one spread constraint to spread the workload to the two regions.
+
+1. `us-east` provides 7 clusters, `us-west` provides 2 clusters, `numberOfClusters` is set to 7, `maxSkew` is not specified, then the scheduling result should contain 5 clusters from `us-east` and 2 clusters from `us-west`.
+
+2. `us-east` provides 7 clusters, `us-west` provides 2 clusters, `numberOfClusters` is set to 7, `maxSkew` is set to 1, then the scheduling result should contain 3 clusters from `us-east` and 2 clusters from `us-west` and the status of condition `PlacementConditionSatisfied` to false.
 
 ### Implementation
 The current scheduling framework contains two types of plugins, i.e., `Filter`s and `Prioritizer`s. 

@@ -10,7 +10,7 @@ approvers:
   - "@elgnay"
   - "@haoqing0110"
 creation-date: 2022-08-03
-last-updated: 2022-10-26
+last-updated: 2022-10-28
 status: provisional
 see-also:
   - "/enhancements/sig-architecture/6-placements"
