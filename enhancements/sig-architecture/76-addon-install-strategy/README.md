@@ -58,7 +58,7 @@ type InstallStrategy struct {
 	// - Manual: no automatic install
 	// - ClusterLabelSelector: install to clusters with certain labels
 	// - Placements: install to clusters selected by placements.
-	// +kubebuilder:validation:Enum=Manual;ClusterLabelSelector;Placements
+	// +kubebuilder:validation:Enum=Manual;Placements
 	// +kubebuilder:default:=Manual
 	Type string `json:"type"`
 
@@ -79,24 +79,11 @@ type PlacementRef struct {
 	// Namespace of the placement
 	// +required
 	Namespace string `json:"space"`
+
+	// AddonTemplate is the template to generate ManagedClusterAddon
+	AddonTemplate ManagedClusterAddOnSpec `json:"addonTemplate,omitempty"`
 }
 ```
-
-### Install addon to all clusters
-
-```yaml
-apiVersion: addon.open-cluster-management.io/v1alpha1
-kind: ClusterManagementAddOn
-metadata:
-  name: helloworld
-spec:
-  installStrategy:
-    type: ClusterLabelSelector
-    clusterLabelSelector: {}
-```
-
-- when a cluster matches the label selector, the `ManagedClusterAddon` will be created on the cluster namespace.
-- when a cluster does not match the label selector, the `ManagedClusterAddon` will be deleted on the cluster namespace.
 
 ### Install addon according to a placement
 
@@ -109,12 +96,42 @@ spec:
   installStrategy:
     type: Placements
     placements:
-    - name: default
-      namespace: aws-placement
+    - name: aws-placement
+      namespace: default
 ```
 
 - when a cluster is added into the related `PlacementDecision`, the `ManagedClusterAddon` will be created on the cluster namespace.
 - when a cluster is removed from the related `PlacementDecision`, the `ManagedClusterAddon` will be deleted on the cluster namespace.
+
+### Install addons based on multiple placement with different configuration
+
+```yaml
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: ClusterManagementAddOn
+metadata:
+  name: helloworld
+spec:
+  installStrategy:
+    type: Placements
+    placements:
+    - name: aws-placement
+      namespace: default
+      addonTemplate:
+        configs:
+        - group: addon.open-cluster-management.io
+          resource: addondeploymentconfigs
+          name: aws-config
+    - name: gcp-placement
+      namespace: default
+      addonTemplate:
+        configs:
+        - group: addon.open-cluster-management.io
+          resource: addondeploymentconfigs
+          name: gcp-config
+```
+
+This will ensure that addon installed in aws uses aws-config while addon installed in gcp uses gcp config.
+
 
 ### Disable addon in some clusters
 
@@ -131,6 +148,13 @@ spec:
 ```
 
 Then admin can delete `ManagedClusterAddon` in certain cluster namespaces.
+
+When the user changes the strategy type from `Placement` to `Manual`, all the created are `ManagedClusterAddon` is kept. `ManagedClusterAddon`
+will not be auto-created or deleted anymore.
+
+When the user changes the strategy type from `Manual` to `Placement`, `ManagedClusterAddon` created manually by the the user will be
+overriden by the configuration on the `ClusterManagementAddon`. The spec of the `ManagedClusterAddon` will be updated based the template
+and the `ManagedClusterAddon` will be deleted if the cluster is not in the related placements. 
 
 ### Addon Install Controller
 
