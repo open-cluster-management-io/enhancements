@@ -28,8 +28,8 @@ add-on APIs.
 
 ## Proposal
 
-We want to refactor the definition of `ConfigCoordinates` in the `ClusterManagementAddOn` API and introduce a way to
-specify the configuration namespace and name in the `ManagedClusterAddOn` API.
+We propose to enhance the `ClusterManagementAddOn` API to support declaring the add-on supported configuration types,
+and introduce a way to reference the add-on configurations in the `ManagedClusterAddOn` API. 
 
 ### Design Details
 
@@ -67,40 +67,41 @@ type ConfigCoordinates struct {
 }
 ```
 
-But the `ConfigCoordinates` only supports to use `CustomResourceDefinition` as the add-on configuration, and it's lacks
-the namespace/name for a configuration.
+But the `ConfigCoordinates` has some limits:
 
-To make the `ConfigCoordinates` more flexible, we want to refactor the `ConfigCoordinates` to
+- it only supports using `CustomResourceDefinition` as the add-on configuration
+- it only supports cluster scope add-on configuration
+- it only supports one kind of add-on configuration type
+
+To make the add-on APIs more flexible for configuration, we will deprecate the `ConfigCoordinates` and add a new field
+`supportedConfigs` to support declaring the add-on supported configuration types in the `ClusterManagementAddOn` API.
 
 ``` golang
-// ConfigCoordinates represents the information for locating the add-on configuration.
-type ConfigCoordinates struct {
-    // Deprecated: Use configGroupResource filed instead
-    // crdName is the name of the CRD used to configure instances of the managed add-on.
-    // This field should be configured if the add-on have a CRD that controls the configuration of the add-on.
-    // +optional
-    CRDName string `json:"crdName,omitempty"`
+type ClusterManagementAddOnSpec struct {
+  // addOnMeta is a reference to the metadata information for the add-on.
+  // +optional
+  AddOnMeta AddOnMeta `json:"addOnMeta,omitempty"`
 
-    // Deprecated: Use configGroupResource filed instead
-    // crName is the name of the CR used to configure instances of the managed add-on.
-    // This field should be configured if add-on CR have a consistent name across the all of the ManagedCluster
-    // instaces.
-    // +optional
-    CRName string `json:"crName,omitempty"`
+  // Deprecated: Use supportedConfigs filed instead
+  // +optional
+  AddOnConfiguration ConfigCoordinates `json:"addOnConfiguration,omitempty"`
 
-    // Deprecated: This will be removed
-    // lastObservedGeneration is the observed generation of the custom resource for the configuration of the addon.
-    // +optional
-    LastObservedGeneration int64 `json:"lastObservedGeneration,omitempty"`
+  // supportedConfigs is a list of configuration types supported by add-on.
+  // An empty list means the add-on does not require configurations.
+  // The default is an empty list
+  // +optional
+  SupportedConfigs []ConfigMeta `json:"supportedConfigs,omitempty"`
+}
 
-    // ConfigGroupResource represents the GroupResource of the add-on configuration.
-    // +optional
-    ConfigGroupResource ConfigGroupResource `json:"configGroupResource,omitempty"`
-    
-    // defaultConfig represents the namespace and name of the default add-on configuration.
-    // In scenario where all add-ons have a same configuration.
-    // +optional
-    DefaultConfig ConfigReferent `json:"defaultConfig,omitempty"`
+// ConfigMeta represents a collection of metadata information for add-on configuration.
+type ConfigMeta struct {
+  // group and resouce of the add-on configuration.
+  ConfigGroupResource `json:",inline"`
+
+  // defaultConfig represents the namespace and name of the default add-on configuration.
+  // In scenario where all add-ons have a same configuration.
+  // +optional
+  DefaultConfig *ConfigReferent `json:"defaultConfig,omitempty"`
 }
 
 // ConfigGroupResource represents the GroupResource of the add-on configuration
@@ -124,39 +125,31 @@ type ConfigReferent struct {
 }
 ```
 
-When the `ConfigCoordinates` is defined in the `ClusterManagementAddOnSpec`, the addon-framework will sync the
-information of `ConfigCoordinates` to the `ManagedClusterAddOn` status.
-
-In the `ManagedClusterAddOn` spec, we will add a `config` field, it is used to specify the add-on configuration
-namespace and name, and introduce a `ConfigReference` instead of the `ConfigCoordinates` in the
-`ManagedClusterAddOn` status.
-
-We will introduce a `Configured` condition for the `ManagedClusterAddOn` to report the condition when we configure
-an addon with its configuration.
+In the `ManagedClusterAddOn` API, we will add a new field `configs` to support referencing the add-on configurations.
 
 ```golang
-const (
-    // ManagedClusterAddOnCondtionConfigured represents that the addon agent is configured with its configuration
-    ManagedClusterAddOnCondtionConfigured string = "Configured"
-)
-
-// ManagedClusterAddOnSpec defines the install configuration of an add-on agent on managed cluster.
 type ManagedClusterAddOnSpec struct {
-    // installNamespace is the namespace on the managed cluster to install the add-on agent.
-    // If it is not set, open-cluster-management-agent-addon namespace is used to install the add-on agent.
-    // +optional
-    // +kubebuilder:validation:MaxLength=63
-    // +kubebuilder:validation:Pattern=^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
-    InstallNamespace string `json:"installNamespace,omitempty"`
+  // installNamespace is the namespace on the managed cluster to install the add-on agent.
+  InstallNamespace string `json:"installNamespace,omitempty"`
 
-    // config represents the configuration namespace and name for the current add-on.
-    // In scenario where the current add-on has its own configuration.
-    // +optional
-    Config ConfigReferent `json:"config,omitempty"`
+  // configs is a list of add-on configurations.
+  // +optional
+  Configs []AddOnConfig `json:"configs,omitempty"`
 }
 
-// ManagedClusterAddOnStatus provides information about the status of the operator.
-// +k8s:deepcopy-gen=true
+type AddOnConfig struct {
+  // group and resource of add-on configuration.
+  ConfigGroupResource `json:",inline"`
+
+  // name and namespace of add-on configuration.
+  ConfigReferent `json:",inline"`
+}
+```
+
+and we will use a new field `configReferences` to represent the add-on current configuration references instead of the
+`addOnConfiguration` in the `ManagedClusterAddOn` status.
+
+```golang
 type ManagedClusterAddOnStatus struct {
     // Deprecated: Use configReference instead
     // addOnConfiguration is a reference to configuration information for the add-on.
@@ -164,9 +157,9 @@ type ManagedClusterAddOnStatus struct {
     // +optional
     AddOnConfiguration ConfigCoordinates `json:"addOnConfiguration",omitempty`
 
-    // configReference is a reference to the add-on configuration.
+    // configReferences is a list of current add-on configuration references.
     // +optional
-    ConfigReference ConfigReference `json:"configReference,omitempty"`
+    ConfigReferences []ConfigReference `json:"configReferences,omitempty"`
 }
 
 // ConfigReference is a reference to the current add-on configuration.
@@ -180,32 +173,38 @@ type ConfigReference struct {
     // defaultConfig.
     Config ConfigReferent `json:",inline"`
 
-    // version of the add-on configuration.
-    Version string `json:"version"`
-
     // lastObservedGeneration is the observed generation of the add-on configuration.
     LastObservedGeneration int64 `json:"lastObservedGeneration"`
 }
 ```
 
-The add-on framework will watches the `ManagedClusterAddOn` to get the add-on configuration reference from the 
+We will introduce a `Configured` condition for the `ManagedClusterAddOn` to report the condition when we configure
+an addon with its configuration.
+
+```golang
+// ManagedClusterAddOnCondtionConfigured represents that the addon agent is configured with its configuration
+const ManagedClusterAddOnCondtionConfigured string = "Configured"
+```
+
+We will enhance the add-on framework, make it can detect the configuration changes automatically, and after the
+configuration was changed, the add-on framework will re-render the add-on manifests.
+
+The add-on framework will watch the `ManagedClusterAddOn` to get the add-on configuration references from the 
 `ManagedClusterAddOn` status.
 
-If the `ManagedClusterAddOn` has the configuration reference, the add-on framework use the `configGroupResource` and
-`config` to locate the configuration resource and watch the configuration resource, once the configuration resource
-changes, the add-on famework updates the `ManagedClusterAddOn` status (`lastObservedGeneration`), this will trigger
-the [`Manifests`](https://github.com/open-cluster-management-io/addon-framework/blob/main/pkg/agent/inteface.go#L31)
-interface which add-on implement.
+If the `ManagedClusterAddOn` has the configuration references, the add-on framework use the configuration references to
+locate the configuration resources and watch them, once the configuration resources change, the add-on famework updates
+the `ManagedClusterAddOn` status (`lastObservedGeneration`), this will trigger the
+[`Manifests`](https://github.com/open-cluster-management-io/addon-framework/blob/main/pkg/agent/inteface.go#L31)
+interface which add-on implement to render the add-on manifests.
 
-As a specific case, we want to introduce a `AddOnDeploymentConfig` API in cluster scope to configure the add-on
-deployment.
+As a specific case, we want to introduce a `AddOnDeploymentConfig` API to configure the add-on deployment.
 
 This API is optional for add-on developers, add-on developers can choose to use this API to configure their add-on
 deployment or use their own API for configuration.
 
 ```golang
 // AddOnDeploymentConfig represents a deployment configuration for an add-on.
-// AddOnDeploymentConfig is a cluster-scoped resource.
 type AddOnDeploymentConfig struct {
     metav1.TypeMeta   `json:",inline"`
     metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -214,8 +213,6 @@ type AddOnDeploymentConfig struct {
     // +required
     Spec AddOnDeploymentConfigSpec `json:"spec"`
 }
-
-const ManagedClusterAddOnConditionInvalidDeploy
 
 type AddOnDeploymentConfigSpec struct {
     // CustomizedVariables is a list of name-value variables for the current add-on deployment.
@@ -272,6 +269,7 @@ Examples:
     kind: AddOnDeploymentConfig
     metadata:
       name: addon-default-placement
+      namespace: open-cluster-management
     spec:
       nodeSelector:
         "kubernetes.io/arch": "amd64"
@@ -290,15 +288,15 @@ Examples:
     metadata:
       name: myaddon
     spec:
-      addOnConfiguration:
-        configGroupResource:
-          group: addon.open-cluster-management.io
-          resource: AddOnDeploymentConfig
+      supportedConfigs:
+      - group: addon.open-cluster-management.io
+        resource: addondeploymentconfigs
         defaultConfig:
           name: addon-default-placement
+          namespace: open-cluster-management
     ```
 
-    For each managed cluster add-on, the configuration can be located with `configReference` in the
+    For each managed cluster add-on, the configuration can be located with `configReferences` in the
     `ManagedClusterAddOnStatus`
 
     ```yaml
@@ -310,11 +308,11 @@ Examples:
     spec:
       installNamespace: open-cluster-management-agent-addon
     status:
-      configReference:
-        group: addon.open-cluster-management.io
-        version: v1alpha1
-        resource: AddOnDeploymentConfig
+      configReferences:
+      - group: addon.open-cluster-management.io
+        resource: addondeploymentconfigs
         name: addon-default-placement
+        namespace: open-cluster-management
         lastObservedGeneration: 1
 
     apiVersion: addon.open-cluster-management.io/v1alpha1
@@ -325,23 +323,24 @@ Examples:
     spec:
       installNamespace: open-cluster-management-agent-addon
     status:
-      configReference:
-        group: addon.open-cluster-management.io
-        version: v1alpha1
-        resource: AddOnDeploymentConfig
+      configReferences:
+      - group: addon.open-cluster-management.io
+        resource: addondeploymentconfigs
         name: addon-default-placement
+        namespace: open-cluster-management
         lastObservedGeneration: 1
     ```
 
 
     If user need to configure some add-ons specially, the user can define a specifc configuration and specify the
-    configuration name in the `ManagedClusterAddOn`
+    configuration reference in the `ManagedClusterAddOn`
 
     ```yaml
     apiVersion: addon.open-cluster-management.io/v1alpha1
     kind: AddOnDeploymentConfig
     metadata:
       name: addon-arm-placement
+      namespace: cluster3
     spec:
       nodeSelector:
         "kubernetes.io/arch": "arm64"
@@ -357,8 +356,11 @@ Examples:
       namespace: cluster3
     spec:
       installNamespace: open-cluster-management-agent-addon
-      config:
+      configs:
+      - group: addon.open-cluster-management.io
+        resource: addondeploymentconfigs
         name: addon-arm-placement
+        namespace: cluster3
     ```
 
     then the configuration reference in this add-on status will be
@@ -374,11 +376,11 @@ Examples:
       config:
         name: addon-arm-placement
     status:
-      configReference:
-        group: addon.open-cluster-management.io
-        version: v1alpha1
-        resource: AddOnDeploymentConfig
+      configReferences:
+      - group: addon.open-cluster-management.io
+        resource: addondeploymentconfigs
         name:  addon-arm-placement
+        namespace: cluster3
         lastObservedGeneration: 1
     ```
 
@@ -406,10 +408,9 @@ Examples:
     metadata:
       name: cluster-proxy
     spec:
-      addOnConfiguration:
-        configGroupResource:
-          group: proxy.open-cluster-management.io
-          resource: ManagedProxyConfiguration
+      supportedConfigs:
+      - group: proxy.open-cluster-management.io
+        resource: managedproxyconfigurations
         defaultConfig:
           name: cluster-proxy
     ```
@@ -425,15 +426,14 @@ Examples:
     spec:
       installNamespace: open-cluster-management-agent-addon
     status:
-      configReference:
-        group: proxy.open-cluster-management.io
-        version: v1alpha1
-        resource: ManagedProxyConfiguration
+      configReferences:
+      - group: proxy.open-cluster-management.io
+        resource: managedproxyconfigurations
         name: cluster-proxy
         lastObservedGeneration: 1
     ```
 
-    If user's each add-on needs its own configuration, user set up the configuration name in the `ManagedClusterAddOn`
+    If user's each add-on needs its own configuration, user set up the configuration reference in the `ManagedClusterAddOn`
 
     ```yaml
     apiVersion: addon.open-cluster-management.io/v1alpha1
@@ -441,10 +441,9 @@ Examples:
     metadata:
       name: submariner
     spec:
-      addOnConfiguration:
-        configGroupResource:
-          group: submarineraddon.open-cluster-management.io
-          resource: SubmarinerConfig
+      supportedConfigs:
+      - group: submarineraddon.open-cluster-management.io
+        resource: submarinerconfigs
 
     apiVersion: addon.open-cluster-management.io/v1alpha1
     kind: SubmarinerConfig
@@ -461,7 +460,9 @@ Examples:
       name: submariner
       namespace: cluster1
     spec:
-      config:
+      configs:
+      - group: submarineraddon.open-cluster-management.io
+        resource: submarinerconfigs
         name: submariner
         namespace: cluster1
 
@@ -480,7 +481,9 @@ Examples:
       name: submariner
       namespace: cluster2
     spec:
-      config:
+      configs:
+      - group: submarineraddon.open-cluster-management.io
+        resource: submarinerconfigs
         name: submariner
         namespace: cluster2
     ```
@@ -498,10 +501,9 @@ Examples:
         name: submariner
         namespace: cluster1
     status:
-      configReference:
-        group: proxy.open-cluster-management.io
-        version: v1alpha1
-        resource: SubmarinerConfig
+      configReferences:
+      - group: submarineraddon.open-cluster-management.io
+        resource: submarinerconfigs
         name: submariner
         namesapce: cluster1
         lastObservedGeneration: 1
@@ -516,12 +518,74 @@ Examples:
         name: submariner
         namespace: cluster2
     status:
-      configReference:
-        group: proxy.open-cluster-management.io
-        version: v1alpha1
-        resource: SubmarinerConfig
+      configReferences:
+      - group: submarineraddon.open-cluster-management.io
+        resource: submarinerconfigs
         name: submariner
         namesapce: cluster2
+        lastObservedGeneration: 1
+    ```
+
+3. Supporting multiple configurations for one add-on
+
+    If one add-on has multiple configurations, its add-on operator creates the `ClusterManagementAddOn` with
+    the supported configuration types on the hub
+
+    ```yaml
+    apiVersion: addon.open-cluster-management.io/v1alpha1
+    kind: ClusterManagementAddOn
+    metadata:
+      name: cluster-proxy
+    spec:
+      supportedConfigs:
+      - group: proxy.open-cluster-management.io
+        resource: managedproxyconfigurations
+        defaultConfig:
+          name: cluster-proxy
+      - group: addon.open-cluster-management.io
+        resource: addondeploymentconfigs
+    ```
+
+    user set up the configuration reference in the `ManagedClusterAddOn`
+
+    ```yaml
+    apiVersion: addon.open-cluster-management.io/v1alpha1
+    kind: ManagedClusterAddOn
+    metadata:
+      name: cluster-proxy
+      namespace: cluster1
+    spec:
+      configs:
+      - group: addon.open-cluster-management.io
+        resource: addondeploymentconfigs
+        name: deploy-config
+        namespace: cluster1
+    ```
+
+    then the configuration reference in this add-on status will be
+
+    ```yaml
+    apiVersion: addon.open-cluster-management.io/v1alpha1
+    kind: ManagedClusterAddOn
+    metadata:
+      name: cluster-proxy
+      namespace: cluster1
+    spec:
+      configs:
+      - group: addon.open-cluster-management.io
+        resource: addondeploymentconfigs
+        name: deploy-config
+        namespace: cluster1
+    status:
+      configReferences:
+      - group: proxy.open-cluster-management.io
+        resource: managedproxyconfigurations
+        name: cluster-proxy
+        lastObservedGeneration: 1
+      - group: addon.open-cluster-management.io
+        resource: addondeploymentconfigs
+        name: deploy-config
+        namesapce: cluster1
         lastObservedGeneration: 1
     ```
 
