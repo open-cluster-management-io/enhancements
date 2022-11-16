@@ -66,12 +66,12 @@ Work placement should contain enough status information to determine if the mani
 #### API
 ```yaml
 apiversion: work.open-cluster-management.io/v1alpha1
-kind: PlacementWork # ApplicationWork?
+kind: PlacementManifestWork # ApplicationWork?
 metadata:
   name: app
   namespace: default
 spec:
-  manifestWorkSpec:
+  manifestWorkTemplate:
     workloads:
       manifest:
       - apiVersion: v1
@@ -116,19 +116,17 @@ status:
   conditions:
   - type: PlacementVerified
   - type: ManifestworkApplied
-  ## The following is a spike ##
-  # this to describe the number of clusters that the resources are applied
-  clustersApplied:
-    number: 4
-    lastTransitionTime: xxx
-  # this to describe the number of clusters that the resources are available
-  clustersAvailable:
-    number: 4
-    lastTransitionTime: xxx
-  # this to describe the number of clusters that the resources are degraded
-  clustersDegraded: 2
-    number: 2
-    lastTransitionTime: xxx
+  PlacedManifestWorkSummary:
+    # this is to describe the number of clusters that have resources are applied
+    applied: 4
+    # this is to describe the number of clusters that have resources are available
+    available: 4
+    # this to describe the TOTAL number of clusters that the resources
+    total: 4
+    # this is to describe the number of clusters that have resources are progressing
+    progressing: 4
+    # this is to describe the number of clusters that have resources are degraded (or work is degraded)
+    degraded: 4
 ```
 
 ### Risks and Mitigation
