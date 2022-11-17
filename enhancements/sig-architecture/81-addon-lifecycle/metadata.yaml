@@ -1,0 +1,19 @@
+title: addon-lifecycle
+authors:
+  - "@haoqing0110"
+reviewers:
+  - "@qiujian16"
+  - "@deads2k"
+  - "@elgnay"
+  - "@skeeey"
+  - "@zhiweiyin318"
+approvers:
+  - "@qiujian16"
+  - "@deads2k"
+  - "@elgnay"
+creation-date: 2022-11-18
+last-updated: 2022-11-18
+status: provisional
+see-also:
+  - "/enhancements/sig-architecture/58-addon-configuration"
+  - "/enhancements/sig-architecture/76-addon-install-strategy"
