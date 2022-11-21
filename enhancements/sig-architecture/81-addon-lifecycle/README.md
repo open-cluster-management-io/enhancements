@@ -77,12 +77,18 @@ type ManagedClusterAddOnSpec struct {
   // …
   InstallNamespace string `json:"installNamespace,omitempty"`
 	
-  // installVersion represents the desired addon version to install.
-  // Valid installVersion are listed in ClusterManagementAddOn status.supportedVersion.
-  // If installVersion is not specified, the ClusterManagementAddOn status.defaultVersion 
-  // wil be used.
+  // desiredVersion represents the desired addon version to install.
+  // Setting this value will trigger an upgrade or rollback (if the current version
+  // listed in the status does not match the desired version).
+  // 
+  // Valid addon versions are listed in supportedVersion in the status. 
+  // If invalid desiredVersion is specified, that may cause the upgrade or rollback 
+  // to fail.
+  // If desiredVersion is not specified, the defaultVersion in the status will be used.
+  //
+  // The progress of an update or rollback will be reported in the conditions.
   // +optional
-  InstallVersion string `json:"installVersion,omitempty"`
+  DesiredVersion string `json:"desiredVersion,omitempty"`
 
   // …
   Configs []AddOnConfig `json:"configs,omitempty"`
@@ -99,13 +105,13 @@ type ManagedClusterAddOnStatus struct {
   Conditions []metav1.Condition `json:"conditions,omitempty"  patchStrategy:"merge" patchMergeKey:"type"`
 
   // currentVersion represents the currently successfully installed addon version.
-  // If the addon installation is in progressing, the value is unknown.
+  // If the addon installation, upgrade or rollback is in progressing, the value is unknown.
   // +optional
   CurrentVersion string `json:"currentVersion,omitempty"`
 
-  // lastVersion record the previous defined installVersion.
-  // If the previous addon installVersion is invalid, the value is unknown.
-  // If no previous addon installVersion, the value is empty.
+  // lastVersion record the previous defined desiredVersion.
+  // If the previous addon desiredVersion is invalid, the value is unknown.
+  // If no previous addon desiredVersion, the value is empty.
   // +optional
   LastVersion string `json:"lastVersion,omitempty"`
 ```
@@ -140,7 +146,7 @@ spec:
     - name: global-placement
       namespace: default
       addonTemplate:
-        installVersion: v1
+        desiredVersion: v1
         configs:
         - group: addon.open-cluster-management.io
           resource: addondeploymentconfigs
@@ -148,7 +154,7 @@ spec:
     - name: canary-placement
       namespace: default
       addonTemplate:
-        installVersion: v2
+        desiredVersion: v2
         configs:
         - group: addon.open-cluster-management.io
           resource: addondeploymentconfigs
@@ -169,7 +175,7 @@ metadata:
   namespace: cluster1
 spec:
   installNamespace: open-cluster-management-agent-addon
-  installVersion: v2
+  desiredVersion: v2
 Status:
 …
   lastVersion: v1
@@ -212,19 +218,18 @@ defined by the installer.
 addon-install-controller which is watching the installStrategy, or be manually created by a user. 
 - Addon manager watches the `ManagedClusterAddOn` and generates `ManifestWorks` for each cluster. The `ManifestWorks` 
 has label `open-cluster-management.io/addon-version` to indicate the addon version. 
-- Addon manager copies the last `ManagedClusterAddOn` status.installVersion as status.lastVersion.
+- Addon manager copies the last `ManagedClusterAddOn` status.desiredVersion as status.lastVersion.
 - Addon manager update the `ManagedClusterAddOn` status.currentVersion based on `ManifestWork` status.
 - Addon manager updates the `ManagedClusterAddOn` status.condition to tell the user whether installation/upgrade/rollback 
 is succeeded or failed.  
 
-**The installVersion, lastVersion and currentVersion**
+**The desiredVersion, lastVersion and currentVersion**
 
-When `ManagedClusterAddOn` installVersion changes, the addon manager will update the `ManagedClusterAddOn` status.lastVersion 
-and status.currentVersion:
-- Addon manager copies previous spec.installVersion as the status.lastVersion. 
+If the `ManagedClusterAddOn` `status.currentVersion` does not match the `spec.desiredVersion`, the addon manager will an update:
+- Addon manager copies previous spec.desiredVersion as the status.lastVersion. 
   (Fresh install doesn’t have lastVersion, invalid version is treated as unknown.)
 - Addon manager updates the status.currentVersion to unknown when `ManifestWork` installation/upgrade/rollback is not finished.
-- Addon manager updates status.currentVersion as spec.installVersion when `ManifestWork` installation/upgrade/rollback is finished.
+- Addon manager updates status.currentVersion as spec.desiredVersion when `ManifestWork` installation/upgrade/rollback is finished.
   - `ManifestWork` has correct “addon-name” and “addon-version” labels.
   - `ManifestWork` Condition Available status is true.
   - `ManifestWork` Condition Available observedGeneration equals to generation.
@@ -235,10 +240,10 @@ and status.currentVersion:
 
 Addon manager also updates the `ManagedClusterAddOn` status.condition to tell user 
 whether installation/upgrade/rollback is succeeded or failed, lastTransitionTime record the finish time.   
-- If currentVersion==installVersion, update condition Progressing status to false with reason Succeed.
+- If currentVersion==desiredVersion, update condition Progressing status to false with reason Succeed.
 - If currentVersion==unknown
-  - lastVersion < installVersion, update condition Progressing status to true with reason Upgrading.
-  - lastVersion > installVersion, update condition Progressing status to true with reason Rollingback.
+  - lastVersion < desiredVersion, update condition Progressing status to true with reason Upgrading.
+  - lastVersion > desiredVersion, update condition Progressing status to true with reason Rollingback.
   - lastVersion=="" || lastVersion="unknown", update condition Progressing status to true with reason Installing.
 - Any other reasons, update condition Progressing status to false with reason Failed.
 
@@ -270,7 +275,7 @@ status:
   - v1
 ```
 
-If installVersion is not defined in `ManagedClusterAddOn`, use the defaultVersion v1.
+If desiredVersion is not defined in `ManagedClusterAddOn`, use the defaultVersion v1.
 When the installation is finished, the currentVersion is updated to v1.
 
 ```yaml
@@ -333,7 +338,7 @@ status:
   -v2
 ```
 
-Since the defaultVersion is upgraded to v2, the `ManagedClusterAddOn` default installVersion is updated to v2.
+Since the defaultVersion is upgraded to v2, the `ManagedClusterAddOn` default desiredVersion is updated to v2.
 The addon manager will update `ManifestWork` with addon-version v2.
 When the upgrade is finished, the currentVersion is updated to v2.
 
@@ -394,7 +399,7 @@ spec:
     - name: global-placement
       namespace: default
       addonTemplate:
-        installVersion: v1
+        desiredVersion: v1
         configs:
         - group: addon.open-cluster-management.io
           resource: addondeploymentconfigs
@@ -422,7 +427,7 @@ spec:
     - name: global-placement
       namespace: default
       addonTemplate:
-        installVersion: v1
+        desiredVersion: v1
         configs:
         - group: addon.open-cluster-management.io
           resource: addondeploymentconfigs
@@ -449,7 +454,7 @@ spec:
     - name: global-placement
       namespace: default
       addonTemplate:
-        installVersion: v1
+        desiredVersion: v1
         configs:
         - group: addon.open-cluster-management.io
           resource: addondeploymentconfigs
@@ -457,7 +462,7 @@ spec:
     - name: canary-placement
       namespace: default
       addonTemplate:
-        installVersion: v2
+        desiredVersion: v2
         configs:
         - group: addon.open-cluster-management.io
           resource: addondeploymentconfigs
@@ -480,7 +485,7 @@ metadata:
   namespace: cluster1
 spec:
   installNamespace: open-cluster-management-agent-addon
-  installVersion: v2
+  desiredVersion: v2
 Status:
 …
   lastVersion: v1
@@ -503,7 +508,7 @@ metadata:
   namespace: cluster1
 spec:
   installNamespace: open-cluster-management-agent-addon
-  installVersion: v2
+  desiredVersion: v2
 Status:
 …
   lastVersion: v1
@@ -526,7 +531,7 @@ metadata:
   namespace: cluster1
 spec:
   installNamespace: open-cluster-management-agent-addon
-  installVersion: v3
+  desiredVersion: v3
 Status:
 …
   lastVersion: v1
@@ -555,7 +560,7 @@ spec:
     - name: global-placement
       namespace: default
       addonTemplate:
-        installVersion: v1
+        desiredVersion: v1
         configs:
         - group: addon.open-cluster-management.io
           resource: addondeploymentconfigs
@@ -563,7 +568,7 @@ spec:
     - name: canary-placement
       namespace: default
       addonTemplate:
-        installVersion: v1
+        desiredVersion: v1
         configs:
         - group: addon.open-cluster-management.io
           resource: addondeploymentconfigs
@@ -586,7 +591,7 @@ metadata:
   namespace: cluster1
 spec:
   installNamespace: open-cluster-management-agent-addon
-  installVersion: v1
+  desiredVersion: v1
 Status:
 …
   lastVersion: v2
@@ -609,7 +614,7 @@ metadata:
   namespace: cluster1
 spec:
   installNamespace: open-cluster-management-agent-addon
-  installVersion: v1
+  desiredVersion: v1
 Status:
 …
   lastVersion: v2
@@ -632,7 +637,7 @@ metadata:
   namespace: cluster1
 spec:
   installNamespace: open-cluster-management-agent-addon
-  installVersion: v0
+  desiredVersion: v0
 Status:
 …
   lastVersion: v1
