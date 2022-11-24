@@ -114,6 +114,7 @@ type ManagedClusterAddOnStatus struct {
   // If no previous addon desiredVersion, the value is empty.
   // +optional
   LastVersion string `json:"lastVersion,omitempty"`
+}
 ```
 
 ### New condition
@@ -163,8 +164,7 @@ status:
   supportedVersions:
   - v1
   - v2
-  defaultVersion:
-  - v2
+  defaultVersion: v2
 ```
 
 ```yaml
@@ -271,8 +271,7 @@ spec:
 status:
   supportedVersions:
   - v1
-  defaultVersion:
-  - v1
+  defaultVersion: v1
 ```
 
 If desiredVersion is not defined in `ManagedClusterAddOn`, use the defaultVersion v1.
@@ -334,8 +333,7 @@ status:
   supportedVersions:
   - v1
   - v2
-  defaultVersion:
-  -v2
+  defaultVersion: v2
 ```
 
 Since the defaultVersion is upgraded to v2, the `ManagedClusterAddOn` default desiredVersion is updated to v2.
@@ -407,8 +405,7 @@ spec:
 status:
   supportedVersions:
   - v1
-  defaultVersion:
-  - v1
+  defaultVersion: v1
 ```
 
 2. Upgrade the ClusterManagementAddOn and addon manager.
@@ -436,8 +433,7 @@ status:
   supportedVersions:
   - v1
   - v2
-  defaultVersion:
-  - v2
+  defaultVersion: v2
 ```
 
 3. Add new placement to select a group of clusters to upgrade to the new version addon.
@@ -471,8 +467,7 @@ status:
   supportedVersions:
   - v1
   - v2
-  defaultVersion:
-  - v2
+  defaultVersion: v2
 ```
 
 4. The upgraded `ManagedClusterAddOn` would be like:
@@ -577,8 +572,7 @@ status:
   supportedVersions:
   - v1
   - v2
-  defaultVersion:
-  - v2
+  defaultVersion: v2
 ```
 
 The rollbacked `ManagedClusterAddOn` would be like:
@@ -671,4 +665,203 @@ TBD
 N/A
 
 ## Alternatives
-N/A
+### Add another addon configuration API `AddonVersionConfigs` to store desiredVersion.
+
+Treate version as a variable of configuration, and treate version upgrade as config upgrade. 
+This solution has some gaps that need to discuss, list the general idea and concerns below.
+
+API changes:
+```golang
+// +genclient
+// +genclient:nonNamespaced
+
+// AddOnVersionConfig represents the version configuration for an add-on.
+// The name of the corresponding ClusterManagementAddOn resource should be used 
+// as the prefix of AddOnVersionConfig.
+type AddOnVersionConfig struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	// spec represents a desired configuration for an add-on.
+	// +required
+	Spec AddOnVersionConfigSpec `json:"spec"`
+}
+
+type AddOnVersionConfigSpec struct {
+  // desiredVersion represents the desired addon version to install.
+  // Setting this value will trigger an upgrade or rollback (if the current version
+  // listed in the ManagedClusterAddon status does not match the desired version).
+  // 
+  // Valid addon versions are listed in ClusterManagementAddOn supportedVersion in the status. 
+  // If invalid desiredVersion is specified, that may cause the upgrade or rollback 
+  // to fail.
+  //
+  // The progress of an update or rollback will be reported in the conditions of ManagedClusterAddon.
+  // +required
+  DesiredVersion string `json:"desiredVersion,omitempty"`
+}
+```
+
+```golang
+// ClusterManagementAddOnStatus represents the current status of cluster management add-on.
+type ClusterManagementAddOnStatus struct {
+  // SupportedVersions lists all the valid addon versions. 
+  // +optional
+  SupportedVersions []string `json:"supportedVersions,omitempty"`
+
+  // DefaultVersion lists the default addon versions to be installed. 
+  // +optional
+  DefaultVersion string `json:"defaultVersion,omitempty"`
+}
+```
+
+```golang
+// ManagedClusterAddOnStatus provides information about the status of the operator.
+// +k8s:deepcopy-gen=true
+type ManagedClusterAddOnStatus struct {
+  // …
+
+  // …
+  Conditions []metav1.Condition `json:"conditions,omitempty"  patchStrategy:"merge" patchMergeKey:"type"`
+
+  // currentVersion represents the currently successfully installed addon version.
+  // If the addon installation, upgrade or rollback is in progressing, the value is unknown.
+  // +optional
+  CurrentVersion string `json:"currentVersion,omitempty"`
+
+  // lastVersion record the previous successfully installed addon version listed in the CurrentVersion.
+  // If no previous addon CurrentVersion, the value is empty.
+  // +optional
+  LastVersion string `json:"lastVersion,omitempty"`
+```
+
+Below is an example of `AddonVersionConfigs`, `ClusterManagementAddOn`, `ManagedClusterAddOn`.
+
+Create two `AddonVersionConfigs` for different versions.
+```yaml
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: AddonVersionConfigs
+metadata:
+  name: helloworld-v1
+spec:
+  desiredVersion: v1
+---
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: AddonVersionConfigs
+metadata:
+  name: helloworld-v2
+spec:
+  desiredVersion: v2
+```
+
+Specify `AddonVersionConfigs` helloworld-v1 to be used by global-placement, and helloworld-v2 to be used by canary-placement.
+```yaml
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: ClusterManagementAddOn
+metadata:
+  name: helloworld
+spec:
+  supportedConfigs:
+  - group: addon.open-cluster-management.io
+    resource: addonversionconfigs
+  - group: addon.open-cluster-management.io
+    resource: addondeploymentconfigs
+  installStrategy:
+    type: Placements
+    placements:
+    - name: global-placement
+      namespace: default
+      addonTemplate:
+        configs:
+        - group: addon.open-cluster-management.io
+          resource: addondeploymentconfigs
+          name: global-config
+        - group: addon.open-cluster-management.io
+          resource: addonversionconfigs
+          name: helloworld-v1
+    - name: canary-placement
+      namespace: default
+      addonTemplate:
+        configs:
+        - group: addon.open-cluster-management.io
+          resource: addondeploymentconfigs
+          name: canary-config
+        - group: addon.open-cluster-management.io
+          resource: addonversionconfigs
+          name: helloworld-v2
+status:
+  supportedVersions:
+  - v2
+  - v1
+  defaultVersion: v2
+```
+
+The cluster2 selected by canary-placement will upgrade from v1 to v2, its `ManagedClusterAddOn` would be like:
+```yaml
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: ManagedClusterAddOn
+metadata:
+  name: helloworld
+  namespace: cluster2
+spec:
+  configs:
+  - group: addon.open-cluster-management.io
+    resource: addondeploymentconfigs
+    name: canary-config
+    namespace: cluster2
+  - group: addon.open-cluster-management.io
+    resource: addonversionconfigs
+    name: helloworld-v2
+status:
+  configReferences:
+  - group: addon.open-cluster-management.io
+    resource: addondeploymentconfigs
+    name: canary-config
+    namesapce: cluster2
+    lastObservedGeneration: 1
+  - group: addon.open-cluster-management.io
+    resource: addonversionconfigs
+    name: helloworld-v2
+    lastObservedGeneration: 1
+  lastVersion: v1
+  currentVersion: v2
+  conditions:
+  - lastTransitionTime: "2022-11-02T05:48:12Z"
+    message: Upgrading addon to version v2.
+    reason: Upgrading
+    status: "True"
+    type: Progressing
+  - lastTransitionTime: "2022-11-02T05:48:12Z"
+    message: addon is configured with no errors.
+    reason: Succeed
+    status: "True"
+    type: Configured
+```
+
+Some concerns and gaps in this solution:
+
+1. How to measure the success of a configuration installation?
+
+Currently, we don't check whether the configuration really takes effect on the target cluster or not, as some of the 
+configurations are not easy to check the result, and some configs are not even used. However, for addon version 
+upgrade, need to check if the new version is running on the cluster, and report the status to the user.
+
+The question is, is this a reasonable requirement, and how to implement a more general solution to reflect the 
+configuration status(succeeded or failed)?
+
+2. Whether need to record the configuration history?
+
+Currently, we don't record the configuration history when it changes. For the addon version, record the previous version
+brings better user experience when wanting to rollback. 
+Is this a general need for all the configurations and can consider to implement it in the future?
+
+With above 2 gaps filled, can next remove the currentVersion, lastVersion and condition which are still maintained 
+separately in the status, and can treat version upgrade a special case of config upgrade.
+
+3. The scope of configuration `AddOnVersionConfig`.
+
+Currently, The addon configuration is expected to be shared by different addons, for example [`addondeploymentconfigs`](https://github.com/open-cluster-management-io/api/blob/main/addon/v1alpha1/types_addondeploymentconfig.go). However, addon version is a special case, since different addon could have different version numbers. 
+
+So `AddOnVersionConfig` is defined as a cluster-scoped resource and don't expect multiple addons to share the same 
+config, needs to use the `ClusterManagementAddOn` name as the prefix of `AddOnVersionConfig` to show that it expects to 
+belong to some addon.
