@@ -1,0 +1,11 @@
+nameReference:
+  - group: addon.open-cluster-management.io
+    version: v1alpha1
+    kind: HubScopedAddOnConfiguration
+    isClusterScoped: true
+    fieldSpecs:
+      - group: addon.open-cluster-management.io
+        version: v1alpha1
+        kind: ClusterManagementAddOn
+        path: spec/installStrategy/placements/hubScopedAddOnConfigName
+        isClusterScoped: true

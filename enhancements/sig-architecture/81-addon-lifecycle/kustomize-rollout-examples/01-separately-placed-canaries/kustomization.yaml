@@ -1,0 +1,8 @@
+resources:
+- hub-scoped-addon-configuration.yaml
+- hub-scoped-addon-configuration-for-canary.yaml
+- clustermanagement-addon.yaml
+configurations:
+- nameReference.yaml
+transformers:
+- kustomize-hub-scoped-addon-configuration-transformer.yaml

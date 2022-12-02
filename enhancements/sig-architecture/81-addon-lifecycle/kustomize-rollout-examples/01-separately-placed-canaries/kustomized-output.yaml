@@ -1,0 +1,38 @@
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: ClusterManagementAddOn
+metadata:
+  name: cool-cluster-scoped-addon-configuration
+spec:
+  installStrategy:
+    placements:
+      - hubScopedAddOnConfigName: standard-config-4df5gd2db6-dkb45446bd
+        name: global-placement
+        namespace: default
+      - hubScopedAddOnConfigName: canary-config-mm7fgk4md5-979gg7kk84
+        name: canary-placement
+        namespace: default
+    type: Placements
+---
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: HubScopedAddOnConfiguration
+metadata:
+  name: canary-config-mm7fgk4md5-979gg7kk84
+spec:
+  customizedVariables:
+    - name: HelperImagePullSpec
+      value: quay.io/cool-repo/helper:v1
+    - name: important-flag-value
+      value: lima
+  desiredVersion: 4.10.0
+---
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: HubScopedAddOnConfiguration
+metadata:
+  name: standard-config-4df5gd2db6-dkb45446bd
+spec:
+  customizedVariables:
+    - name: HelperImagePullSpec
+      value: quay.io/cool-repo/helper:v1
+    - name: important-flag-value
+      value: lima
+  desiredVersion: 4.10.0

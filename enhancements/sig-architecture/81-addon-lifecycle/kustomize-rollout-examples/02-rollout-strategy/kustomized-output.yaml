@@ -1,0 +1,30 @@
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: ClusterManagementAddOn
+metadata:
+  name: cool-cluster-scoped-addon-configuration
+spec:
+  hubScopedAddOnConfigName: standard-config-bhg544cttf-mf9ckc95c7
+  installStrategy:
+    placements:
+      - name: global-placement
+        namespace: default
+    type: Placements
+  rolloutStrategy:
+    rollingUpdateWithCanary:
+      canaryPlacement: canary-placement
+      maxConcurrentlyUpdating: 10%
+    strategy: RollingUpdateWithCanary
+status:
+  mostRecentlySuccessfulCanaryHubScopedAddOnConfigName: standard-config-4df5gd2db6-dkb45446bd
+---
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: HubScopedAddOnConfiguration
+metadata:
+  name: standard-config-bhg544cttf-mf9ckc95c7
+spec:
+  customizedVariables:
+    - name: HelperImagePullSpec
+      value: quay.io/cool-repo/helper:v1
+    - name: important-flag-value
+      value: updated-value
+  desiredVersion: 4.10.0

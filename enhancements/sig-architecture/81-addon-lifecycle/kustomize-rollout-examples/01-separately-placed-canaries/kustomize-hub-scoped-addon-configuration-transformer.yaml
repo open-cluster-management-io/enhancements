@@ -1,0 +1,11 @@
+apiVersion: builtin
+kind: HashTransformer
+metadata:
+  name: notImportantHere
+annotations:
+  area: 51
+  greeting: take me to your leader
+fieldSpecs:
+- kind: Deployment
+  path: spec/template/metadata/annotations
+  create: true

@@ -1,0 +1,15 @@
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: ClusterManagementAddOn
+metadata:
+  name: cool-cluster-scoped-addon-configuration
+spec:
+  installStrategy:
+    type: Placements
+    placements:
+    - name: global-placement
+      namespace: default
+      hubScopedAddOnConfigName: standard-config
+    - name: canary-placement
+      namespace: default
+      hubScopedAddOnConfigName: canary-config
+

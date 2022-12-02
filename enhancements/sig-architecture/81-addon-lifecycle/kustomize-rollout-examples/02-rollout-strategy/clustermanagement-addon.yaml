@@ -1,0 +1,28 @@
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: ClusterManagementAddOn
+metadata:
+  name: cool-cluster-scoped-addon-configuration
+spec:
+  rolloutStrategy:
+    strategy: RollingUpdateWithCanary
+    rollingUpdateWithCanary:
+      # clusters in this placement will receive any update first.  The ManagedClusterAddOn must be Available
+      # and not Degraded and have the LastObservedGeneration indicating it saw our update.
+      # I'm not completely certain the LastObservedGeneration semantic covers, "I have applied this configuration",
+      # but that's the goal.
+      canaryPlacement: canary-placement
+      maxConcurrentlyUpdating: 10%
+  # unless there is rule about how to handle multiple placements covering the same managed cluster, there is logically
+  # only a single configuration possible per ClusterManagementAddOn
+  # This field will be substituted by kustomize in this example, so it will have a hash and that will start a canary
+  # rollout.
+  hubScopedAddOnConfigName: standard-config
+  installStrategy:
+    type: Placements
+    placements:
+    - name: global-placement
+      namespace: default
+status:
+  # this value is set by the server, so that while a new canary is rolling out, the previously
+  # successful canary configuration is used.
+  mostRecentlySuccessfulCanaryHubScopedAddOnConfigName: standard-config-4df5gd2db6-dkb45446bd

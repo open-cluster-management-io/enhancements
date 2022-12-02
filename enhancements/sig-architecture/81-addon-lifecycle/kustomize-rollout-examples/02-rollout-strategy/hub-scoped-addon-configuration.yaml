@@ -1,0 +1,14 @@
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: HubScopedAddOnConfiguration
+metadata:
+  name: standard-config
+  annotations:
+    internal.config.kubernetes.io/needsHashSuffix: enabled
+spec:
+  desiredVersion: 4.10.0
+  customizedVariables:
+  - name: HelperImagePullSpec
+    value: quay.io/cool-repo/helper:v1
+  - name: important-flag-value
+    value: updated-value
+
