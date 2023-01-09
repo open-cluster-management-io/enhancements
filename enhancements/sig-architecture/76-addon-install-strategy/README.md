@@ -80,7 +80,8 @@ type PlacementRef struct {
 	// +required
 	Namespace string `json:"space"`
 
-	// AddonTemplate is the template to generate ManagedClusterAddon
+	// AddonTemplate is the template to generate ManagedClusterAddon. It takes effect only when creating the ManagedClusterAddon. If
+  // the setting of a ManagedClusterAddon is updated by the user, it will not be reverted to the setting here.
 	AddonTemplate ManagedClusterAddOnSpec `json:"addonTemplate,omitempty"`
 }
 ```
@@ -117,21 +118,14 @@ spec:
     - name: aws-placement
       namespace: default
       addonTemplate:
-        configs:
-        - group: addon.open-cluster-management.io
-          resource: addondeploymentconfigs
-          name: aws-config
+        installNamespace: aws-addon-ns
     - name: gcp-placement
       namespace: default
       addonTemplate:
-        configs:
-        - group: addon.open-cluster-management.io
-          resource: addondeploymentconfigs
-          name: gcp-config
+        installNamespace: gcp-addon-ns
 ```
 
-This will ensure that addon installed in aws uses aws-config while addon installed in gcp uses gcp config.
-
+This will ensure that addon installed in aws uses aws-config while addon installed in gcp uses gcp config. If the user updates the config of a certain `ManagedClusterAddon`, it will NOT be reverted based on the configs in `ClusterManagementAddon`. The setting in `ClusterManagementAddon` only impact on creation stage.
 
 ### Disable addon in some clusters
 
@@ -152,9 +146,8 @@ Then admin can delete `ManagedClusterAddon` in certain cluster namespaces.
 When the user changes the strategy type from `Placement` to `Manual`, all the created are `ManagedClusterAddon` is kept. `ManagedClusterAddon`
 will not be auto-created or deleted anymore.
 
-When the user changes the strategy type from `Manual` to `Placement`, `ManagedClusterAddon` created manually by the the user will be
-overriden by the configuration on the `ClusterManagementAddon`. The spec of the `ManagedClusterAddon` will be updated based the template
-and the `ManagedClusterAddon` will be deleted if the cluster is not in the related placements. 
+When the user changes the strategy type from `Manual` to `Placement`, `ManagedClusterAddon` created manually by the the user will NOT be
+overriden by the configuration on the `ClusterManagementAddon`.
 
 ### Addon Install Controller
 
