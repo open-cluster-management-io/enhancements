@@ -83,8 +83,8 @@ type AddOnHubConfigSpec struct {
 }
 ```
 
-`ClusterManagementAddOn` removes `SupportedConfigs` and adds `Configuration` section to list the add-on configurations 
-and the rollout strategy when configurations change.
+`ClusterManagementAddOn` removes `SupportedConfigs`, adds `DefaultConfigs` section to list the default add-on configurations. 
+`InstallStrategy` adds a nested `RolloutStrategy` to control the add-ons upgrade behavior when configurations change.
 
 ```golang
 // ClusterManagementAddOnSpec provides information for the add-on.
@@ -93,75 +93,163 @@ type ClusterManagementAddOnSpec struct {
   // +optional
   AddOnMeta AddOnMeta `json:"addOnMeta,omitempty"`
 
-  // configuration list the add-on configurations and the rollout strategy when the configurations change.
-  // +optional
-  Configuration Configuration `json:"configuration,omitempty"`
+	// defaultConfigs represents a list of default add-on configurations.
+	// In scenario where all add-ons have a same configuration.
+	// The default configs can be overridden by the configs defined in install strategy for
+	// specific clusters. Any add-on configs defined in ManagedClusterAddon spec explicitly can
+	// override the configs defined in ClusterManagedAddOn.
+	// +optional
+	DefaultConfigs []AddOnConfig `json:"defaultConfigs,omitempty"`
+
+	// InstallStrategy represents the install strategy of the add-on.
+	// +optional
+	InstallStrategy InstallStrategy `json:"installStrategy,omitempty"`
 }
 
-// Configuration represents a list of the add-on configurations and their rollout strategy.
-type Configuration struct {
-  // configs is a list of add-on configurations.
-  // The add-on configurations for each cluster can be overridden by the configs of the ManagedClusterAddon spec.
-  // +optional
-  Configs []AddOnConfig `json:"configs,omitempty"`
+type InstallStrategy struct {
+	// Type is the type of the install strategy, it can be:
+	// - Manual: no automatic install
+	// - ClusterLabelSelector: install to clusters with certain labels
+	// - Placements: install to clusters selected by placements.
+	// +kubebuilder:validation:Enum=Manual;Placements
+	// +kubebuilder:default:=Manual
+	// +optional
+	Type string `json:"type"`
 
-  // The rollout strategy to apply new configs. 
-  // The rollout strategy only watches the listed configs change. 
-  // If the rollout strategy is not defined, the default strategy UpdateAll is used.
-  // If there are configs change during the rollout process, the rollout will start over. For example, configs list 
-  // configA and configB. The change in configA triggers the rollout. If the configB is also
-  // changed before the rollout is complete, the current rollout stops and the rollout starts over.
-  // +optional
-  RolloutStrategy RolloutStrategy `json:"rolloutStrategy,omitempty"`
+	// ClusterLabelSelector is a label selector honored when install strategy type is
+	// ClusterLabelSelector
+	// +optional
+	ClusterLabelSelector *metav1.LabelSelector `json:"labelSelector,omitempty"`
+
+	// Placements is a list of placement references, addon settings and rollout strategy 
+	// honored when installing strategy type is Placements.
+	// All clusters selected by these placements will install the addon.
+	// If one cluster belongs to multiple placements, it will only apply the strategy defined 
+	// later in the order. That is to say, the strategy defined later in the order overrides the 
+	// previous.
+	// +optional
+	Placements []PlacementStrategies `json:"placements,omitempty"`
+}
+
+type PlacementStrategies struct {
+	// Name of the placement strategy
+	// +kubebuilder:validation:Required
+	// +required
+	Name string `json:"name"`
+
+	// Placement reference.
+	// +kubebuilder:validation:Required
+	// +required
+	Placement PlacementRef `json:"placement,omitempty"`
+
+	// AddonTemplate is the template to generate ManagedClusterAddon.
+	// +optional
+	AddonTemplate ManagedClusterAddOnSpec `json:"addonTemplate,omitempty"`
+
+	// The rollout strategy to apply new addon configs.
+	// The rollout strategy watches the default configs and addon template configs change.
+	// If the rollout strategy is not defined, the default strategy UpdateAll is used.
+	// If there are configs change during the rollout process, the rollout will start over. 
+	// For example, addon template configs list configA and configB. The change in configA triggers 
+	// the rollout. If the configB is also changed before the rollout is complete, the current 
+	// rollout stops and the rollout starts over.
+	// +optional
+	RolloutStrategy RolloutStrategy `json:"rolloutStrategy,omitempty"`
+}
+
+type PlacementRef struct {
+	// Name of the placement
+	// +kubebuilder:validation:Required
+	// +required
+	Name string `json:"name"`
+
+	// Namespace of the placement
+	// +kubebuilder:validation:Required
+	// +required
+	Namespace string `json:"namespace"`
 }
 
 // RolloutStrategy represents the rollout strategy of the add-on configuration.
 type RolloutStrategy struct {
-  // Type is the type of the rollout strategy, it supports UpdateAll and RollingUpdateWithPlacement:
-  // - UpdateAll: when configs change, apply the new configs to all the clusters.
-  // - RollingUpdateWithPlacement: when configs change, rolling update new configs on the clusters 
-  //   selected by placements. 
-  //   If any of the configs are overridden by ManagedClusterAddOn on the specific cluster, the new configs 
-  //   won't take effect on that cluster.
-  //   This rollout strategy is only responsible for applying new configs. When the strategy is modified or 
-  //   removed, the applied configs won't be deleted from the cluster.
-  // +kubebuilder:validation:Enum=RollingUpdateWithPlacement;UpdateAll
-  // +kubebuilder:default:=UpdateAll
-  // +optional
-  Type string `json:"type"`
+	// Type is the type of the rollout strategy, it supports UpdateAll, RollingUpdate and RollingUpdateWithCanary:
+	// - UpdateAll: when configs change, apply the new configs to all the selected clusters at once.
+	// - RollingUpdate: when configs change, apply the new configs to all the selected clusters with the concurrence
+	//   rate defined in MaxConcurrentlyUpdating.
+	// - RollingUpdateWithCanary: when configs change, wait and check if add-ons on the canary placement selected clusters
+	//   have applied the new configs and are healthy, then apply the new configs to all the selected clusters with the
+	//   concurrence rate defined in MaxConcurrentlyUpdating. 
+	//   The canary placement does not have to be a subset of the install placement, and it is more like a reference for finding 
+	//   and checking canary clusters before upgrading all. To trigger the rollout on the canary clusters, you can define another 
+	//   rollout strategy with the type RollingUpdate, or even manually upgrade the addons on those clusters.
+	// +kubebuilder:validation:Enum=UpdateAll;RollingUpdate;RollingUpdateWithCanary
+	// +kubebuilder:default:=UpdateAll
+	// +optional
+	Type string `json:"type"`
 
-  // Rolling update with placement config params. Present only if the type is RollingUpdateWithPlacement.
-  // +optional
-  RollingUpdateWithPlacement *RollingUpdateWithPlacement `json:"rollingUpdateWithPlacement,omitempty"`
+	// Rolling update with placement config params. Present only if the type is RollingUpdate.
+	// +optional
+	RollingUpdate *RollingUpdate `json:"rollingUpdate,omitempty"`
+
+	// Rolling update with placement config params. Present only if the type is RollingUpdateWithCanary.
+	// +optional
+	RollingUpdateWithCanary *RollingUpdateWithCanary `json:"rollingUpdateWithCanary,omitempty"`
 }
 
-// RollingUpdateWithPlacement represents the placement and behavior to rolling update add-on configurations
+// RollingUpdate represents the behavior to rolling update add-on configurations
 // on the selected clusters.
-type RollingUpdateWithPlacement struct {
-  // name of the placement
-  // +kubebuilder:validation:Required
-  // +required
-  Name string `json:"name"`
+type RollingUpdate struct {
+	// The maximum concurrently updating number of addons.
+	// Value can be an absolute number (ex: 5) or a percentage of desired addons (ex: 10%).
+	// Absolute number is calculated from percentage by rounding up.
+	// Defaults to 25%.
+	// Example: when this is set to 30%, once the addon configs change, the addon on 30% of the selected clusters
+	// will adopt the new configs. When the addons with new configs are healthy, the addon on the remaining clusters
+	// will be further updated.
+	// +kubebuilder:default:="25%"
+	// +optional
+	MaxConcurrentlyUpdating *intstr.IntOrString `json:"maxConcurrentlyUpdating,omitempty"`
+}
 
-  // namespace of the placement.
-  // +kubebuilder:validation:Required
-  // +required
-  Namespace string `json:"namespace"`
+// RollingUpdateWithCanary represents the canary placement and behavior to rolling update add-on configurations
+// on the selected clusters.
+type RollingUpdateWithCanary struct {
+	// Canary placement reference.
+	// +kubebuilder:validation:Required
+	// +required
+	Placement PlacementRef `json:"placement,omitempty"`
 
-  // The maximum concurrently updating number of addons.
-  // Value can be an absolute number (ex: 5) or a percentage of desired addons (ex: 10%).
-  // Absolute number is calculated from percentage by rounding up.
-  // Defaults to 25%.
-  // Example: when this is set to 30%, once the addon configs change, the addon on 30% of the selected clusters
-  // will adopt the new configs. When the new configs are ready, the addon on the remaining clusters
-  // will be further updated.
-  // +optional
-  MaxConcurrentlyUpdating *intstr.IntOrString `json:"maxConcurrentlyUpdating,omitempty"`
+	// the behavior to rolling update add-on configurations.
+	RollingUpdate `json:",inline"`
+}
+```
+
+`ClusterManagementAddOnStatus` adds `ConfigReferences` to represent the current configuration references and `DesiredConfigSpecHash`.
+
+```golang
+// ClusterManagementAddOnStatus represents the current status of the cluster management add-on.
+type ClusterManagementAddOnStatus struct {
+	// configReferences is a list of current add-on configuration references.
+	// The configs defined in ClusterManagementAddOn defaultConfigs and installStrategy configs fields will be listed here.
+	// +optional
+	ConfigReferences []DesiredConfigReference `json:"configReferences,omitempty"`
+}
+
+// DesiredConfigReference is a reference to the current add-on configuration.
+// This resource is used to record the configuration resource for the current add-on.
+type DesiredConfigReference struct {
+	// This field is synced from ClusterManagementAddOn defaultConfig and installStrategy configs fields.
+	ConfigGroupResource `json:",inline"`
+
+	// This field is synced from ClusterManagementAddOn defaultConfig and installStrategy configs fields.
+	ConfigReferent `json:",inline"`
+
+	// desiredConfigSpecHash record the desired config spec hash.
+	DesiredConfigSpecHash string `json:"desiredConfigSpecHash"`
 }
 ```
 
 `ManagedClusterAddOnStatus` adds `SupportedConfigs` to list the configuration types which are allowed to override the 
-the configuration defined in `ClusterManagementAddOn`.
+configuration defined in `ClusterManagementAddOn`.
 
 `ManagedClusterAddOnStatus` remove `LastObservedGeneration` and use `DesiredConfigSpecHash` and `LastAppliedConfigSpecHash` 
 to record the configuration spec hash.
@@ -247,30 +335,34 @@ A new condition type **Progressing** will be added to the `ManagedClusterAddOn` 
 #    type: Config
 ```
 
-When a new config is updated in the `ManagedClusterAddOn`, the addon manager will first calculate the spec hash and 
-update the `DesiredConfigSpecHash`.
-Then the addon manager will generate `ManifestWork` with annotations `configsSpecHash`.
+Each addon manager is responsible to watch its `ClusterManagementAddOn` and its own configurations. Once the configurations 
+name or spec hash changes, the addon manager updates the `desiredConfigSpecHash` in `ClusterManagementAddOnStatus`.
 
-Next, the addon manager updates the `LastAppliedConfigSpecHash` by checking the `ManifestWork`.
-  - `ManifestWork` annotations `configsSpecHash` matches `DesiredConfigSpecHash`.
+A new component called rollout controller is responsible to compare the `desiredConfigSpecHash` of `ClusterManagementAddOnStatus` 
+and `ManagedClusterAddOnStatus` and updates the `ManagedClusterAddOnStatus` `desiredConfigSpecHash`.
+
+The addon manager watches the `ManagedClusterAddOn` and generates `ManifestWork` with annotations `configsSpecHash`.
+
+Next, the rollout controller updates the `ManagedClusterAddOnStatus` `lastAppliedConfigSpecHash` by checking the `ManifestWork`.
+  - `ManifestWork` annotations `configsSpecHash` matches `desiredConfigSpecHash`.
   - `ManifestWork` Condition Available status is true.
   - `ManifestWork` Condition Available observedGeneration equals to generation.
   - If it is a fresh install since one addon can have multiple ManifestWorks, the `ManifestWork` condition 
   ManifestApplied must also be true.
 
-The addon manager then compares the `LastAppliedConfigSpecHash` with `DesiredConfigSpecHash` to update the condition.
-- If `LastAppliedConfigSpecHash` == `DesiredConfigSpecHash`
-  - If `LastAppliedConfigSpecHash` is empty before it equals to `DesiredConfigSpecHash`, update condition Progressing 
+The rollout controller then compares the `lastAppliedConfigSpecHash` with `desiredConfigSpecHash` to update the condition.
+- If `lastAppliedConfigSpecHash` == `desiredConfigSpecHash`
+  - If `LastAppliedConfigSpecHash` is empty before it equals to `desiredConfigSpecHash`, update condition Progressing 
   status to false with reason `InstallSucceed`.
-  - If `LastAppliedConfigSpecHash` is not empty before it equals to `DesiredConfigSpecHash`, update condition Progressing 
+  - If `lastAppliedConfigSpecHash` is not empty before it equals to `desiredConfigSpecHash`, update condition Progressing 
   status to false with reason `UpgradeSucceed`.
-- If `LastAppliedConfigSpecHash` != `DesiredConfigSpecHash`
-  - If `LastAppliedConfigSpecHash` is empty, update condition Progressing status to true with reason `Installing`.
-    - If meets some error during the installing, for example, the `ManifestWork` reports an error, update condition Progressing 
-    status to false with reason `InstallFailed`.
-  - If `LastAppliedConfigSpecHash` is not empty, update condition Progressing status to true with reason `Upgrading`.
-    - If meets some error during the installing, for example, the `ManifestWork` reports an error, update condition Progressing 
-    status to false with reason `UpgradeFailed`.
+- If `lastAppliedConfigSpecHash` != `desiredConfigSpecHash`
+  - If `lastAppliedConfigSpecHash` is empty, update condition Progressing status to true with reason `Installing`.
+    - If meets some error during the installation, for example, the `ManifestWork` reports an error, update the condition Progressing 
+    status to false with the reason `InstallFailed`.
+  - If `lastAppliedConfigSpecHash` is not empty, update condition Progressing status to true with reason `Upgrading`.
+    - If meets some error during the installation, for example, the `ManifestWork` reports an error, update the condition Progressing 
+    status to false with the reason `UpgradeFailed`.
 
 ### Workflow
 Below is an example of `ClusterManagementAddOn`, `ManagedClusterAddOn` and `ManifestWork`:
@@ -290,40 +382,61 @@ kind: ClusterManagementAddOn
 metadata:
   name: helloworld
 spec:
-  configuration:
-    configs:
-    - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: deploy-config-xxx
-      namespace: open-cluster-management
-    - group: addon.open-cluster-management.io
-      resource: addonhubconfigs
-      name: hub-config-yyy
-    rolloutStrategy:
-      type: RollingUpdateWithPlacement
-      rollingUpdateWithPlacement:
-        name: canary-placement
-        namespace: default
-        maxConcurrentlyUpdating: 25%
+  defaultConfigs:
+  - group: addon.open-cluster-management.io
+    resource: addonhubconfigs
+    name: hub-config-yyy
   installStrategy:
     type: Placements
     placements:
-    - name: aws-placement
-      namespace: default
-      addonSpec:
-        installNamespace: open-cluster-management-agent-addon
-        configs:
-          - group: addon.open-cluster-management.io
-            resource: addondeploymentconfigs
-            name: aws-config
-    - name: gcp-placement
-      namespace: default
-      addonSpec:
-        installNamespace: open-cluster-management-agent-addon
+    - name: aws
+      placement:
+        name: aws-placement
+        namespace: default
+      addonTemplate:
         configs:
         - group: addon.open-cluster-management.io
           resource: addondeploymentconfigs
-          name: gcp-config
+          name: aws-config-yyy
+      rolloutStrategy:
+        type: RollingUpdateWithCanary
+        # When type is RollingUpdateWithCanary, the rollout controller will check if clusters of canary-placement have 
+        # applied new config aws-config-yyy and addons are healthy. If canary-placement clusters all upgrade successfully, 
+        # rollout controller will continue to upgrade clusters in aws-placement.
+        #
+        # The placment defined in RollingUpdateWithCanary is just a reference for finding and checking canary clusters before 
+        # upgrading all. 
+        # To trigger the rollout of canary-placement, you can define another rolloutStrategy with type RollingUpdate 
+        # as below, or even manually upgrade the addons on canary-placement clusters.
+        rollingUpdateWithCanary:
+          placement:
+            name: canary-placement
+            namespace: default
+          maxConcurrentlyUpdating: 25%
+    - name: canary
+      placement:
+        name: canary-placement
+        namespace: default
+      addonTemplate:
+        configs:
+        - group: addon.open-cluster-management.io
+          resource: addondeploymentconfigs
+          name: aws-config-yyy
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          maxConcurrentlyUpdating: 25%
+status:
+  configReferences:
+  - group: addon.open-cluster-management.io
+    resource: addondeploymentconfigs
+    name: aws-config-yyy
+    namespace: open-cluster-management
+    desiredConfigSpecHash: <aws-config-yyy-spec-hash>
+  - group: addon.open-cluster-management.io
+    resource: addonhubconfigs
+    name: hub-config-yyy
+    desiredConfigSpecHash: <hub-config-yyy-spec-hash>
 ```
 
 ```yaml
@@ -332,13 +445,7 @@ kind: ManagedClusterAddOn
 metadata:
   name: helloworld
   namespace: cluster1
-spec:
-  installNamespace: open-cluster-management-agent-addon
-  configs:
-    - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: aws-config
-Status:
+status:
 …
   supportedConfigs:
   - group: addon.open-cluster-management.io
@@ -346,10 +453,10 @@ Status:
   configReferences:
   - group: addon.open-cluster-management.io
     resource: addondeploymentconfigs
-    name: aws-config
+    name: aws-config-yyy
     namespace: open-cluster-management
-    desiredConfigSpecHash: <aws-config-spec-hash>
-    lastAppliedConfigSpecHash: <aws-config-spec-hash>
+    desiredConfigSpecHash: <aws-config-yyy-spec-hash>
+    lastAppliedConfigSpecHash: <aws-config-yyy-spec-hash>
   - group: addon.open-cluster-management.io
     resource: addonhubconfigs
     name: hub-config-yyy
@@ -372,7 +479,7 @@ metadata:
   annotations:
     configSpecHash: | 
       {"addonhubconfigs.addon.open-cluster-management.io/hub-config-yyy":"<hub-config-yyy-spec-hash>", 
-      "addondeploymentconfigs.addon.open-cluster-management.io/open-cluster-management/aws-config":"<aws-config-spec-hash>"}
+      "addondeploymentconfigs.addon.open-cluster-management.io/open-cluster-management/aws-config-yyy":"<aws-config-yyy-spec-hash>"}
   generation: 2
   name: addon-application-manager-deploy
   namespace: cluster2
@@ -388,22 +495,23 @@ status:
 ```
 
 The workflow would be:
-1. `ClusterManagementAddOn`, default addon configurations `AddOnHubConfig` `AddOnDeploymentConfig` and addon manager 
+1. `ClusterManagementAddOn`, addon configurations `AddOnHubConfig` `AddOnDeploymentConfig` and addon manager 
 deployment is installed/upgraded by admin.
 2. Admin can modify the `spec.installStrategy` of `ClusterManagementAddOn`. This is not a necessary step, the admin can 
-choose to use the installStrategy defined by the installer. For upgrade case, the admin also needs to append 
+choose to use the installStrategy defined by the installer. For upgrade cases, the admin also needs to append 
 `rolloutStrategy` to `ClusterManagementAddOn`.
 3. `ManagedClusterAddOn` is created for each cluster with the addon configurations. The resource could be created by 
 addon-install-controller which is watching the `ClusterManagementAddOn`, or be manually created by a user. 
 4. Addon manager updates the `status.supportedConfigs` of `ManagedClusterAddOn`. The `status.supportedConfigs` list the 
 config type which is allowed to be overridden by a normal user.
-5. A user can update the `configs` of `ManagedClusterAddOn` based on `status.supportedConfigs`.
-6. Addon manager updates the `status.configReferences` of `ManagedClusterAddOn`, including the `desiredConfigSpecHash`.
-7. Addon manager watches the `ManagedClusterAddOn`, gets addon configurations, and generates `ManifestWorks` for each 
+5. Addon manager updates the `status.configReferences` of `ClusterManagementAddOn`. The `status.configReferences` list the 
+config name and `desiredConfigSpecHash`.
+6. A user can update the `configs` of `ManagedClusterAddOn` based on `status.supportedConfigs`.
+7. Addon-rollout-controller watches the `ClusterManagementAddOn` and updates the `desiredConfigSpecHash` in `ManagedClusterAddOn` status.
+8. Addon manager watches the `ManagedClusterAddOn`, gets addon configurations, and generates `ManifestWorks` for each 
 cluster. The `ManifestWorks` has the annotation `configSpecHash` to indicate the addon configurations. 
-8. Addon manager watches the `ManifestWorks` and updates the `lastAppliedConfigSpecHash` in `ManagedClusterAddOn` status.
-9. Addon manager updates the `ManagedClusterAddOn` `status.condition` type `Progressing` to report the configuration 
-install/upgrade result.
+9. Addon-rollout-controller watches the `ManifestWorks` and updates the `lastAppliedConfigSpecHash` in `ManagedClusterAddOn` status.
+10. Addon-rollout-controller updates the `ManagedClusterAddOn` `status.condition` type `Progressing` to report the configuration install/upgrade result.
 
 ### Examples
 
@@ -421,14 +529,16 @@ spec:
 
 For fresh install, `ClusterManagementAddOn` has a list of configs and install strategy defined.
 
+Addon manager updates the `status.configReferences` of `ClusterManagementAddOn`. The `status.configReferences` list the 
+config name and `desiredConfigSpecHash`.
+
 ```yaml
 apiVersion: addon.open-cluster-management.io/v1alpha1
 kind: ClusterManagementAddOn
 metadata:
   name: helloworld
 spec:
-  configuration:
-    configs:
+  defaultConfigs:
     - group: addon.open-cluster-management.io
       resource: addondeploymentconfigs
       name: deploy-config-xxx
@@ -439,25 +549,54 @@ spec:
   installStrategy:
     type: Placements
     placements:
-    - name: aws-placement
-      namespace: default
-      addonSpec:
-        installNamespace: open-cluster-management-agent-addon
-        configs:
-          - group: addon.open-cluster-management.io
-            resource: addondeploymentconfigs
-            name: aws-config
-    - name: gcp-placement
-      namespace: default
-      addonSpec:
-        installNamespace: open-cluster-management-agent-addon
+    - name: aws
+      placement:
+        name: aws-placement
+        namespace: default
+      addonTemplate:
         configs:
         - group: addon.open-cluster-management.io
           resource: addondeploymentconfigs
-          name: gcp-config
+          name: aws-config-xxx
+    - name: gcp
+      placement:
+        name: gcp-placement
+        namespace: default
+      addonTemplate:
+        configs:
+        - group: addon.open-cluster-management.io
+          resource: addondeploymentconfigs
+          name: gcp-config-xxx
+status:
+  configReferences:
+  - group: addon.open-cluster-management.io
+    resource: addondeploymentconfigs
+    name: deploy-config-xxx
+    namespace: open-cluster-management
+    desiredConfigSpecHash: <deploy-config-xxx-spec-hash>
+  - group: addon.open-cluster-management.io
+    resource: addondeploymentconfigs
+    name: aws-config-xxx
+    namespace: open-cluster-management
+    desiredConfigSpecHash: <aws-config-xxx-spec-hash>
+  - group: addon.open-cluster-management.io
+    resource: addondeploymentconfigs
+    name: gcp-config-xxx
+    namespace: open-cluster-management
+    desiredConfigSpecHash: <gcp-config-xxx-spec-hash>
+  - group: addon.open-cluster-management.io
+    resource: addonhubconfigs
+    name: hub-config-xxx
+    desiredConfigSpecHash: <hub-config-xxx-spec-hash>
 ```
 
-The user can modify `spec.configs` based on `status.supportedConfigs` to override the configs defined in `ClusterManagementAddOn`.
+Since it's a fresh install, install controlller will generate `ManagedClusterAddOn` for all the clusters.
+
+The rollout controller will watch the `ClusterManagementAddOn`, update `ManagedClusterAddOn` with `desiredConfigSpecHash` 
+for all of the selected clusters.
+
+The rollout controller is also responsible to update the `lastAppliedConfigSpecHash` and `conditions` by watching the addon 
+`ManifestWorks` generated by addon manager.
 
 ```yaml
 apiVersion: addon.open-cluster-management.io/v1alpha1
@@ -465,13 +604,7 @@ kind: ManagedClusterAddOn
 metadata:
   name: helloworld
   namespace: cluster1
-spec:
-  installNamespace: open-cluster-management-agent-addon
-  configs:
-    - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: aws-config
-Status:
+status:
 …
   supportedConfigs:
   - group: addon.open-cluster-management.io
@@ -479,10 +612,10 @@ Status:
   configReferences:
   - group: addon.open-cluster-management.io
     resource: addondeploymentconfigs
-    name: aws-config
+    name: aws-config-xxx
     namespace: open-cluster-management
-    desiredConfigSpecHash: <aws-config-spec-hash>
-    lastAppliedConfigSpecHash: <aws-config-spec-hash>
+    desiredConfigSpecHash: <aws-config-xxx-spec-hash>
+    lastAppliedConfigSpecHash: <aws-config-xxx-spec-hash>
   - group: addon.open-cluster-management.io
     resource: addonhubconfigs
     name: hub-config-xxx
@@ -496,7 +629,7 @@ Status:
     type: Progressing
 ```
 
-Add manager generates `ManifestWork` with annotation `configSpecHash`.
+Add manager watches `ManagedClusterAddOn` and generates `ManifestWork` with annotation `configSpecHash`.
 
 ```yaml
 apiVersion: work.open-cluster-management.io/v1
@@ -505,7 +638,7 @@ metadata:
   annotations:
     configSpecHash: | 
       {"addonhubconfigs.addon.open-cluster-management.io/hub-config-xxx":"<hub-config-xxx-spec-hash>", 
-      "addondeploymentconfigs.addon.open-cluster-management.io/open-cluster-management/aws-config":"<aws-config-spec-hash>"}
+      "addondeploymentconfigs.addon.open-cluster-management.io/open-cluster-management/aws-config-xxx":"<aws-config-xxx-spec-hash>"}
   labels:
     open-cluster-management.io/addon-name: application-manager
   generation: 2
@@ -522,7 +655,7 @@ status:
     type: Available
 ```
 
-#### Auto upgrade addon to latest version.
+#### Auto rolling upgrade addon to latest version.
 Create a new `AddOnHubConfig` with the latest version,
 
 ```yaml
@@ -534,8 +667,8 @@ spec:
   desiredVersion: v0.11.0
 ```
 
-The config name inside `ClusterManagementAddOn` will change at the same time. 
-The addon manager watches the change and applies the new config to all the clusters.
+When the config name changes, or config spec changes, the addon manager watches the change in `ClusterManagementAddOn`, 
+`AddOnHubConfig` and update the `desiredConfigSpecHash` of `ClusterManagementAddOn`.
 
 ```yaml
 apiVersion: addon.open-cluster-management.io/v1alpha1
@@ -543,11 +676,10 @@ kind: ClusterManagementAddOn
 metadata:
   name: helloworld
 spec:
-  configuration:
-    configs:
+  defaultConfigs:
     - group: addon.open-cluster-management.io
       resource: addondeploymentconfigs
-      name: deploy-config-xxx
+      name: deploy-config-yyy
       namespace: open-cluster-management
     - group: addon.open-cluster-management.io
       resource: addonhubconfigs
@@ -555,86 +687,59 @@ spec:
   installStrategy:
     type: Placements
     placements:
-    - name: aws-placement
-      namespace: default
-      addonSpec:
-        installNamespace: open-cluster-management-agent-addon
-        configs:
-          - group: addon.open-cluster-management.io
-            resource: addondeploymentconfigs
-            name: aws-config
-    - name: gcp-placement
-      namespace: default
-      addonSpec:
-        installNamespace: open-cluster-management-agent-addon
-        configs:
-        - group: addon.open-cluster-management.io
-          resource: addondeploymentconfigs
-          name: gcp-config
-```
-
-#### Canary upgrade addon to specific version.
-Create a new `AddOnHubConfig` with the latest version,
-
-```yaml
-apiVersion: addon.open-cluster-management.io/v1alpha1
-kind: AddOnHubConfig
-metadata:
-  name: hub-config-yyy
-spec:
-  desiredVersion: v0.11.0
-```
-
-The config name inside `ClusterManagementAddOn` will change at the same time. 
-
-The admin can create a placement `canary-placement` to select the canary upgrade clusters.
-Then append `rolloutStrategy` and refer to the `canary-placement` so that the new config will only apply to the canary clusters.
-
-The addon manager watches the change and applies the new config to the selected clusters.
-
-```yaml
-apiVersion: addon.open-cluster-management.io/v1alpha1
-kind: ClusterManagementAddOn
-metadata:
-  name: helloworld
-spec:
-  configuration:
-    configs:
-    - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: deploy-config-xxx
-      namespace: open-cluster-management
-    - group: addon.open-cluster-management.io
-      resource: addonhubconfigs
-      name: hub-config-yyy
-    rolloutStrategy:
-      type: RollingUpdateWithPlacement
-      rollingUpdateWithPlacement:
-        name: canary-placement
+    - name: aws
+      placement:
+        name: aws-placement
         namespace: default
-        maxConcurrentlyUpdating: 25%
-  installStrategy:
-    type: Placements
-    placements:
-    - name: aws-placement
-      namespace: default
-      addonSpec:
-        installNamespace: open-cluster-management-agent-addon
-        configs:
-          - group: addon.open-cluster-management.io
-            resource: addondeploymentconfigs
-            name: aws-config
-    - name: gcp-placement
-      namespace: default
-      addonSpec:
-        installNamespace: open-cluster-management-agent-addon
+      addonTemplate:
         configs:
         - group: addon.open-cluster-management.io
           resource: addondeploymentconfigs
-          name: gcp-config
+          name: aws-config-yyy
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          maxConcurrentlyUpdating: 25%
+    - name: gcp
+      placement:
+        name: gcp-placement
+        namespace: default
+      addonTemplate:
+        configs:
+        - group: addon.open-cluster-management.io
+          resource: addondeploymentconfigs
+          name: gcp-config-yyy
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          maxConcurrentlyUpdating: 25%
+status:
+  configReferences:
+  - group: addon.open-cluster-management.io
+    resource: addondeploymentconfigs
+    name: deploy-config-yyy
+    namespace: open-cluster-management
+    desiredConfigSpecHash: <deploy-config-yyy-spec-hash>
+  - group: addon.open-cluster-management.io
+    resource: addondeploymentconfigs
+    name: aws-config-yyy
+    namespace: open-cluster-management
+    desiredConfigSpecHash: <aws-config-yyy-spec-hash>
+  - group: addon.open-cluster-management.io
+    resource: addondeploymentconfigs
+    name: gcp-config-yyy
+    namespace: open-cluster-management
+    desiredConfigSpecHash: <gcp-config-yyy-spec-hash>
+  - group: addon.open-cluster-management.io
+    resource: addonhubconfigs
+    name: hub-config-yyy
+    desiredConfigSpecHash: <hub-config-yyy-spec-hash>
 ```
 
-The `ManagedClusterAddOn` `status.configReferences` updates to new config.
+The rollout manager compare the `desiredConfigSpecHash` of `ClusterManagementAddOn` and `ManagedClusterAddOn`, update the 
+`desiredConfigSpecHash` of `ManagedClusterAddOnStatus`.
+
+Since the rollout strategy type is `RollingUpdate`, the rollout manager will first pick 25% of the clusters to do the update.
 
 ```yaml
 apiVersion: addon.open-cluster-management.io/v1alpha1
@@ -642,13 +747,7 @@ kind: ManagedClusterAddOn
 metadata:
   name: helloworld
   namespace: cluster1
-spec:
-  installNamespace: open-cluster-management-agent-addon
-  configs:
-    - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: aws-config
-Status:
+status:
 …
   supportedConfigs:
   - group: addon.open-cluster-management.io
@@ -656,10 +755,10 @@ Status:
   configReferences:
   - group: addon.open-cluster-management.io
     resource: addondeploymentconfigs
-    name: aws-config
+    name: aws-config-yyy
     namespace: open-cluster-management
-    desiredConfigSpecHash: <aws-config-spec-hash>
-    lastAppliedConfigSpecHash: <aws-config-spec-hash>
+    desiredConfigSpecHash: <aws-config-yyy-spec-hash>
+    lastAppliedConfigSpecHash: <aws-config-xxx-spec-hash>
   - group: addon.open-cluster-management.io
     resource: addonhubconfigs
     name: hub-config-yyy
@@ -673,7 +772,7 @@ Status:
     type: Progressing
 ```
 
-The new config spec hash is applied to `ManifestWork`.
+The addon manager watches the change in `ManagedClusterAddOn` and update the `ManifestWork`.
 
 ```yaml
 apiVersion: work.open-cluster-management.io/v1
@@ -682,7 +781,7 @@ metadata:
   annotations:
     configSpecHash: | 
       {"addonhubconfigs.addon.open-cluster-management.io/hub-config-yyy":"<hub-config-yyy-spec-hash>", 
-      "addondeploymentconfigs.addon.open-cluster-management.io/open-cluster-management/aws-config":"<aws-config-spec-hash>"}
+      "addondeploymentconfigs.addon.open-cluster-management.io/open-cluster-management/aws-config-yyy":"<aws-config-yyy-spec-hash>"}
   labels:
     open-cluster-management.io/addon-name: application-manager
   generation: 2
@@ -699,7 +798,8 @@ status:
     type: Available
 ```
 
-Once the ManifestWork is applied successfully, the `lastAppliedConfigSpecHash` of `ManagedClusterAddOn` and condition will be updated.
+The rollout controller then watches the `ManifestWork` and update the `lastAppliedConfigSpecHash` and `conditions`. 
+When the 25% `ManagedClusterAddOn` is healthy, rollout manager will continue to update the remaining clusters.
 
 ```yaml
 apiVersion: addon.open-cluster-management.io/v1alpha1
@@ -707,13 +807,7 @@ kind: ManagedClusterAddOn
 metadata:
   name: helloworld
   namespace: cluster1
-spec:
-  installNamespace: open-cluster-management-agent-addon
-  configs:
-    - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: aws-config
-Status:
+status:
 …
   supportedConfigs:
   - group: addon.open-cluster-management.io
@@ -721,10 +815,10 @@ Status:
   configReferences:
   - group: addon.open-cluster-management.io
     resource: addondeploymentconfigs
-    name: aws-config
+    name: aws-config-yyy
     namespace: open-cluster-management
-    desiredConfigSpecHash: <aws-config-spec-hash>
-    lastAppliedConfigSpecHash: <aws-config-spec-hash>
+    desiredConfigSpecHash: <aws-config-yyy-spec-hash>
+    lastAppliedConfigSpecHash: <aws-config-yyy-spec-hash>
   - group: addon.open-cluster-management.io
     resource: addonhubconfigs
     name: hub-config-yyy
@@ -738,9 +832,24 @@ Status:
     type: Progressing
 ```
 
-If the canary upgrade works fine, the admin can remove the `rolloutStrategy` or create another placement `global-placement` 
-to select all the clusters.
-Modify the `rolloutStrategy` to refer to `global-placement` and apply the new config to all the clusters.
+#### Auto canary upgrade addon to a specific version.
+Create a new `AddOnHubConfig` with the latest version,
+
+```yaml
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: AddOnHubConfig
+metadata:
+  name: hub-config-yyy
+spec:
+  desiredVersion: v0.11.0
+```
+
+The admin append rollout strategy type `RollingUpdateWithCanary` to `aws-placement` and refer to the `canary-placement` 
+so that the `aws-placment` will auto-upgrade when `canary-placement` is upgrade successfully.
+
+The admin also needs to create a placement `canary-placement` with rollout strategy type `RollingUpdate`. The clusters 
+inside `canary-placement` will apply the new config `aws-config-yyy` first. When it's done, `aws-placement` will continue 
+to upgrade the remaining clusters.
 
 ```yaml
 apiVersion: addon.open-cluster-management.io/v1alpha1
@@ -748,23 +857,80 @@ kind: ClusterManagementAddOn
 metadata:
   name: helloworld
 spec:
-  configuration:
-    configs:
+  defaultConfigs:
     - group: addon.open-cluster-management.io
       resource: addondeploymentconfigs
-      name: deploy-config-xxx
+      name: deploy-config-yyy
       namespace: open-cluster-management
     - group: addon.open-cluster-management.io
       resource: addonhubconfigs
       name: hub-config-yyy
-    rolloutStrategy:
-      type: RollingUpdateWithPlacement
-      rollingUpdateWithPlacement:
-        name: global-placement
-        namespace: default
-        maxConcurrentlyUpdating: 25%
   installStrategy:
-  ...
+    type: Placements
+    placements:
+    - name: aws
+      placement:
+        name: aws-placement
+        namespace: default
+      addonTemplate:
+        configs:
+        - group: addon.open-cluster-management.io
+          resource: addondeploymentconfigs
+          name: aws-config-yyy
+      rolloutStrategy:
+        type: RollingUpdateWithCanary
+        rollingUpdateWithCanary:
+          maxConcurrentlyUpdating: 25%
+          placement:
+            name: canary-placement
+            namespace: default
+    - name: canary
+      placement:
+        name: canary-placement
+        namespace: default
+      addonTemplate:
+        configs:
+        - group: addon.open-cluster-management.io
+          resource: addondeploymentconfigs
+          name: aws-config-yyy
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          maxConcurrentlyUpdating: 25%
+    - name: gcp
+      placement:
+        name: gcp-placement
+        namespace: default
+      addonTemplate:
+        configs:
+        - group: addon.open-cluster-management.io
+          resource: addondeploymentconfigs
+          name: gcp-config-yyy
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          maxConcurrentlyUpdating: 25%
+status:
+  configReferences:
+  - group: addon.open-cluster-management.io
+    resource: addondeploymentconfigs
+    name: deploy-config-yyy
+    namespace: open-cluster-management
+    desiredConfigSpecHash: <deploy-config-yyy-spec-hash>
+  - group: addon.open-cluster-management.io
+    resource: addondeploymentconfigs
+    name: aws-config-yyy
+    namespace: open-cluster-management
+    desiredConfigSpecHash: <aws-config-yyy-spec-hash>
+  - group: addon.open-cluster-management.io
+    resource: addondeploymentconfigs
+    name: gcp-config-yyy
+    namespace: open-cluster-management
+    desiredConfigSpecHash: <gcp-config-yyy-spec-hash>
+  - group: addon.open-cluster-management.io
+    resource: addonhubconfigs
+    name: hub-config-yyy
+    desiredConfigSpecHash: <hub-config-yyy-spec-hash>
 ```
 
 #### Rollback addon to a specific version.
@@ -777,8 +943,7 @@ kind: ClusterManagementAddOn
 metadata:
   name: helloworld
 spec:
-  configuration:
-    configs:
+  defaultConfigs:
     - group: addon.open-cluster-management.io
       resource: addondeploymentconfigs
       name: deploy-config-xxx
@@ -786,14 +951,98 @@ spec:
     - group: addon.open-cluster-management.io
       resource: addonhubconfigs
       name: hub-config-xxx
-    rolloutStrategy:
-      type: RollingUpdateWithPlacement
-      rollingUpdateWithPlacement:
+  installStrategy:
+    type: Placements
+    placements:
+    - name: aws
+      placement:
+        name: aws-placement
+        namespace: default
+      addonTemplate:
+        configs:
+        - group: addon.open-cluster-management.io
+          resource: addondeploymentconfigs
+          name: aws-config-xxx
+      rolloutStrategy:
+        type: RollingUpdateWithCanary
+        rollingUpdateWithCanary:
+          maxConcurrentlyUpdating: 25%
+          placement:
+            name: canary-placement
+            namespace: default
+    - name: canary
+      placement:
         name: canary-placement
         namespace: default
-        maxConcurrentlyUpdating: 25%
-  installStrategy:
-  ...
+      addonTemplate:
+        configs:
+        - group: addon.open-cluster-management.io
+          resource: addondeploymentconfigs
+          name: aws-config-xxx
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          maxConcurrentlyUpdating: 25%
+    - name: gcp
+      placement:
+        name: gcp-placement
+        namespace: default
+      addonTemplate:
+        configs:
+        - group: addon.open-cluster-management.io
+          resource: addondeploymentconfigs
+          name: gcp-config-xxx
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          maxConcurrentlyUpdating: 25%
+```
+
+#### Corner cases
+1. A new cluster is added.
+
+If the newly added cluster only belongs to canary-placement.
+- if there is no `ManagedClusterAddOn`, it should follow the install strategy defined in the canary to install the addon.
+- if there's already `ManagedClusterAddOn` on that cluster, it should follow the canary rollout strategy to upgrade the 
+addon to desired configs.
+
+If the newly added cluster only belongs to aws-placement.
+- if there is no `ManagedClusterAddOn`, it should follow the install strategy defined in aws to install the addon.
+- if there's already `ManagedClusterAddOn` on that cluster, it should wait for the canary upgrade finish, then follow the 
+aws rollout strategy to upgrade the addon to the desired status.
+
+If the new added cluster belongs to both of them, it should first follow the strategy in canary-placement, and then follow 
+the strategy in aws-placement.
+
+2. Should the changes in canary frequently trigger the aws rollout?
+
+The case is configs or clusters change after the canary upgrade is complete and before the aws upgrade finish. Should this 
+stops the aws rollout and wait for the canary to complete again and retrigger the rollout?
+
+The current consideration is to add a `installProgression` in the `ClusterManagementAddOn` status to record the result. 
+So the rollout controller only needs to check the `installProgression` to know if the canary has once finished, if yes, 
+it could start rolling upgrade and won't be frequently retriggered.
+
+```yaml
+installProgression:
+- name: canary
+  placement:
+    name: canary-placement
+    namespace: default
+  configReferences:
+  - group: addon.open-cluster-management.io
+    resource: addonhubconfigs
+    name: hub-config-yyy
+    desiredConfigSpecHash: <hub-config-yyy-spec-hash>
+  - group: addon.open-cluster-management.io
+    resource: addonhubconfigs
+    name: hub-config-yyy
+    desiredConfigSpecHash: <hub-config-yyy-spec-hash>
+  lastTransitionTime: "2022-11-02T05:48:12Z"
+  message: install completed with no errors.
+  reason: Succeed
+  status: "False"
+  type: Progressing
 ```
 
 ### Test Plan
@@ -1008,400 +1257,3 @@ whether installation/upgrade/rollback is succeeded or failed, lastTransitionTime
   - lastVersion > desiredVersion, update condition Progressing status to true with reason Rollingback.
   - lastVersion=="" || lastVersion="unknown", update condition Progressing status to true with reason Installing.
 - Any other reasons, update condition Progressing status to false with reason Failed.
-
-### Examples
-
-#### Fresh install addon to default version.
-The supportedVersions and defaultVersion is updated by addon manager.
-
-```yaml
-apiVersion: addon.open-cluster-management.io/v1alpha1
-kind: ClusterManagementAddOn
-metadata:
-  name: helloworld
-spec:
-  installStrategy:
-    type: Placements
-    placements:
-    - name: global-placement
-      namespace: default
-      addonTemplate:
-        configs:
-        - group: addon.open-cluster-management.io
-          resource: addondeploymentconfigs
-          name: global-config
-status:
-  supportedVersions:
-  - v1
-  defaultVersion: v1
-```
-
-If desiredVersion is not defined in `ManagedClusterAddOn`, use the defaultVersion v1.
-When the installation is finished, the currentVersion is updated to v1.
-
-```yaml
-apiVersion: addon.open-cluster-management.io/v1alpha1
-kind: ManagedClusterAddOn
-metadata:
-  name: helloworld
-  namespace: cluster1
-spec:
-  installNamespace: open-cluster-management-agent-addon
-Status:
-…
-  currentVersion: v1
-  conditions:
-  - lastTransitionTime: "2022-11-02T05:48:12Z"
-    message: install completed with no errors.
-    reason: Succeed
-    status: "False"
-    type: Progressing
-```
-
-Add manager generates `ManifestWork` with addon-name and addon-version label.
-```yaml
-apiVersion: work.open-cluster-management.io/v1
-kind: ManifestWork
-metadata:
-  labels:
-    open-cluster-management.io/addon-name: application-manager
-    open-cluster-management.io/addon-version: v1
-  generation: 1
-  name: addon-application-manager-deploy
-  namespace: cluster1
-…
-```
-
-#### Auto upgrade addon to latest version.
-After addon manager is upgraded, the supportedVersions and defaultVersion is also updated by addon manager.
-
-```yaml
-apiVersion: addon.open-cluster-management.io/v1alpha1
-kind: ClusterManagementAddOn
-metadata:
-  name: helloworld
-spec:
-  installStrategy:
-    type: Placements
-    placements:
-    - name: global-placement
-      namespace: default
-      addonTemplate:
-        configs:
-        - group: addon.open-cluster-management.io
-          resource: addondeploymentconfigs
-          name: global-config
-status:
-  supportedVersions:
-  - v1
-  - v2
-  defaultVersion: v2
-```
-
-Since the defaultVersion is upgraded to v2, the `ManagedClusterAddOn` default desiredVersion is updated to v2.
-The addon manager will update `ManifestWork` with addon-version v2.
-When the upgrade is finished, the currentVersion is updated to v2.
-
-```yaml
-apiVersion: addon.open-cluster-management.io/v1alpha1
-kind: ManagedClusterAddOn
-metadata:
-  name: helloworld
-  namespace: cluster1
-spec:
-  installNamespace: open-cluster-management-agent-addon
-Status:
-…
-  lastVersion: v1
-  currentVersion: v2
-  conditions:
-  - lastTransitionTime: "2022-11-02T05:48:12Z"
-    message: install completed with no errors.
-    reason: Succeed
-    status: "False"
-    type: Progressing
-```
-
-```yaml
-apiVersion: work.open-cluster-management.io/v1
-kind: ManifestWork
-metadata:
-  labels:
-    open-cluster-management.io/addon-name: application-manager
-    open-cluster-management.io/addon-version: v2
-  generation: 2
-  name: addon-application-manager-deploy
-  namespace: cluster2
-…
-status:
-  conditions:
-  - lastTransitionTime: "2022-11-02T05:47:30Z"
-    message: All resources are available
-    observedGeneration: 2
-    reason: ResourcesAvailable
-    status: "True"
-    type: Available
-```
-
-#### Canary upgrade addon to specific version.
-Users can modify the installStrategy to achieve canary upgrade.
-
-1. Define the installedVerison explicitly in global-placement before upgrade.
-```yaml
-apiVersion: addon.open-cluster-management.io/v1alpha1
-kind: ClusterManagementAddOn
-metadata:
-  name: helloworld
-spec:
-  installStrategy:
-    type: Placements
-    placements:
-    - name: global-placement
-      namespace: default
-      addonTemplate:
-        desiredVersion: v1
-        configs:
-        - group: addon.open-cluster-management.io
-          resource: addondeploymentconfigs
-          name: global-config
-status:
-  supportedVersions:
-  - v1
-  defaultVersion: v1
-```
-
-2. Upgrade the ClusterManagementAddOn and addon manager.
-
-After the addon manager is upgraded, the supportedVersions and defaultVersion is also updated by addon manager.
-
-```yaml
-apiVersion: addon.open-cluster-management.io/v1alpha1
-kind: ClusterManagementAddOn
-metadata:
-  name: helloworld
-spec:
-  installStrategy:
-    type: Placements
-    placements:
-    - name: global-placement
-      namespace: default
-      addonTemplate:
-        desiredVersion: v1
-        configs:
-        - group: addon.open-cluster-management.io
-          resource: addondeploymentconfigs
-          name: global-config
-status:
-  supportedVersions:
-  - v1
-  - v2
-  defaultVersion: v2
-```
-
-3. Add new placement to select a group of clusters to upgrade to the new version addon.
-
-```yaml
-apiVersion: addon.open-cluster-management.io/v1alpha1
-kind: ClusterManagementAddOn
-metadata:
-  name: helloworld
-spec:
-  installStrategy:
-    type: Placements
-    placements:
-    - name: global-placement
-      namespace: default
-      addonTemplate:
-        desiredVersion: v1
-        configs:
-        - group: addon.open-cluster-management.io
-          resource: addondeploymentconfigs
-          name: global-config
-    - name: canary-placement
-      namespace: default
-      addonTemplate:
-        desiredVersion: v2
-        configs:
-        - group: addon.open-cluster-management.io
-          resource: addondeploymentconfigs
-          name: canary-config
-status:
-  supportedVersions:
-  - v1
-  - v2
-  defaultVersion: v2
-```
-
-4. The upgraded `ManagedClusterAddOn` would be like:
-
-```yaml
-apiVersion: addon.open-cluster-management.io/v1alpha1
-kind: ManagedClusterAddOn
-metadata:
-  name: helloworld
-  namespace: cluster1
-spec:
-  installNamespace: open-cluster-management-agent-addon
-  desiredVersion: v2
-Status:
-…
-  lastVersion: v1
-  currentVersion: unknown
-  conditions:
-  - lastTransitionTime: "2022-11-02T05:48:12Z"
-    message: Upgrading addon to version v2.
-    reason: Upgrading
-    status: "True"
-    type: Progressing
-```
-
-Then becomes 
-
-```yaml
-apiVersion: addon.open-cluster-management.io/v1alpha1
-kind: ManagedClusterAddOn
-metadata:
-  name: helloworld
-  namespace: cluster1
-spec:
-  installNamespace: open-cluster-management-agent-addon
-  desiredVersion: v2
-Status:
-…
-  lastVersion: v1
-  currentVersion: v2
-  conditions:
-  - lastTransitionTime: "2022-11-02T05:48:12Z"
-    message: install completed with no errors.
-    reason: Succeed
-    status: "False"
-    type: Progressing
-```
-
-If the upgrade version is invalid, or any other error occurs during upgrade, the `ManagedClusterAddOn` would be like:
-
-```yaml
-apiVersion: addon.open-cluster-management.io/v1alpha1
-kind: ManagedClusterAddOn
-metadata:
-  name: helloworld
-  namespace: cluster1
-spec:
-  installNamespace: open-cluster-management-agent-addon
-  desiredVersion: v3
-Status:
-…
-  lastVersion: v1
-  currentVersion: unknown
-  conditions:
-  - lastTransitionTime: "2022-11-02T05:48:12Z"
-    message: could not upgrade to invalid version v3
-    reason: Failed
-    status: "False"
-    type: Progressing
-```
-
-#### Rollback addon to a specific version.
-If the addon is not working well after upgrade, or the condition show error message during upgrade. User can modify the 
-installStrategy to rollback the addons.
-
-```yaml
-apiVersion: addon.open-cluster-management.io/v1alpha1
-kind: ClusterManagementAddOn
-metadata:
-  name: helloworld
-spec:
-  installStrategy:
-    type: Placements
-    placements:
-    - name: global-placement
-      namespace: default
-      addonTemplate:
-        desiredVersion: v1
-        configs:
-        - group: addon.open-cluster-management.io
-          resource: addondeploymentconfigs
-          name: global-config
-    - name: canary-placement
-      namespace: default
-      addonTemplate:
-        desiredVersion: v1
-        configs:
-        - group: addon.open-cluster-management.io
-          resource: addondeploymentconfigs
-          name: canary-config
-status:
-  supportedVersions:
-  - v1
-  - v2
-  defaultVersion: v2
-```
-
-The rollbacked `ManagedClusterAddOn` would be like:
-
-```yaml
-apiVersion: addon.open-cluster-management.io/v1alpha1
-kind: ManagedClusterAddOn
-metadata:
-  name: helloworld
-  namespace: cluster1
-spec:
-  installNamespace: open-cluster-management-agent-addon
-  desiredVersion: v1
-Status:
-…
-  lastVersion: v2
-  currentVersion: unknown
-  conditions:
-  - lastTransitionTime: "2022-11-02T05:48:12Z"
-    message: Rollingback addon to version v1.
-    reason: Rollingback
-    status: "True"
-    type: Progressing
-```
-
-Then becomes 
-
-```yaml
-apiVersion: addon.open-cluster-management.io/v1alpha1
-kind: ManagedClusterAddOn
-metadata:
-  name: helloworld
-  namespace: cluster1
-spec:
-  installNamespace: open-cluster-management-agent-addon
-  desiredVersion: v1
-Status:
-…
-  lastVersion: v2
-  currentVersion: v1
-  conditions:
-  - lastTransitionTime: "2022-11-02T05:48:12Z"
-    message: install completed with no errors.
-    reason: Succeed
-    status: "False"
-    type: Progressing
-```
-
-If the rollbacked version is invalid, or any other error occurs during rollback, the `ManagedClusterAddOn` would be like:
-
-```yaml
-apiVersion: addon.open-cluster-management.io/v1alpha1
-kind: ManagedClusterAddOn
-metadata:
-  name: helloworld
-  namespace: cluster1
-spec:
-  installNamespace: open-cluster-management-agent-addon
-  desiredVersion: v0
-Status:
-…
-  lastVersion: v1
-  currentVersion: unknown
-  conditions:
-  - lastTransitionTime: "2022-11-02T05:48:12Z"
-    message: could not rollback to invalid version v0
-    reason: Failed
-    status: "False"
-    type: Progressing
-```
