@@ -56,19 +56,26 @@ The addon developer should not care about which cluster the `ManagedClusterAddon
 type InstallStrategy struct {
 	// Type is the type of the install strategy, it can be:
 	// - Manual: no automatic install
-	// - ClusterLabelSelector: install to clusters with certain labels
 	// - Placements: install to clusters selected by placements.
 	// +kubebuilder:validation:Enum=Manual;Placements
 	// +kubebuilder:default:=Manual
 	Type string `json:"type"`
 
-	// ClusterLabelSelector is a label selector honored when install strategy type is
-	// ClusterLabelSelector
-	ClusterLabelSelector *metav1.LabelSelector `json:"labelSelector,omitempty"`
-
 	// Placements is a list of placement references honored when install strategy type is
 	// Placements. All clusters selected by these placements will install the addon
-	Placements []PlacementRef `json:"placements,omitempty"`
+	// +listType=map
+	// +listMapKey=name
+	// +listMapKey=namespace
+	Placements[] PlacementStrategy `json:"placements,omitempty"`
+}
+
+type PlacementStrategy {
+	// Placement is the reference to a placement
+	Placement PlacementRef `json:",inline"`
+	
+	// AddonAgent is the configuration of managedClusterAddon during installation.
+	// User can override the configuration by updating the managedClusterAddon directly.
+	AddonAgent AddonAgentConfig `json:"addonAgent,omitempty"`
 }
 
 type PlacementRef struct {
@@ -79,10 +86,11 @@ type PlacementRef struct {
 	// Namespace of the placement
 	// +required
 	Namespace string `json:"space"`
+}
 
-	// AddonTemplate is the template to generate ManagedClusterAddon. It takes effect only when creating the ManagedClusterAddon. If
-  // the setting of a ManagedClusterAddon is updated by the user, it will not be reverted to the setting here.
-	AddonTemplate ManagedClusterAddOnSpec `json:"addonTemplate,omitempty"`
+type AddonAgentConfig struct {
+	// InstallNamespace is the namespace to install the agent on spoke cluster.
+	InstallNamespace string `json:"addonAgent"`
 }
 ```
 
@@ -104,7 +112,7 @@ spec:
 - when a cluster is added into the related `PlacementDecision`, the `ManagedClusterAddon` will be created on the cluster namespace.
 - when a cluster is removed from the related `PlacementDecision`, the `ManagedClusterAddon` will be deleted on the cluster namespace.
 
-### Install addons based on multiple placement with different configuration
+### Install addons based on multiple placements
 
 ```yaml
 apiVersion: addon.open-cluster-management.io/v1alpha1
@@ -117,15 +125,17 @@ spec:
     placements:
     - name: aws-placement
       namespace: default
-      addonTemplate:
+      addonAgent:
         installNamespace: aws-addon-ns
     - name: gcp-placement
       namespace: default
-      addonTemplate:
+      addonAgent:
         installNamespace: gcp-addon-ns
 ```
 
-This will ensure that addon installed in aws uses aws-config while addon installed in gcp uses gcp config. If the user updates the config of a certain `ManagedClusterAddon`, it will NOT be reverted based on the configs in `ClusterManagementAddon`. The setting in `ClusterManagementAddon` only impact on creation stage.
+This will ensure that addon agents installed in aws are deployed in aws-addon-ns namespace
+while addon installed in gcp in gcp-addon-ns. If the user updates the `installNamespace` of a certain `ManagedClusterAddon`, 
+it will NOT be reverted based on the configs in `ClusterManagementAddon`.
 
 ### Disable addon in some clusters
 
