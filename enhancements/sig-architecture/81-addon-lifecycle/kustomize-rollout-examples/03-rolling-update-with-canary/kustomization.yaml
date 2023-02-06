@@ -1,0 +1,5 @@
+resources:
+- hub-config.yaml
+- cluster-management-addon.yaml
+configurations:
+- nameReference.yaml

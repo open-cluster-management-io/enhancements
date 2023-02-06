@@ -230,7 +230,7 @@ type RollingUpdateWithCanary struct {
 ```golang
 // ClusterManagementAddOnStatus represents the current status of cluster management add-on.
 type ClusterManagementAddOnStatus struct {
-	// configReferences is a list of current add-on configuration references per placement.
+	// installProgression is a list of current add-on configuration references per placement.
 	// +optional
 	InstallProgression []InstallProgression `json:"installProgression,omitempty"`
 }
@@ -370,7 +370,7 @@ This condition will also be used in `ClusterManagementAddOn` `installProgression
 ### Workflow
 Below is an example of `ClusterManagementAddOn`, `ManagedClusterAddOn` and `ManifestWork`:
 
-Kustomize could be used to produce the resource with a SHA based suffix. //TODO kustomize examples
+Kustomize could be used to produce the resource with a SHA based suffix.
 
 The addon is upgrading from spec hash xxx to spec hash yyy, and the canary has passed the upgrade.
 
@@ -381,10 +381,10 @@ kind: AddOnHubConfig
 metadata:
   name: hub-config-yyy
 spec:
-  desiredVersion: v0.10.0
+  desiredVersion: v0.11.0
 status:
   supportedVersions:
-  - v0.10.0
+  - v0.11.0
 ```
 
 ```yaml
@@ -393,10 +393,6 @@ kind: ClusterManagementAddOn
 metadata:
   name: helloworld
 spec:
-  defaultConfigs:
-  - group: addon.open-cluster-management.io
-    resource: addonhubconfigs
-    name: hub-config-yyy
   installStrategy:
     type: Placements
     placements:
@@ -404,12 +400,12 @@ spec:
       namespace: default
       configs:
       - group: addon.open-cluster-management.io
-        resource: addondeploymentconfigs
-        name: aws-config-yyy
+        resource: addonhubconfigs
+        name: hub-config-yyy
       rolloutStrategy:
         type: RollingUpdateWithCanary
         # When type is RollingUpdateWithCanary, the rollout controller will check if clusters of canary-placement have 
-        # applied new config aws-config-yyy and addons are healthy. If canary-placement clusters all upgrade successfully, 
+        # applied new config hub-config-yyy and addons are healthy. If canary-placement clusters all upgrade successfully, 
         # rollout controller will continue to upgrade clusters in aws-placement.
         #
         # The placment defined in RollingUpdateWithCanary is just a reference for finding and checking canary clusters before 
@@ -425,31 +421,27 @@ spec:
       namespace: default
       configs:
       - group: addon.open-cluster-management.io
-        resource: addondeploymentconfigs
-        name: aws-config-yyy
+        resource: addonhubconfigs
+        name: hub-config-yyy
       rolloutStrategy:
         type: RollingUpdate
         rollingUpdate:
           maxConcurrentlyUpdating: 25%
 status:
-# installProgression (besides desiredConfigSpecHash) is maintained by rollout controller.
   installProgression:
   - name: aws-placement
     namespace: default
     configReferences:
     - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: aws-config-yyy
-      # desiredConfigSpecHash is maintained by addon manager
-      desiredConfigSpecHash: <aws-config-yyy-spec-hash>
-      lastAppliedConfigSpecHash: <aws-config-xxx-spec-hash>
-      lastKnownGoodConfigSpecHash: <aws-config-yyy-spec-hash>
-    - group: addon.open-cluster-management.io
       resource: addonhubconfigs
       name: hub-config-yyy
+      # desiredConfigSpecHash is calculated from config spec hash and maintained by addon manager.
       desiredConfigSpecHash: <hub-config-yyy-spec-hash>
+      # Record the config spec hash when the all the corresponding ManagedClusterAddOn are applied successfully. Maintained by the rollout controller.
       lastAppliedConfigSpecHash: <hub-config-xxx-spec-hash>
+      # Record the last known good config spec hash. For rolling update with canary it's the spec hash of canary placement. Maintained by the rollout controller.
       lastKnownGoodConfigSpecHash: <hub-config-yyy-spec-hash>
+    # A summary of all the ManagedClusterAddOn conditions.
     conditions:
     - lastTransitionTime: "2022-11-02T05:48:12Z"
       message: 200/400 clusters upgrading...
@@ -460,17 +452,11 @@ status:
     namespace: default
     configReferences:
     - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: aws-config-yyy
-      desiredConfigSpecHash: <aws-config-yyy-spec-hash>
-      lastAppliedConfigSpecHash: <aws-config-yyy-spec-hash>
-      lastKnownGoodConfigSpecHash: <aws-config-yyy-spec-hash>
-    - group: addon.open-cluster-management.io
       resource: addonhubconfigs
       name: hub-config-yyy
       desiredConfigSpecHash: <hub-config-yyy-spec-hash>
       lastAppliedConfigSpecHash: <hub-config-yyy-spec-hash>
-      lastKnownGoodConfigSpecHash: <aws-config-yyy-spec-hash>
+      lastKnownGoodConfigSpecHash: <hub-config-yyy-spec-hash>
     conditions:
     - lastTransitionTime: "2022-11-02T05:48:12Z"
       message: 100/100 upgrade completed with no errors.
@@ -496,12 +482,6 @@ status:
   # configReferences is maintained by rollout controller
   configReferences:
   - group: addon.open-cluster-management.io
-    resource: addondeploymentconfigs
-    name: aws-config-yyy
-    namespace: open-cluster-management
-    desiredConfigSpecHash: <aws-config-yyy-spec-hash>
-    lastAppliedConfigSpecHash: <aws-config-yyy-spec-hash>
-  - group: addon.open-cluster-management.io
     resource: addonhubconfigs
     name: hub-config-yyy
     desiredConfigSpecHash: <hub-config-yyy-spec-hash>
@@ -525,8 +505,7 @@ metadata:
     open-cluster-management.io/addon-name: application-manager
   annotations:
     configSpecHash: | 
-      {"addonhubconfigs.addon.open-cluster-management.io/hub-config-yyy":"<hub-config-yyy-spec-hash>", 
-      "addondeploymentconfigs.addon.open-cluster-management.io/open-cluster-management/aws-config-yyy":"<aws-config-yyy-spec-hash>"}
+      {"addonhubconfigs.addon.open-cluster-management.io/hub-config-yyy":"<hub-config-yyy-spec-hash>"}
   generation: 2
   name: addon-application-manager-deploy
   namespace: cluster2
@@ -544,8 +523,7 @@ status:
 There will be 3 components and 2 kind of users involved in the workflow:
 
 **Admin**
-- The admin is responsible to install/upgrade the `ClusterManagementAddOn`, addon configurations `AddOnHubConfig` 
-`AddOnDeploymentConfig` and addon manager deployment.
+- The admin is responsible to install/upgrade the `ClusterManagementAddOn`, addon configurations `AddOnHubConfig` and addon manager deployment.
 - Admin can modify the `spec.installStrategy` of `ClusterManagementAddOn`. For upgrade cases, needs to append 
 `rolloutStrategy`.
 
@@ -594,10 +572,11 @@ A new component called rollout controller is introduced to rollout the configs.
 
 ### Examples
 
-//TODO kustomize examples
-
 #### Fresh install addon to the default version.
-`AddOnHubConfig` has desired version v0.10.0. The resource name has a hash suffix which will change when the content is updated.
+
+[01-fresh-install](./kustomize-rollout-examples/01-fresh-install) shows a kustomize example which could be used to produce the `AddOnHubConfig` with a SHA based suffix and update the name reference in `ClusterManagementAddOn`, running `kubectl kustomize ./kustomize-rollout-examples/01-fresh-install` to show the output.
+
+`AddOnHubConfig` has desired version v0.10.0. The resource name has a hash suffix xxx.
 
 ```yaml
 apiVersion: addon.open-cluster-management.io/v1alpha1
@@ -613,22 +592,12 @@ status:
 
 For fresh install, `ClusterManagementAddOn` has a list of configs and install strategy defined.
 
-Addon manager updates the `desiredConfigSpecHash` of `ClusterManagementAddOn.status.installProgression.configReferences`. 
-
 ```yaml
 apiVersion: addon.open-cluster-management.io/v1alpha1
 kind: ClusterManagementAddOn
 metadata:
   name: helloworld
 spec:
-  defaultConfigs:
-    - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: deploy-config-xxx
-      namespace: open-cluster-management
-    - group: addon.open-cluster-management.io
-      resource: addonhubconfigs
-      name: hub-config-xxx
   installStrategy:
     type: Placements
     placements:
@@ -636,51 +605,17 @@ spec:
       namespace: default
       configs:
       - group: addon.open-cluster-management.io
-        resource: addondeploymentconfigs
-        name: aws-config-xxx
-    - name: gcp-placement
-      namespace: default
-      configs:
-      - group: addon.open-cluster-management.io
-        resource: addondeploymentconfigs
-        name: gcp-config-xxx
+        resource: addonhubconfigs
+        name: hub-config-xxx
 status:
   installProgression:
   - name: aws-placement
     namespace: default
     configReferences:
     - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: aws-config-xxx
-      desiredConfigSpecHash: <aws-config-xxx-spec-hash>
-      lastAppliedConfigSpecHash: ""
-      lastKnownGoodConfigSpecHash: ""
-    - group: addon.open-cluster-management.io
       resource: addonhubconfigs
       name: hub-config-xxx
-      desiredConfigSpecHash: <hub-config-xxx-spec-hash>
-      lastAppliedConfigSpecHash: ""
-      lastKnownGoodConfigSpecHash: ""
-    conditions:
-    - lastTransitionTime: "2022-11-02T05:48:12Z"
-      message: 400/400 installing...
-      reason: Installing
-      status: "True"
-      type: Progressing
-  - name: gcp
-    placement:
-      name: gcp-placement
-      namespace: default
-    configReferences:
-    - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: gcp-config-xxx
-      desiredConfigSpecHash: <gcp-config-xxx-spec-hash>
-      lastAppliedConfigSpecHash: ""
-      lastKnownGoodConfigSpecHash: ""
-    - group: addon.open-cluster-management.io
-      resource: addonhubconfigs
-      name: hub-config-xxx
+      # Addon manager calculates and updates the `desiredConfigSpecHash`.
       desiredConfigSpecHash: <hub-config-xxx-spec-hash>
       lastAppliedConfigSpecHash: ""
       lastKnownGoodConfigSpecHash: ""
@@ -693,12 +628,6 @@ status:
 ```
 
 Since it's a fresh install, install controlller will generate `ManagedClusterAddOn` for all the clusters.
-
-The rollout controller will watch the `ClusterManagementAddOn`, update `ManagedClusterAddOn` with `desiredConfigSpecHash` 
-for all of the selected clusters.
-
-The rollout controller is also responsible to update the `ManagedClusterAddOn` `lastAppliedConfigSpecHash` and `conditions` by watching the addon 
-`ManifestWorks` generated by addon manager.
 
 ```yaml
 apiVersion: addon.open-cluster-management.io/v1alpha1
@@ -713,17 +642,14 @@ status:
     resource: addondeploymentconfigs
   configReferences:
   - group: addon.open-cluster-management.io
-    resource: addondeploymentconfigs
-    name: aws-config-xxx
-    namespace: open-cluster-management
-    desiredConfigSpecHash: <aws-config-xxx-spec-hash>
-    lastAppliedConfigSpecHash: <aws-config-xxx-spec-hash>
-  - group: addon.open-cluster-management.io
     resource: addonhubconfigs
     name: hub-config-xxx
+    # The rollout controller sync the `desiredConfigSpecHash` from `ClusterManagementAddOn`.
     desiredConfigSpecHash: <hub-config-xxx-spec-hash>
+    # The rollout controller watches the `ManifestWorks` generated by addon manager and updates the `lastAppliedConfigSpecHash`.
     lastAppliedConfigSpecHash: <hub-config-xxx-spec-hash>
   conditions:
+  # The rollout controller watches the `ManifestWorks` generated by addon manager and updates the condition `Progressing`.
   - lastTransitionTime: "2022-11-02T05:48:12Z"
     message: install completed with no errors.
     reason: InstallSucceed
@@ -739,8 +665,7 @@ kind: ManifestWork
 metadata:
   annotations:
     configSpecHash: | 
-      {"addonhubconfigs.addon.open-cluster-management.io/hub-config-xxx":"<hub-config-xxx-spec-hash>", 
-      "addondeploymentconfigs.addon.open-cluster-management.io/open-cluster-management/aws-config-xxx":"<aws-config-xxx-spec-hash>"}
+      {"addonhubconfigs.addon.open-cluster-management.io/hub-config-xxx":"<hub-config-xxx-spec-hash>"}
   labels:
     open-cluster-management.io/addon-name: application-manager
   generation: 2
@@ -772,33 +697,6 @@ status:
     namespace: default
     configReferences:
     - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: aws-config-xxx
-      desiredConfigSpecHash: <aws-config-xxx-spec-hash>
-      lastAppliedConfigSpecHash: <aws-config-xxx-spec-hash>
-      lastKnownGoodConfigSpecHash: <aws-config-xxx-spec-hash>
-    - group: addon.open-cluster-management.io
-      resource: addonhubconfigs
-      name: hub-config-xxx
-      desiredConfigSpecHash: <hub-config-xxx-spec-hash>
-      lastAppliedConfigSpecHash: <hub-config-xxx-spec-hash>
-      lastKnownGoodConfigSpecHash: <hub-config-xxx-spec-hash>
-    conditions:
-    - lastTransitionTime: "2022-11-02T05:48:12Z"
-      message: 400/400 install completed with no errors.
-      reason: InstallSucceed
-      status: "Flase"
-      type: Progressing
-  - name: gcp-placement
-    namespace: default
-    configReferences:
-    - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: gcp-config-xxx
-      desiredConfigSpecHash: <gcp-config-xxx-spec-hash>
-      lastAppliedConfigSpecHash: <gcp-config-xxx-spec-hash>
-      lastKnownGoodConfigSpecHash: <gcp-config-xxx-spec-hash>
-    - group: addon.open-cluster-management.io
       resource: addonhubconfigs
       name: hub-config-xxx
       desiredConfigSpecHash: <hub-config-xxx-spec-hash>
@@ -813,7 +711,10 @@ status:
 ```
 
 #### Auto rolling upgrade addon to latest version.
-Create a new `AddOnHubConfig` with the latest version,
+
+[02-rolling-update](./kustomize-rollout-examples/02-rolling-update) shows a kustomize example, running `kubectl kustomize ./kustomize-rollout-examples/02-rolling-update` to show the output.
+
+A new `AddOnHubConfig` with desired version v0.11.0 is created. The resource name has a hash suffix yyy.
 
 ```yaml
 apiVersion: addon.open-cluster-management.io/v1alpha1
@@ -828,8 +729,7 @@ status:
   - v0.10.0
 ```
 
-When the config name changes, or config spec changes, the addon manager watches the change in `ClusterManagementAddOn`, 
-`AddOnHubConfig` and update the `desiredConfigSpecHash` of `ClusterManagementAddOn`.
+For rolling upgrade, `ClusterManagementAddOn` has rollout strategy with type `RollingUpdate` defined.
 
 ```yaml
 apiVersion: addon.open-cluster-management.io/v1alpha1
@@ -837,14 +737,6 @@ kind: ClusterManagementAddOn
 metadata:
   name: helloworld
 spec:
-  defaultConfigs:
-    - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: deploy-config-yyy
-      namespace: open-cluster-management
-    - group: addon.open-cluster-management.io
-      resource: addonhubconfigs
-      name: hub-config-yyy
   installStrategy:
     type: Placements
     placements:
@@ -852,18 +744,8 @@ spec:
       namespace: default
       configs:
       - group: addon.open-cluster-management.io
-        resource: addondeploymentconfigs
-        name: aws-config-yyy
-      rolloutStrategy:
-        type: RollingUpdate
-        rollingUpdate:
-          maxConcurrentlyUpdating: 25%
-    - name: gcp-placement
-      namespace: default
-      configs:
-      - group: addon.open-cluster-management.io
-        resource: addondeploymentconfigs
-        name: gcp-config-yyy
+        resource: addonhubconfigs
+        name: hub-config-yyy
       rolloutStrategy:
         type: RollingUpdate
         rollingUpdate:
@@ -874,35 +756,10 @@ status:
     namespace: default
     configReferences:
     - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: aws-config-yyy
-      desiredConfigSpecHash: <aws-config-yyy-spec-hash>
-      lastAppliedConfigSpecHash: <aws-config-xxx-spec-hash>
-      lastKnownGoodConfigSpecHash: <hub-config-xxx-spec-hash>
-    - group: addon.open-cluster-management.io
       resource: addonhubconfigs
       name: hub-config-yyy
-      desiredConfigSpecHash: <hub-config-yyy-spec-hash>
-      lastAppliedConfigSpecHash: <hub-config-xxx-spec-hash>
-      lastKnownGoodConfigSpecHash: <hub-config-xxx-spec-hash>
-    conditons:
-    - lastTransitionTime: "2022-11-02T05:48:12Z"
-      message: 100/400 upgrading...
-      reason: Upgrading
-      status: "True"
-      type: Progressing
-  - name: gcp-placement
-    namespace: default
-    configReferences:
-    - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: gcp-config-yyy
-      desiredConfigSpecHash: <gcp-config-yyy-spec-hash>
-      lastAppliedConfigSpecHash: <gcp-config-xxx-spec-hash>
-      lastKnownGoodConfigSpecHash: <hub-config-xxx-spec-hash>
-    - group: addon.open-cluster-management.io
-      resource: addonhubconfigs
-      name: hub-config-yyy
+      # When the config name changes, or config spec changes, the addon manager watches the changes
+      # and update the `desiredConfigSpecHash`.
       desiredConfigSpecHash: <hub-config-yyy-spec-hash>
       lastAppliedConfigSpecHash: <hub-config-xxx-spec-hash>
       lastKnownGoodConfigSpecHash: <hub-config-xxx-spec-hash>
@@ -913,9 +770,6 @@ status:
       status: "True"
       type: Progressing
 ```
-
-The rollout manager compare the `desiredConfigSpecHash` of `ClusterManagementAddOn` and `ManagedClusterAddOn`, update the 
-`desiredConfigSpecHash` of `ManagedClusterAddOnStatus`.
 
 Since the rollout strategy type is `RollingUpdate`, the rollout manager will first pick 25% of the clusters to do the update.
 
@@ -932,14 +786,9 @@ status:
     resource: addondeploymentconfigs
   configReferences:
   - group: addon.open-cluster-management.io
-    resource: addondeploymentconfigs
-    name: aws-config-yyy
-    namespace: open-cluster-management
-    desiredConfigSpecHash: <aws-config-yyy-spec-hash>
-    lastAppliedConfigSpecHash: <aws-config-xxx-spec-hash>
-  - group: addon.open-cluster-management.io
     resource: addonhubconfigs
     name: hub-config-yyy
+    # The rollout controller sync the `desiredConfigSpecHash` from `ClusterManagementAddOn`.
     desiredConfigSpecHash: <hub-config-yyy-spec-hash>
     lastAppliedConfigSpecHash: <hub-config-xxx-spec-hash>
   conditions:
@@ -958,8 +807,7 @@ kind: ManifestWork
 metadata:
   annotations:
     configSpecHash: | 
-      {"addonhubconfigs.addon.open-cluster-management.io/hub-config-yyy":"<hub-config-yyy-spec-hash>", 
-      "addondeploymentconfigs.addon.open-cluster-management.io/open-cluster-management/aws-config-yyy":"<aws-config-yyy-spec-hash>"}
+      {"addonhubconfigs.addon.open-cluster-management.io/hub-config-yyy":"<hub-config-yyy-spec-hash>"}
   labels:
     open-cluster-management.io/addon-name: application-manager
   generation: 2
@@ -976,7 +824,6 @@ status:
     type: Available
 ```
 
-The rollout controller then watches the `ManifestWork` and update the `lastAppliedConfigSpecHash` and `conditions`. 
 When the 25% `ManagedClusterAddOn` is healthy, rollout manager will continue to update the remaining clusters.
 
 ```yaml
@@ -992,17 +839,13 @@ status:
     resource: addondeploymentconfigs
   configReferences:
   - group: addon.open-cluster-management.io
-    resource: addondeploymentconfigs
-    name: aws-config-yyy
-    namespace: open-cluster-management
-    desiredConfigSpecHash: <aws-config-yyy-spec-hash>
-    lastAppliedConfigSpecHash: <aws-config-yyy-spec-hash>
-  - group: addon.open-cluster-management.io
     resource: addonhubconfigs
     name: hub-config-yyy
     desiredConfigSpecHash: <hub-config-yyy-spec-hash>
+    # The rollout controller watches the `ManifestWorks` generated by addon manager and updates the `lastAppliedConfigSpecHash`.
     lastAppliedConfigSpecHash: <hub-config-yyy-spec-hash>
   conditions:
+  # The rollout controller watches the `ManifestWorks` generated by addon manager and updates the condition `Progressing`.
   - lastTransitionTime: "2022-11-02T05:48:12Z"
     message: upgrade completed with no errors.
     reason: UpgradeSucceed
@@ -1025,33 +868,6 @@ status:
     namespace: default
     configReferences:
     - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: aws-config-yyy
-      desiredConfigSpecHash: <aws-config-yyy-spec-hash>
-      lastAppliedConfigSpecHash: <aws-config-yyy-spec-hash>
-      lastKnownGoodConfigSpecHash: <aws-config-yyy-spec-hash>
-    - group: addon.open-cluster-management.io
-      resource: addonhubconfigs
-      name: hub-config-yyy
-      desiredConfigSpecHash: <hub-config-yyy-spec-hash>
-      lastAppliedConfigSpecHash: <hub-config-yyy-spec-hash>
-      lastKnownGoodConfigSpecHash: <hub-config-yyy-spec-hash>
-    conditions:
-    - lastTransitionTime: "2022-11-02T05:48:12Z"
-      message: 400/400 upgrade completed with no errors.
-      reason: UpgradeSucceed
-      status: "False"
-      type: Progressing
-  - name: gcp-placement
-    namespace: default
-    configReferences:
-    - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: gcp-config-yyy
-      desiredConfigSpecHash: <gcp-config-yyy-spec-hash>
-      lastAppliedConfigSpecHash: <gcp-config-yyy-spec-hash>
-      lastKnownGoodConfigSpecHash: <gcp-config-yyy-spec-hash>
-    - group: addon.open-cluster-management.io
       resource: addonhubconfigs
       name: hub-config-yyy
       desiredConfigSpecHash: <hub-config-yyy-spec-hash>
@@ -1066,7 +882,10 @@ status:
 ```
 
 #### Auto canary upgrade addon to a specific version.
-Create a new `AddOnHubConfig` with the latest version,
+
+[03-rolling-update-with-canary](./kustomize-rollout-examples/03-rolling-update-with-canary) shows a kustomize example, running `kubectl kustomize ./kustomize-rollout-examples/03-rolling-update-with-canary` to show the output.
+
+A new `AddOnHubConfig` with desired version v0.11.0 is created. The resource name has a hash suffix yyy.
 
 ```yaml
 apiVersion: addon.open-cluster-management.io/v1alpha1
@@ -1081,15 +900,7 @@ status:
   - v0.10.0
 ```
 
-The admin append rollout strategy type `RollingUpdateWithCanary` to `aws-placement` and refer to the `canary-placement` 
-so that the `aws-placment` will auto-upgrade when `canary-placement` is upgrade successfully.
-
-The admin also needs to create a placement `canary-placement` with rollout strategy type `RollingUpdate`. The clusters 
-inside `canary-placement` will apply the new config `aws-config-yyy` first. When it's done, `aws-placement` will continue 
-to upgrade the remaining clusters.
-
-When the config name changes, or config spec changes, the addon manager watches the change in `ClusterManagementAddOn`, 
-`AddOnHubConfig` and update the `desiredConfigSpecHash` of `ClusterManagementAddOn`.
+For rolling upgrade with canary, `ClusterManagementAddOn` has rollout strategy with type `RollingUpdateWithCanary` defined.
 
 ```yaml
 apiVersion: addon.open-cluster-management.io/v1alpha1
@@ -1097,14 +908,6 @@ kind: ClusterManagementAddOn
 metadata:
   name: helloworld
 spec:
-  defaultConfigs:
-    - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: deploy-config-yyy
-      namespace: open-cluster-management
-    - group: addon.open-cluster-management.io
-      resource: addonhubconfigs
-      name: hub-config-yyy
   installStrategy:
     type: Placements
     placements:
@@ -1112,21 +915,26 @@ spec:
       namespace: default
       configs:
       - group: addon.open-cluster-management.io
-        resource: addondeploymentconfigs
-        name: aws-config-yyy
+        resource: addonhubconfigs
+        name: hub-config-yyy
       rolloutStrategy:
+        # The admin append rollout strategy type `RollingUpdateWithCanary` to `aws-placement` and refer to the `canary-placement` 
+        # so that the `aws-placment` will auto-upgrade when `canary-placement` is upgrade successfully.
         type: RollingUpdateWithCanary
         rollingUpdateWithCanary:
           maxConcurrentlyUpdating: 25%
           placement:
             name: canary-placement
             namespace: default
+    # The admin also needs to create a placement `canary-placement` with rollout strategy type `RollingUpdate`. The clusters 
+    # inside `canary-placement` will apply the new config `hub-config-yyy` first. When it's done, `aws-placement` will continue 
+    # to upgrade the remaining clusters.
     - name: canary-placement
       namespace: default
       configs:
       - group: addon.open-cluster-management.io
-        resource: addondeploymentconfigs
-        name: aws-config-yyy
+        resource: addonhubconfigs
+        name: hub-config-yyy
       rolloutStrategy:
         type: RollingUpdate
         rollingUpdate:
@@ -1137,14 +945,10 @@ status:
     namespace: default
     configReferences:
     - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: aws-config-yyy
-      desiredConfigSpecHash: <aws-config-yyy-spec-hash>
-      lastAppliedConfigSpecHash: <aws-config-xxx-spec-hash>
-      lastKnownGoodConfigSpecHash: <aws-config-xxx-spec-hash>
-    - group: addon.open-cluster-management.io
       resource: addonhubconfigs
       name: hub-config-yyy
+      # When the config name changes, or config spec changes, the addon manager watches the changes
+      # and update the `desiredConfigSpecHash`.
       desiredConfigSpecHash: <hub-config-yyy-spec-hash>
       lastAppliedConfigSpecHash: <hub-config-xxx-spec-hash>
       lastKnownGoodConfigSpecHash: <hub-config-xxx-spec-hash>
@@ -1157,12 +961,6 @@ status:
   - name: canary-placement
     namespace: default
     configReferences:
-    - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: aws-config-yyy
-      desiredConfigSpecHash: <aws-config-yyy-spec-hash>
-      lastAppliedConfigSpecHash: <aws-config-xxx-spec-hash>
-      lastKnownGoodConfigSpecHash: <aws-config-xxx-spec-hash>
     - group: addon.open-cluster-management.io
       resource: addonhubconfigs
       name: hub-config-yyy
@@ -1192,17 +990,11 @@ status:
     namespace: default
     configReferences:
     - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: aws-config-yyy
-      desiredConfigSpecHash: <aws-config-yyy-spec-hash>
-      lastAppliedConfigSpecHash: <aws-config-xxx-spec-hash>
-      # lastKnownGoodConfigSpecHash is yyy
-      lastKnownGoodConfigSpecHash: <aws-config-yyy-spec-hash>
-    - group: addon.open-cluster-management.io
       resource: addonhubconfigs
       name: hub-config-yyy
       desiredConfigSpecHash: <hub-config-yyy-spec-hash>
       lastAppliedConfigSpecHash: <hub-config-xxx-spec-hash>
+      # lastKnownGoodConfigSpecHash comes from canary-placement
       lastKnownGoodConfigSpecHash: <hub-config-yyy-spec-hash>
     conditions:
     - lastTransitionTime: "2022-11-02T05:48:12Z"
@@ -1214,16 +1006,10 @@ status:
     namespace: default
     configReferences:
     - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: aws-config-yyy
-      desiredConfigSpecHash: <aws-config-yyy-spec-hash>
-      lastAppliedConfigSpecHash: <aws-config-yyy-spec-hash>
-      lastKnownGoodConfigSpecHash: <aws-config-yyy-spec-hash>
-    - group: addon.open-cluster-management.io
       resource: addonhubconfigs
       name: hub-config-yyy
       desiredConfigSpecHash: <hub-config-yyy-spec-hash>
-      # lastKnownGoodConfigSpecHash and lastKnownGoodConfigSpecHash is yyy
+      # lastKnownGoodConfigSpecHash and lastKnownGoodConfigSpecHash is yyy as canary upgrade successfully.
       lastAppliedConfigSpecHash: <hub-config-yyy-spec-hash>
       lastKnownGoodConfigSpecHash: <hub-config-yyy-spec-hash>
     conditions:
@@ -1249,12 +1035,6 @@ status:
     namespace: default
     configReferences:
     - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: aws-config-yyy
-      desiredConfigSpecHash: <aws-config-yyy-spec-hash>
-      lastAppliedConfigSpecHash: <aws-config-yyy-spec-hash>
-      lastKnownGoodConfigSpecHash: <aws-config-yyy-spec-hash>
-    - group: addon.open-cluster-management.io
       resource: addonhubconfigs
       name: hub-config-yyy
       desiredConfigSpecHash: <hub-config-yyy-spec-hash>
@@ -1269,12 +1049,6 @@ status:
   - name: canary-placement
     namespace: default
     configReferences:
-    - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: aws-config-yyy
-      desiredConfigSpecHash: <aws-config-yyy-spec-hash>
-      lastAppliedConfigSpecHash: <aws-config-yyy-spec-hash>
-      lastKnownGoodConfigSpecHash: <aws-config-yyy-spec-hash>
     - group: addon.open-cluster-management.io
       resource: addonhubconfigs
       name: hub-config-yyy
@@ -1291,6 +1065,8 @@ status:
 
 #### Rollback addon to a specific version.
 
+[04-rollback](./kustomize-rollout-examples/04-rollback) shows a kustomize example, running `kubectl kustomize ./kustomize-rollout-examples/04-rollback` to show the output.
+
 If the canary upgrade doesn't work well, the admin can roll back the config name to the previous config name.
 
 ```yaml
@@ -1299,14 +1075,6 @@ kind: ClusterManagementAddOn
 metadata:
   name: helloworld
 spec:
-  defaultConfigs:
-    - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: deploy-config-xxx
-      namespace: open-cluster-management
-    - group: addon.open-cluster-management.io
-      resource: addonhubconfigs
-      name: hub-config-xxx
   installStrategy:
     type: Placements
     placements:
@@ -1314,8 +1082,8 @@ spec:
       namespace: default
       configs:
       - group: addon.open-cluster-management.io
-        resource: addondeploymentconfigs
-        name: aws-config-xxx
+        resource: addonhubconfigs
+        name: hub-config-xxx
       rolloutStrategy:
         type: RollingUpdateWithCanary
         rollingUpdateWithCanary:
@@ -1327,8 +1095,8 @@ spec:
       namespace: default
       configs:
       - group: addon.open-cluster-management.io
-        resource: addondeploymentconfigs
-        name: aws-config-xxx
+        resource: addonhubconfigs
+        name: hub-config-xxx
       rolloutStrategy:
         type: RollingUpdate
         rollingUpdate:
@@ -1338,12 +1106,6 @@ status:
   - name: aws-placement
     namespace: default
     configReferences:
-    - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: aws-config-xxx
-      desiredConfigSpecHash: <aws-config-xxx-spec-hash>
-      lastAppliedConfigSpecHash: <aws-config-xxx-spec-hash>
-      lastKnownGoodConfigSpecHash: <aws-config-xxx-spec-hash>
     - group: addon.open-cluster-management.io
       resource: addonhubconfigs
       name: hub-config-xxx
@@ -1359,12 +1121,6 @@ status:
   - name: canary-placement
     namespace: default
     configReferences:
-    - group: addon.open-cluster-management.io
-      resource: addondeploymentconfigs
-      name: aws-config-xxx
-      desiredConfigSpecHash: <aws-config-xxx-spec-hash>
-      lastAppliedConfigSpecHash: <aws-config-xxx-spec-hash>
-      lastKnownGoodConfigSpecHash: <aws-config-xxx-spec-hash>
     - group: addon.open-cluster-management.io
       resource: addonhubconfigs
       name: hub-config-xxx

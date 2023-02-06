@@ -1,0 +1,8 @@
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: AddOnHubConfig
+metadata:
+  name: hub-config
+  annotations:
+    internal.config.kubernetes.io/needsHashSuffix: enabled
+spec:
+  desiredVersion: v0.10.0
