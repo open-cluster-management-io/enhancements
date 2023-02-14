@@ -1,0 +1,45 @@
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: helloworld-agent
+  namespace: open-cluster-management-agent-addon
+  labels:
+    app: helloworld-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: helloworld-agent
+  template:
+    metadata:
+      labels:
+        app: helloworld-agent
+    spec:
+      serviceAccountName: helloworld-agent-sa
+      containers:
+        - name: helloworld-agent
+          image: quay.io/test/helloworld:v2
+          imagePullPolicy: IfNotPresent
+          args:
+            - "/helloworld"
+            - "agent"
+            - "--test=foo"
+          env:
+            - name: CLUSTER_NAME
+              value: "cluster1"
+            - name: HUB_KUBECONFIG
+              value: "/managed/hub-kubeconfig/kubeconfig"
+            - name: MANAGED_KUBECONFIG
+              value: "/managed/kubeconfig/kubeconfig"
+          volumeMounts:
+            - name: hub-kubeconfig
+              mountPath: /managed/hub-kubeconfig
+            - name: managed-kubeconfig
+              mountPath: /managed/kubeconfig
+      volumes:
+        - name: hub-kubeconfig
+          secret:
+            secretName: hubKubeConfigSecret
+        - name: managed-kubeconfig
+          secret:
+            secretName: managedKubeConfigSecret

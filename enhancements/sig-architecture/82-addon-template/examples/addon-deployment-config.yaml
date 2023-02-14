@@ -1,0 +1,9 @@
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: AddOnDeploymentConfig
+metadata:
+  name: hello-test
+  namespace: cluster1
+spec:
+  customizedVariables:
+    name: FOO
+    value: foo

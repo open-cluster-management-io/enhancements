@@ -1,0 +1,15 @@
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: ClusterManagementAddOn
+metadata:
+  name: hello
+spec:
+  supportedConfigs:
+    - group: addon.open-cluster-management.io
+      resource: addontemplates
+      defaultConfig:
+        name: hello-test
+    - group: addon.open-cluster-management.io/v1alpha1
+      resource: addondeploymentconfig
+      defaultConfig:
+        name: hello-test
+        namespace: cluster1
