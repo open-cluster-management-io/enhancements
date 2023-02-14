@@ -157,6 +157,10 @@ semicolon. For example, the above example would produce a status message of
 If Gatekeeper is not installed, the OCM `Policy` will be marked as non-compliant with a message stating that the user
 needs to install Gatekeeper to apply such a constraint.
 
+If Gatekeeper does not have its validation webhook enabled and the constraint has `enforcementAction` set to `deny`, the
+OCM `Policy` will be marked as non-compliant with a message stating that the user should enable the webhook. The audit
+results would still be included.
+
 If there are no violations, the OCM `Policy` status would have a compliant message of
 `<spec.enforcementAction> - the Gatekeeper constraint has not detected any active violations`. For example,
 `dryrun - the Gatekeeper constraint has not detected any active violations`.
@@ -193,9 +197,10 @@ defines the Gatekeeper `ConstraintTemplate`/constraints. This finalizer would in
 `ConstraintTemplate`/constraints need to be removed when the OCM `Policy` object is deleted and if applicable, when the
 `Policy` object is updated. To be able to track which Gatekeeper constraints belong to a `Policy` object, a new label
 should be added to the Gatekeeper `ConstraintTemplate` objects and constraints of
-`policy.open-cluster-management.io/policy` with the policy name. Note that a finalizer will also need to be added to the
-`governance-policy-framework` `Deployment` like the Configuration Policy controller does to prevent the Template Sync
-from being deleted before the finalizer can be handled.
+`policy.open-cluster-management.io/policy` with the policy name. Note that the finalizers will need to be cleaned up
+during uninstalls like the Configuration Policy controller does with the
+[addon framework predelete hook](https://github.com/open-cluster-management-io/addon-framework/blob/main/docs/preDeleteHook.md)
+to prevent the Template Sync from being deleted before the finalizer can be handled.
 
 The Template Sync controller would also need to generate a status event when it creates or updates Gatekeeper
 `ConstraintTemplate` objects since they are implementation details for the Gatekeeper constraints and don't provide any
