@@ -10,9 +10,9 @@ reviewers:
 approvers:
   - "@qiujian16"
   - "@deads2k"
-  - "@elgnay"
+  - "@skeeey"
 creation-date: 2022-11-18
-last-updated: 2022-11-18
+last-updated: 2023-02-22
 status: provisional
 see-also:
   - "/enhancements/sig-architecture/58-addon-configuration"
