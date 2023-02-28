@@ -1,0 +1,21 @@
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: AddOnHubConfig
+metadata:
+  name: hub-config-kg44ddfcdc
+spec:
+  desiredVersion: v0.10.0
+---
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: ClusterManagementAddOn
+metadata:
+  name: helloworld
+spec:
+  installStrategy:
+    placements:
+    - configs:
+      - group: addon.open-cluster-management.io
+        name: hub-config-kg44ddfcdc
+        resource: addonhubconfigs
+      name: aws-placement
+      namespace: default
+    type: Placements
