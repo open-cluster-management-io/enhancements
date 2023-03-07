@@ -76,6 +76,7 @@ spec:
   subscription:
     channel: stable
     name: my-operator
+    namespace: own-namespace
     source: my-catalog
     sourceNamespace: my-catalog-namespace
     startingCSV: my-operator.v0.1.0 # optional
@@ -152,6 +153,15 @@ through policies.
 In order to prune objects when the policy is deleted, the policy will need finalizers on the managed
 cluster. Care should be taken to ensure that the finalizers will be cleaned up properly when the
 controller is uninstalled.
+
+Subscriptions created by the controller will always have `spec.installPlanApproval: Manual`.
+Depending on the `spec.subscription.endingCSV` setting in the policy, the controller will approve
+InstallPlans. This helps ensure that the controller can keep track of every state change and report
+the status accordingly.
+
+For simplicity, the initial implementation will not use a `config` field in the Subscription, which
+could be used to configure things like `nodeAffinity`. Since this is a feature in OLM, it may be
+something that is added to OperatorPolicy later.
 
 ### Risks and Mitigation
 
