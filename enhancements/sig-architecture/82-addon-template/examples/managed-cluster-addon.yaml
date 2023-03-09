@@ -17,8 +17,7 @@ status:
       lastAppliedConfigSpecHash: ""
     - group: addon.open-cluster-management.io/v1alpha1
       resource: addondeploymentconfig
-      defaultConfig:
-        name: hello-test
-        namespace: cluster1
+      name: hello-test
+      namespace: cluster1
       desiredConfigSpecHash: ccc
       lastAppliedConfigSpecHash: ""

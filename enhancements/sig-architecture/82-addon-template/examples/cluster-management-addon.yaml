@@ -3,13 +3,14 @@ kind: ClusterManagementAddOn
 metadata:
   name: hello
 spec:
-  supportedConfigs:
+  addOnMeta:
+    description: hello
+    displayName: hello
+  defaultConfigs:
     - group: addon.open-cluster-management.io
       resource: addontemplates
-      defaultConfig:
-        name: hello-test
+      name: hello-test
     - group: addon.open-cluster-management.io/v1alpha1
       resource: addondeploymentconfig
-      defaultConfig:
-        name: hello-test
-        namespace: cluster1
+      name: hello-test
+      namespace: cluster1

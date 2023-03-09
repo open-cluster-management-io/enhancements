@@ -35,6 +35,7 @@ straightforward addon development way.
 ### Non-Goals
 
 - The addon agent image is still required.
+- For complicated addon which has special RBAC requirement etc would still need to use addon-framework.
 
 ## Proposal
 
@@ -68,7 +69,8 @@ cluster to process the CRD in order to deploy and register the addon.
 ### API changes
 
 Introduce a new cluster-scoped API `AddonTemplate` which is used to describe how to deploy the addon agent and how to
-register the addon to the hub cluster.
+register the addon to the hub cluster. And it is needed to reference the `AddonTemplate` by the "spec.defaultConfigs"
+field of `ClusterManagementAddon` to indicate that this addon is using a template.
 
 ```golang
 // AddOnTemplateSpec defines the template of an addon agent which will be deployed on managed clusters.
@@ -198,7 +200,8 @@ type CustomSignerRegistrationConfig struct {
 	SigningCA SigningCARef `json:"signingCA"`
 }
 
-// SigningCARef is the reference to the signing CA secret
+// SigningCARef is the reference to the signing CA secret that must contain the certificate authority data with key
+// "ca.crt"
 type SigningCARef struct {
 	// Namespace of the signing CA secret
 	// +kubebuilder:validation:Required
@@ -248,8 +251,8 @@ volumes:
 
 #### Use Variables in addonTemplate
 
-Users can use variables in the addon template in the form of `{{ VARIABLE_NAME }}`, and there are two types of
-variables:
+Users can use variables in the addon template in the form of `{{ VARIABLE_NAME }}`, it is similar to go template syntax
+but not identical, only String value is supported. And there are two types of variables:
 
 1. built-in variables
 
@@ -268,11 +271,25 @@ Here holds an [example](./examples), it contains:
 
 The rendering output of the agent deployment will be like [this](./examples/agent-deployment-output.yaml).
 
+### Registration
+
+When we talk about registration, there are 2 parts of work:
+1. issue a client certificate according to the CSR to the work agent to access the hub(authentication)
+2. define the permission for the certificate which resources the work-agent can access(authorization)
+
+The `AddonTemplate` API provides two ways to register the addon, "KubeClient" and "CustomSigner".
+1. For "KubeClient", the addon agent can only access to the hub kube api-server, kubernetes will issue a client
+certificate for the agent, and authorization can be done by configuring the `HubPermissionConfig` which describes what
+roles the agent will be bound.
+2. For "CustomSigner", users can control what endpoint on the hub cluster the addon agent can access, users can use the
+`CustomSignerRegistrationConfig` to configure how to issue the client certificate. For authentication of CustomSigner,
+users need to implement it themselves.
+
 ### Implementation Details
 
 Add a new controller to the addon-manager component to:
 
-1. reconcile desiredConfigSpecHash to the managedClusterAddon status
+1. reconcile `desiredConfigSpecHash` to the `ManagedClusterAddon` status
 
 ```mermaid
 graph LR
@@ -288,7 +305,8 @@ graph LR
     b3 --> C
 ```
 
-2. start an addon manager for every template-type addon as go-routine to install and register the addon agent.
+2. if an addon has `desiredConfigSpecHash` in its `ManagedClusterAddon` status(means the addon is using a template),
+start a go-routine to act as the manager of this template-type addon to install and register the addon agent.
 
 ```mermaid
 graph LR
