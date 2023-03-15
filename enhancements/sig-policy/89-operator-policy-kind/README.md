@@ -36,8 +36,8 @@ specific types.
 1. It should be easy to install an operator on a managed cluster with just one policy.
 2. It should be possible to limit updates to operators on clusters, so they do not upgrade beyond a
    known good version defined in the policy.
-3. The policy managing the operator should clearly report back the status of the installation, with
-   clear violation messages if something is not right.
+3. The policy managing the operator should clearly report back the status of the installation,
+   including the operator pod's health, with clear violation messages if something is not right.
 4. What happens when the policy is deleted should be configurable: the operator might be deleted, or
    the operator and its CRDs might be deleted, or nothing might be deleted.
 
@@ -137,7 +137,7 @@ also a `status.relatedObjects` field with the same format as the one in Configur
 OLM objects related to this operator installation.
 
 New (compared to other policies) here is a `status.conditions` field compatible with `oc wait
---for=...`. At the very least, this will include a condition of type "Compliant`, but additional
+--for=...`. At the very least, this will include a condition of type "Compliant", but additional
 fields for internal state may be exposed, for example when waiting for a ClusterServiceVersion after
 approving an InstallPlan.
 
@@ -145,8 +145,116 @@ approving an InstallPlan.
 
 #### Story 1
 
-As a policy user, I want to install, configure, and uninstall operators on my managed clusters
-through policies.
+As a policy user, I want to install an operator of a specific version, from a specific source, on my
+managed clusters. I should be able to view the health of these installations through policies.
+
+Specifically, the user would create a Policy with an OperatorPolicy spec (see example below), and
+ensure this was distributed to managed clusters via Placement. Then, the status of the
+OperatorPolicies on the managed clusters would include conditions and relatedObjects providing
+information about the installation artifacts, versions, and health. When the operator is installed
+as defined, the Policy would become compliant.
+
+Example yaml (the exact content of the status is not finalized):
+```yaml
+apiVersion: policy.open-cluster-management.io/v1beta1
+kind: OperatorPolicy
+metadata:
+  name: my-operator
+spec:
+  remediationAction: enforce
+  severity: medium
+  operatorGroup:
+    name: myapp-strimzi
+    namespace: myapp
+    target:
+      namespaces:
+        - myapp
+  subscription:
+    channel: stable
+    name: strimzi-kafka-operator
+    namespace: myapp
+    source: community-operators
+    sourceNamespace: openshift-marketplace
+    endingCSV: Any
+  requireLatestVersion: true
+  pruneOnDeletion:
+    - subscriptions
+    - clusterserviceversions
+status:
+  compliant: Compliant
+  conditions:
+    - lastTransitionTime: '2023-03-14T15:09:26Z'
+      message: 'operator is installed as specified'
+      reason: OperatorInstalled
+      status: 'True'
+      type: Compliant
+  relatedObjects:
+    - compliant: Compliant
+      object:
+        apiVersion: operators.coreos.com/v1alpha1
+        kind: Subscription
+        metadata:
+          name: strimzi-kafka-operator
+          namespace: myapp
+      reason: Resource present
+    - compliant: Compliant
+      object:
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          name: strimzi-cluster-operator-v0.33.2-577574879d-xssqg
+          namespace: myapp
+      reason: Pod is Ready
+```
+
+#### Story 2
+
+As a policy user, I want to be able to control updates to operators so the managed clusters only use
+versions that I've verified work properly. After I verify a newer version works, I should be able to
+update the policy with that version, and only then should the installations on managed clusters
+progress to that version.
+
+Specifically, the user would define an OperatorPolicy similar to Story 1, but specify an `endingCSV`
+other than "Any", and set `requireLatestVersion: true`. Then, the policy will become non-compliant
+when an update is available, to draw attention to the situation. After the user updates the
+`endingCSV`, the operator is updated and the policy can become compliant.
+
+Abbreviated resource when an update is available:
+```yaml
+apiVersion: policy.open-cluster-management.io/v1beta1
+kind: OperatorPolicy
+metadata:
+  name: my-operator
+spec:
+  ...
+  subscription:
+    ...
+    name: strimzi-kafka-operator
+    endingCSV: strimzi-cluster-operator.v0.33.1
+  requireLatestVersion: true
+status:
+  compliant: NonCompliant
+  conditions:
+    - lastTransitionTime: '2023-03-14T15:09:26Z'
+      message: 'operator can be updated to v0.33.2'
+      reason: OperatorUpdateAvailable
+      status: 'True'
+      type: NonCompliant
+  relatedObjects:
+    - compliant: NonCompliant
+      object:
+        apiVersion: operators.coreos.com/v1alpha1
+        kind: InstallPlan
+        metadata:
+          name: install-twlhq
+          namespace: myapp
+      reason: Updated InstallPlan available
+```
+
+#### Story 3
+
+As a policy user, I want to be able to completely remove an operator installation from a managed
+cluster that I had previously defined.
 
 ### Implementation Details/Notes/Constraints [optional]
 
