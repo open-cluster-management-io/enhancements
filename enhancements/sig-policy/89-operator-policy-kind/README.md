@@ -13,8 +13,8 @@
 
 Enhance the policy framework with a new kind, `OperatorPolicy`, to allow for better management of
 OLM Operator installations on managed clusters. The controller for this kind would be included in
-the configuration-policy-controller container, on managed clusters. The new controller would better
-handle imperative installation steps for OLM objects, and provide better support for upgrade and
+the configuration-policy-controller container, on managed clusters. The new controller would better 
+handle installation requiring approvals of OLM operators, and provide better support for upgrade and
 uninstallation scenarios.
 
 ## Motivation
@@ -22,9 +22,10 @@ uninstallation scenarios.
 It is currently possible to install OLM Operators on managed clusters with `ConfigurationPolicies`,
 but it can be complex and error-prone. For example, multiple policies are often needed in order to
 manage the different OLM resources such as OperatorGroup, Subscription, InstallPlan, and
-ClusterServiceVersion. Upgrading or uninstalling an operator can also be difficult with
-ConfigurationPolicies, since it is not generally as easy as just updating one value or deleting a
-resource.
+ClusterServiceVersion. Upgrading or uninstalling an operator can also be difficult with only
+ConfigurationPolicies, since simply updating a value in one resource can begin the process, but 
+other resources must be considered to determine if it was successful (for example, the CSV could
+fail, or some operator pods might never become healthy).
 
 Creating a new policy type will help streamline the process of declaring an operator to be installed
 on a cluster. A new controller will help cover specialized cases that come up when managing operator
@@ -37,9 +38,11 @@ specific types.
 2. It should be possible to limit updates to operators on clusters, so they do not upgrade beyond a
    known good version defined in the policy.
 3. The policy managing the operator should clearly report back the status of the installation,
-   including the operator pod's health, with clear violation messages if something is not right.
+   including the health of any of the operator installation's pods, the health of the CSV, and the
+   health of the CatalogSource, with clear violation messages if any of these are not healthy.
 4. What happens when the policy is deleted should be configurable: the operator might be deleted, or
-   the operator and its CRDs might be deleted, or nothing might be deleted.
+   the operator and its CRDs might be deleted, or nothing might be deleted. By default, only the
+   Subscription and CSVs will be deleted (matching the suggestion from OLM).
 
 ### Non-Goals
 
@@ -47,7 +50,7 @@ specific types.
 2. Management of "Operands" will not be included in this new type - they should be defined in
    separate `ConfigurationPolicies`, possibly with a
    [dependency](../74-order-policy-execution/README.md) on the `OperatorPolicy`.
-3. Management of `CatalogSources` will not be included in the new type - they should be defined in
+3. Creation of `CatalogSources` will not be included in the new type - they should be defined in
    separate `ConfigurationPolicies`.
 
 ## Proposal
@@ -74,6 +77,7 @@ spec:
     #       mydomain.io/prod: "true"
     serviceAccountName: my-og-account # optional
   subscription:
+    config: {} # optional
     channel: stable
     name: my-operator
     namespace: own-namespace
@@ -81,7 +85,7 @@ spec:
     sourceNamespace: my-catalog-namespace
     startingCSV: my-operator.v0.1.0 # optional
     endingCSV: Any # or None or e.g. 'my-operator.v0.2.0`
-  requireLatestVersion: false
+  latestVersionNecessary: false
   pruneOnDeletion:
     - subscriptions
     - clusterserviceversions
@@ -89,6 +93,13 @@ spec:
     - customresourcedefinitions
     - apiservicedefinitions
 ```
+
+When `remediationAction` is set to `inform`, no actions (creates, deletes, updates) will be taken on
+any resources, but the current state may be *read* to identify if the operator is installed as
+specified. When resources are missing, the policy will be NonCompliant, with a message specifying
+what is missing, and that it will not be created because the policy is not being enforced. When it 
+is set to `enforce`, OperatorGroups and Subscriptions may be created by the controller, InstallPlans
+may be approved, and resources may be removed when the policy is deleted.
 
 The optional `spec.operatorGroup` section defines an
 [OperatorGroup](https://github.com/operator-framework/api/blob/master/crds/operators.coreos.com_operatorgroups.yaml).
@@ -98,10 +109,16 @@ OperatorGroup will be created.
 
 The `spec.subscription` section includes fields from the spec of an [OLM
 Subscription](https://github.com/operator-framework/api/blob/master/crds/operators.coreos.com_subscriptions.yaml),
-excluding `config` and `installPlanApproval`. The `endingCSV` field allows configuration of which
-InstallPlans will be approved by the controller when the policy is set to `enforce`.
+excluding and `installPlanApproval`. For more information on the `config` field, see:
+https://github.com/operator-framework/api/blob/v0.17.3/pkg/operators/v1alpha1/subscription_types.go#L42
 
-The `spec.requireLatestVersion` field configures whether the "latest" version of the operator
+The `spec.subscription.endingCSV` field allows configuration of which InstallPlans will be approved 
+by the controller when the policy is set to `enforce`. When set to `Any`, any InstallPlans may be
+approved. When set to `None`, only an InstallPlan matching the `startingCSV` will be approved - if
+`startingCSV` is not set, then no InstallPlans will be approved. Otherwise, SemVer rules will be
+applied (if applicable, see implementation details) to determine what InstallPlans to approve.
+
+The `spec.latestVersionNecessary` field configures whether the "latest" version of the operator
 defined in the catalog on this cluster "should" be installed. Note that if the "latest" version is
 greater than the allowed `endingCSV`, then that version will not be automatically approved even if
 the `remediationAction` is set to enforce: instead, the policy will be NonCompliant.
@@ -134,12 +151,13 @@ status:
 
 As required for all policies, there is a `status.compliant` field for the overall status. There is
 also a `status.relatedObjects` field with the same format as the one in ConfigurationPolicy, for the
-OLM objects related to this operator installation.
+OLM objects (CatalogSource, Subscription, CSV) related to this operator installation.
 
 New (compared to other policies) here is a `status.conditions` field compatible with `oc wait
---for=...`. At the very least, this will include a condition of type "Compliant", but additional
-fields for internal state may be exposed, for example when waiting for a ClusterServiceVersion after
-approving an InstallPlan.
+--for=...`. This will include an "overall" condition of type "Compliant", but additional conditions
+should also be exposed, referencing the state of other resources that determine the compliance of
+the policy. For example, health conditions for the CSV, CatalogSource, and pods defined in the
+bundle.
 
 ### User Stories
 
@@ -176,7 +194,7 @@ spec:
     source: community-operators
     sourceNamespace: openshift-marketplace
     endingCSV: Any
-  requireLatestVersion: true
+  latestVersionNecessary: true
   pruneOnDeletion:
     - subscriptions
     - clusterserviceversions
@@ -215,7 +233,7 @@ update the policy with that version, and only then should the installations on m
 progress to that version.
 
 Specifically, the user would define an OperatorPolicy similar to Story 1, but specify an `endingCSV`
-other than "Any", and set `requireLatestVersion: true`. Then, the policy will become non-compliant
+other than "Any", and set `latestVersionNecessary: true`. Then, the policy will become non-compliant
 when an update is available, to draw attention to the situation. After the user updates the
 `endingCSV`, the operator is updated and the policy can become compliant.
 
@@ -231,15 +249,15 @@ spec:
     ...
     name: strimzi-kafka-operator
     endingCSV: strimzi-cluster-operator.v0.33.1
-  requireLatestVersion: true
+  latestVersionNecessary: true
 status:
   compliant: NonCompliant
   conditions:
     - lastTransitionTime: '2023-03-14T15:09:26Z'
       message: 'operator can be updated to v0.33.2'
       reason: OperatorUpdateAvailable
-      status: 'True'
-      type: NonCompliant
+      status: 'False'
+      type: Compliant
   relatedObjects:
     - compliant: NonCompliant
       object:
@@ -260,16 +278,18 @@ cluster that I had previously defined.
 
 In order to prune objects when the policy is deleted, the policy will need finalizers on the managed
 cluster. Care should be taken to ensure that the finalizers will be cleaned up properly when the
-controller is uninstalled.
+controller is uninstalled. Deleting CRDs will be limited to the objects listed as "owned" in the
+bundle.
 
 Subscriptions created by the controller will always have `spec.installPlanApproval: Manual`.
 Depending on the `spec.subscription.endingCSV` setting in the policy, the controller will approve
 InstallPlans. This helps ensure that the controller can keep track of every state change and report
 the status accordingly.
 
-For simplicity, the initial implementation will not use a `config` field in the Subscription, which
-could be used to configure things like `nodeAffinity`. Since this is a feature in OLM, it may be
-something that is added to OperatorPolicy later.
+When the `spec.subscription.endingCSV` is not a special value (`Any` or `None`), a SemVer string
+will be extracted from the end of the value. Similarly, a SemVer string will be extracted from the
+CSVs of any candidate InstallPlans. An InstallPlan will only be approved if a valid SemVer string
+was found in both, and the new CSV is "less than or equal to" the specified `endingCSV`.
 
 ### Risks and Mitigation
 
@@ -278,6 +298,7 @@ something that is added to OperatorPolicy later.
 1. Is making `spec.operatorGroup` optional, and defaulting to an AllNamespaces OperatorGroup, the
    best option?
 2. Could/should there be default catalogs, so that users only need to specify the operator name?
+3. Should the status conditions be more fully defined before the implementation begins?
 
 ### Test Plan
 

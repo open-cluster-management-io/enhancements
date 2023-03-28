@@ -2,9 +2,13 @@ title: operator-policy-kind
 authors:
   - "@JustinKuli"
 reviewers:
-  - TBD
+  - "@gparvin"
+  - "@joeg-pro"
+  - "@fgiloux"
+  - "@jc-rh"
+  - "@mprahl" 
 approvers:
   - TBD
 creation-date: "2023-03-06"
-last-updated: "2023-03-15"
+last-updated: "2023-03-28"
 status: implementable
