@@ -1,0 +1,11 @@
+title: hub-templates-additional-access
+authors:
+  - "@ckandag"
+reviewers:
+  - "@mprahl"
+  - "@gparvin"
+approvers:
+  - TBD
+creation-date: 2022-04-05
+last-updated: 2022-04-05
+status: implementable
