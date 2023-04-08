@@ -1,7 +1,7 @@
 apiVersion: addon.open-cluster-management.io/v1alpha1
 kind: AddOnTemplate
 metadata:
-  name: hello-template
+  name: hello-template-v2
 spec:
   addonName: hello-template
   agentManifests:
@@ -12,6 +12,7 @@ spec:
         namespace: '{{INSTALL_NAMESPACE}}' # built-in INSTALL_NAMESPACE
         labels:
           app: hello-template-agent
+          addon-template-version: v2
       spec:
         replicas: 1
         selector:
@@ -21,6 +22,7 @@ spec:
           metadata:
             labels:
               app: hello-template-agent
+              addon-template-version: v2
           spec:
             serviceAccountName: hello-template-agent-sa
             containers:

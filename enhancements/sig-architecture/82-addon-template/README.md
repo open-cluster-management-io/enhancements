@@ -41,11 +41,6 @@ straightforward addon development way.
 
 ### User Stories
 
-Detail the things that people will be able to do if this is implemented.
-Include as much detail as possible so that people can understand the "how" of
-the system. The goal here is to make this feel real for users without getting
-bogged down.
-
 #### Story 1
 
 As an addon developer, I hope that I can focus on addon business development. After preparing the addon agent image, I
@@ -69,7 +64,7 @@ cluster to process the CRD in order to deploy and register the addon.
 ### API changes
 
 Introduce a new cluster-scoped API `AddonTemplate` which is used to describe how to deploy the addon agent and how to
-register the addon to the hub cluster. And it is needed to reference the `AddonTemplate` by the "spec.defaultConfigs"
+register the addon to the hub cluster. And it is needed to reference the `AddonTemplate` by the "spec.supportedConfigs"
 field of `ClusterManagementAddon` to indicate that this addon is using a template.
 
 ```golang
@@ -86,14 +81,12 @@ type AddOnTemplateSpec struct {
 	AgentManifests []Manifest `json:"agentManifests"`
 
 	// Registration holds the registration configuration for the addon
-	// +kubebuilder:validation:Required
-	// +required
+	// +optional
 	Registration []RegistrationSpec `json:"registration"`
 }
 
 // Manifest represents a resource to be deployed on the managed cluster.
 type Manifest struct {
-	// +kubebuilder:validation:EmbeddedResource
 	// +kubebuilder:pruning:PreserveUnknownFields
 	runtime.RawExtension `json:",inline"`
 }
@@ -120,7 +113,7 @@ const (
 	HubPermissionsBindingSingleNamespace HubPermissionsBindingType = "SingleNamespace"
 	// HubPermissionsBindingCurrentCluster means that will only allow the addon agent to access the
 	// resources in managed cluster namespace on the hub cluster.
-	// It is a special case of the SingleNamespace type.
+	// It is a specific case of the SingleNamespace type.
 	HubPermissionsBindingCurrentCluster HubPermissionsBindingType = "CurrentCluster"
 )
 
@@ -135,7 +128,14 @@ const (
 // CustomSigner the secret name will be "{addon name}-{signer name}-client-cert" whose content
 // includes key/cert.
 type RegistrationSpec struct {
-	// Type of the registration configuration
+	// Type of the registration configuration, it supports:
+	// - KubeClient: the addon agent can access the hub kube apiserver with kube style API.
+	//   the signer name should be "kubernetes.io/kube-apiserver-client". When this type is
+	//   used, the KubeClientRegistrationConfig can be used to define the permission of the
+	//   addon agent to access the hub cluster
+	// - CustomSigner: the addon agent can access the hub cluster through user-defined endpoints.
+	//   When this type is used, the CustomSignerRegistrationConfig can be used to define how
+	//   to issue the client certificate for the addon agent.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Enum:=KubeClient;CustomSigner
 	Type RegistrationType `json:"type"`
@@ -144,15 +144,15 @@ type RegistrationSpec struct {
 	// +optional
 	KubeClient *KubeClientRegistrationConfig `json:"kubeClient,omitempty"`
 
-	// KubeClient holds the configuration of the CustomSigner type registration
+	// CustomSigner holds the configuration of the CustomSigner type registration
 	// required when the Type is CustomSigner
 	CustomSigner *CustomSignerRegistrationConfig `json:"customSigner,omitempty"`
 }
 
 type KubeClientRegistrationConfig struct {
-	// Permission represents the permission configuration of the addon agent to access the hub cluster
+	// Permissions represent the permission configurations of the addon agent to access the hub cluster
 	// +optional
-	Permission []HubPermissionConfig `json:"permission,omitempty"`
+	Permissions []HubPermissionConfig `json:"permissions,omitempty"`
 }
 
 // HubPermissionConfig configures the permission of the addon agent to access the hub cluster.
@@ -210,58 +210,93 @@ type SigningCARef struct {
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
 }
-
 ```
 
 ### Template rendering
 
+#### Built-in parameters
+
+Will provide some built-in parameters for using in the template:
+
+- constant parameters(can not be overridden by user's variables):
+  - `CLUSTER_NAME`: <managed-cluster-name> (e.g cluster1)
+  - `INSTALL_NAMESPACE`: the agent install namespace
+  - `INSTALL_MODE`: the addon install mode, "Default" or "Hosted"
+- default parameters(can be overridden by user's variables)
+  - `HUB_KUBECONFIG`: /managed/hub-kubeconfig/kubeconfig
+  - `MANAGED_KUBECONFIG`: /managed/kubeconfig/kubeconfig
+
 #### Inject env variables
 
-The following variables will be injected into containers as Environments, so developers can use them in their agent
-code:
-- `CLUSTER_NAME`: cluster1
-- `HUB_KUBECONFIG`: /managed/hub-kubeconfig/kubeconfig
-- `MANAGED_KUBECONFIG`: /managed/kubeconfig/kubeconfig
+All parameters mentioned in the [Built-in parameters section](#built-in-parameters) will be injected into containers as
+Environments, so developers can use them in their agent code.
 
 #### Inject volumes
 
 1. The hub kuceconfig will be injected to the deployment defined in the addon template
 
 ```yaml
-volumeMounts:
-- name: hub-kubeconfig
-mountPath: /managed/hub-kubeconfig
-volumes:
-- name: hub-kubeconfig
-  secret:
-  secretName: hubKubeConfigSecret
+...
+spec:
+  containers:
+    - name: addon-agent
+      ...
+      volumeMounts:
+        - mountPath: /managed/hub-kubeconfig
+          name: hub-kubeconfig
+  volumes:
+    - name: hub-kubeconfig
+      secret:
+        defaultMode: 420
+        secretName: <addon-name>-hub-kubeconfig
+...
 ```
 
 2. If the addon agent install mode is `Hosted`, the managed kubeconfig volume will be also injected:
 
 ```yaml
-volumeMounts:
-- name: managed-kubeconfig
-mountPath: /managed/kubeconfig
-volumes:
-- name: managed-kubeconfig
-  secret:
-  secretName: managedKubeConfigSecret
+...
+spec:
+  containers:
+    - name: addon-agent
+      ...
+      volumeMounts:
+        - mountPath: /managed/kubeconfig
+          name: managed-kubeconfig
+  volumes:
+    - name: managed-kubeconfig
+      secret:
+        defaultMode: 420
+        secretName: <addon-name>-managed-kubeconfig
+...
 ```
 
 #### Use Variables in addonTemplate
 
-Users can use variables in the addon template in the form of `{{ VARIABLE_NAME }}`, it is similar to go template syntax
+Users can use variables in the addon template in the form of `{{VARIABLE_NAME}}`, it is similar to go template syntax
 but not identical, only String value is supported. And there are two types of variables:
 
 1. built-in variables
 
-- `INSTALL_NAMESPACE` : the agent install namespace
-- `CLUSTER_NAME` : the managed cluster name
+All parameters mentioned in the [Built-in parameters section](#built-in-parameters) can be used.
 
 2. Customize variables, variables defines in `addonDeploymentConfig`.
 
-#### Example
+### Registration
+
+When we talk about registration, there are 2 parts of work:
+1. issue a client certificate according to the CSR to the addon agent to access the hub(authentication)
+2. define the permissions for the certificate which resources the addon agent can access(authorization)
+
+The `AddonTemplate` API provides two ways to register the addon, "KubeClient" and "CustomSigner".
+1. For "KubeClient", the addon agent can only access to the hub kube api-server, kubernetes will issue a client
+certificate for the agent, and authorization can be done by configuring the `HubPermissionConfig` which describes what
+roles the agent will be bound.
+2. For "CustomSigner", users can control what endpoint on the hub cluster the addon agent can access, users can use the
+`CustomSignerRegistrationConfig` to configure how to issue the client certificate. For authorization of CustomSigner,
+users need to implement it themselves.
+
+### Example
 
 Here holds an [example](./examples), it contains:
 - an [addonTemplate](./examples/addon-template.yaml)
@@ -271,31 +306,43 @@ Here holds an [example](./examples), it contains:
 
 The rendering output of the agent deployment will be like [this](./examples/agent-deployment-output.yaml).
 
-### Registration
+### Probe the health of addons
 
-When we talk about registration, there are 2 parts of work:
-1. issue a client certificate according to the CSR to the work agent to access the hub(authentication)
-2. define the permission for the certificate which resources the work-agent can access(authorization)
+By default, the healthiness of the addon is connected with the corresponding lease resource, which has the same name as
+the addon and is located in the same cluster and namespace where the addon agent is deployed. So there is a
+requirement for the addon agent, it is expected to periodically refresh the lease by implementing
+[lease.LeaseUpdater](https://github.com/open-cluster-management-io/addon-framework/blob/9466c062199e66b9e96e6393f5a4c1ac9cf84cd6/pkg/lease/lease_controller.go#L23-L31)
+interface.
 
-The `AddonTemplate` API provides two ways to register the addon, "KubeClient" and "CustomSigner".
-1. For "KubeClient", the addon agent can only access to the hub kube api-server, kubernetes will issue a client
-certificate for the agent, and authorization can be done by configuring the `HubPermissionConfig` which describes what
-roles the agent will be bound.
-2. For "CustomSigner", users can control what endpoint on the hub cluster the addon agent can access, users can use the
-`CustomSignerRegistrationConfig` to configure how to issue the client certificate. For authentication of CustomSigner,
-users need to implement it themselves.
+But in order to get rid of the requirement for developers, we are considering another type of healthiness probe:
+injecting a feedback rule to check if the agent deployment resource is available(the output of
+`kubectl get deployment -n <addon-agent-namespace> <addon-agent-name> -ojsonpath="{.status.conditions[?(@.type=='Available')].status}"`
+is `True`).
+
+### Upgrade an addon template
+
+With the addon developed via a template, if we want to update the resources deployed on the managed cluster, we don't
+need to rebuild the addon manager image, we can leverage the [addon-lifecycle management](./../81-addon-lifecycle/README.md)
+feature to achieve it.
+
+1. Create a new addon-template containing the new changes to the resources, the [example](./examples/upgrade/addon-template-v2.yaml)
+creates a new addon template `hello-template-v2` and adds a new label for the addon agent deployment and pod.
+2. Create a [placement](./examples/upgrade/placement.yaml) to select on which clusters we want the addon to upgrade.
+3. Update the [clusterManagementAddon](./examples/upgrade/cluster-management-addon.yaml), in the installStartegy field
+set the placement and reference the new addon template `hello-template-v2`, then the addon manager will upgrade all the
+agent resources on the placement selected clusters automatically.
 
 ### Implementation Details
 
 Add a new controller to the addon-manager component to:
 
-1. reconcile `desiredConfigSpecHash` to the `ManagedClusterAddon` status
+1. reconcile `status.configReferences[*].desiredConfig` of the `ManagedClusterAddon`
 
 ```mermaid
 graph LR
     A[/ManagedClusterAddon/] -->b1(Get ClusterManagementAddon)
     b2{CMA contains <br> addonTemplate}
-    b3(update addon template <br> desiredConfigSpecHash to MCA statue)
+    b3("update addon template <br> configReferences[?(@.resource==addontemplates)].specHash <br> to MCA statue")
     C[/end/]
     subgraph addon-manager
     b1 --> b2
@@ -305,26 +352,27 @@ graph LR
     b3 --> C
 ```
 
-2. if an addon has `desiredConfigSpecHash` in its `ManagedClusterAddon` status(means the addon is using a template),
-start a go-routine to act as the manager of this template-type addon to install and register the addon agent.
+2. if an addon has an addontemplates type `configReferences` in its `ManagedClusterAddon` status(means the addon is
+using a template), start a go-routine to act as the manager of this template-type addon to install and register the
+addon agent.
 
 ```mermaid
 graph LR
-    A[/ManagedClusterAddon/] -->B{has addon template <br> desiredConfigSpecHash <br> in status}
+    A[/ManagedClusterAddon/] -->B{has addon template <br> configReferences <br> in status}
     E[/end/]
     B --> |yes| c1
     B --> |no| d1
     subgraph addon-manager
     c1{addon template <br> can be found} --> |yes| c11
         subgraph go-routine-tmeplate1
-        c11(deploy the agent by manifestwork) --> c12[appvo the CSR]
+        c11(deploy the agent by manifestwork) --> c12[approve the CSR]
         end
     c1 --> |no| c2(update MCA condition)
     end
     c2 --> E
     c12 --> E
     subgraph hello-addon-template
-    d1[deploy the agent by manifestwork] --> d2[appvo the CSR]
+    d1[deploy the agent by manifestwork] --> d2[approve the CSR]
     end
     d2 --> E
 ```
@@ -336,27 +384,23 @@ graph LR
   - install and register an addon to the hub by addonTemplate
   - update the addon agent when there is change on the addonTemplate
 
-
 ### Graduation Criteria
 
-**Note:** *Section not required until targeted at a release.*
+#### Alpha
 
-Define graduation milestones.
+At first, This proposal will be in the alpha stage and needs to meet
+1. The new APIs are reviewed and accepted;
+2. Implementation is completed to support the functionalities;
+3. Develop test cases to demonstrate this proposal works correctly;
 
-These may be defined in terms of API maturity, or as something else. Initial proposal
-should keep this high-level with a focus on what signals will be looked at to
-determine graduation.
+#### Beta
 
-Consider the following in developing the graduation criteria for this
-enhancement:
+1. Need to revisit the API shape before upgrading to beta based on user feedback.
 
-- [Maturity levels][maturity-levels]
-- [Deprecation policy][deprecation-policy]
+### Upgrade / Downgrade Strategy
 
-Clearly define what graduation means by either linking to the [API doc definition](https://kubernetes.io/docs/concepts/overview/kubernetes-api/#api-versioning),
-or by redefining what graduation means.
+TBD
 
-In general, we try to use the same stages (alpha, beta, stable), regardless how the functionality is accessed.
+### Version Skew Strategy
 
-[maturity-levels]: https://git.k8s.io/community/contributors/devel/sig-architecture/api_changes.md#alpha-beta-and-stable-versions
-[deprecation-policy]: https://kubernetes.io/docs/reference/using-api/deprecation-policy/
+N/A
