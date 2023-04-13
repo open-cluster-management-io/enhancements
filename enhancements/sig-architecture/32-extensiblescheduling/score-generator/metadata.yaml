@@ -1,0 +1,18 @@
+title: score-generator
+authors:
+  - "@mvazquezc"
+reviewers:
+  - "@deads2k"
+  - "@qiujian16"
+  - "@elgnay"
+  - "@haoqing0110"
+approvers:
+  - "@deads2k"
+  - "@qiujian16"
+  - "@elgnay"
+  - "@haoqing0110"
+creation-date: 2023-04-13
+last-updated: 2023-04-13
+status: provisional
+see-also:
+  - "/enhancements/sig-architecture/32-extensiblescheduling"
