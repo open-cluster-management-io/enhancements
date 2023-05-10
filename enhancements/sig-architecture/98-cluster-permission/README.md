@@ -63,6 +63,14 @@ for RoleBinding and ClusterRoleBinding.
 - Allows the `ManagedServiceAccount` as Subject Kind 
 for RoleBinding and ClusterRoleBinding.
 
+### Use cases
+
+The primary use case of the `ClusterPermission` is to allow a controller on the hub cluster to
+gain access to the managed cluster API server with authorization regulations.
+The access to the managed cluster API server is done via the ServiceAccount token 
+managed by the `ManagedServiceAccount` and the access level of the ServiceAccount
+is handled by the `ClusterPermission`.
+
 ### Future goals
 
 - It is currently assumed that the user of `ClusterPermission` is either a cluster admin or
@@ -76,7 +84,7 @@ rules.
 
 ### Component & API
 
-We purpose to adding a new custom resource named
+We propose to adding a new custom resource named
 `ClusterPermission` introduced into OCM by this proposal:
 
 A sample of the `ClusterPermission` will be:
@@ -93,6 +101,11 @@ spec:
     - apiGroups: ["apps"]
       resources: ["deployments"]
       verbs: ["update"]
+  clusterRoleBinding:
+    subject:
+      apiGroup: rbac.authorization.k8s.io
+      kind: Group
+      name: system:serviceaccounts:qa
   roles:
   - namespace: default
     rules:
@@ -109,10 +122,33 @@ spec:
     - apiGroups: [""]
       resources: ["configmaps"]
       verbs: ["update"]
-  subject:
-    apiGroup: authentication.open-cluster-management.io
-    kind: ManagedServiceAccount
-    name: managed-sa-sample
+  roleBindings:
+  - namespace: kube-system
+    roleRef:
+      kind: ClusterRole
+    subject:
+      apiGroup: authentication.open-cluster-management.io
+      kind: ManagedServiceAccount
+      name: managed-sa-sample
+  - namespace: default
+    roleRef:
+      kind: Role
+    subject:
+      apiGroup: rbac.authorization.k8s.io
+      kind: Group
+      name: system:serviceaccounts
+  - namespaceSelector:
+      matchExpressions:
+      - key: foo.com/managed-state
+        operator: In
+        values:
+        - managed
+    roleRef:
+      kind: Role
+    subject:
+      apiGroup: rbac.authorization.k8s.io
+      kind: User
+      name: "alice@example.com"   
 status:
   conditions:
     - type: RBACManifestWorkCreated
@@ -127,7 +163,7 @@ the managed cluster, the Role/RoleBinding/ClusterRole/ClusterRoleBinding
 delivered to the managed cluster will have the same name as the
 `ClusterPermission` resource.
 
-We purpose adding a new hub cluster controller that watches
+We propose adding a new hub cluster controller that watches
 and reconcile `ClusterPermission`. When `ClusterPermission` is reconciled, create/update
 a `ManifestWork` with the payload of Roles, ClusterRole,
 RoleBindings, and ClusterRoleBinding. All the RBAC resources will have
@@ -135,8 +171,7 @@ the same name as the `ClusterPermission`. The `ManifestWork` owner is set to
 `ClusterPermission` so that when the  `ClusterPermission` is deleted, the `ManifestWork` 
 will be garbage collected, which will trigger the removal of all the RBAC 
 related resources in the managed cluster. It's expected that the executor 
-of the `ManifestWork` is the work agent which has privilege to create
-RBAC resources on the managed cluster. Therefore, a Role of the following
+of the `ManifestWork` is the work agent. Therefore, a Role of the following
 content will be needed for the controller:
 
 ```
@@ -150,6 +185,9 @@ rules:
   resourcenames:
   - system:serviceaccount::klusterlet-work-sa
 ```
+
+It is expected that the work agent has "escalate" and "bind" role verbs 
+which allows it to manage the RBAC resources inside the `ManifestWork` payload.
 
 *Note* If the feature gate `NilExecutorValidating` is enabled on the ClusterManager.
 It is expected that the `ManifestWork` validator will populate that field so error
