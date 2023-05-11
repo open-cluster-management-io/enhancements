@@ -55,12 +55,9 @@ spec:
           name: hello-template-agent-sa
           namespace: "{{INSTALL_NAMESPACE}}"
   registration:
-    # kubeClient or custom signer, if kubeClient, user and group is in a certain format.
-    # user is system:open-cluster-management:cluster:...
-    # group is [system:open-cluster-management:cluster:, ...]
     - type: KubeClient
       kubeClient:
-        permissions:
+        hubPermissions:
           - type: CurrentCluster
             roleRef:
               apiGroup: rbac.authorization.k8s.io

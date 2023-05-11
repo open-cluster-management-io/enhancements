@@ -120,9 +120,9 @@ const (
 // RegistrationSpec describes how to register an addon agent to the hub cluster.
 // With the registration defined, The addon agent can access to kube apiserver with kube style API
 // or other endpoints on hub cluster with client certificate authentication. During the addon
-// registration process, a csr will be created for each RegistrationSpec on the hub cluster. The
-// CSR can be approved automatically(Auto) or manually(None), After the csr is approved on the hub
-// cluster, the klusterlet agent will create a secret in the installNamespace for the addon agent.
+// registration process, a csr will be created for each Registration on the hub cluster. The
+// CSR will be approved automatically, After the csr is approved on the hub cluster, the klusterlet
+// agent will create a secret in the installNamespace for the addon agent.
 // If the RegistrationType type is KubeClient, the secret name will be "{addon name}-hub-kubeconfig"
 // whose content includes key/cert and kubeconfig. Otherwise, If the RegistrationType type is
 // CustomSigner the secret name will be "{addon name}-{signer name}-client-cert" whose content
@@ -150,9 +150,9 @@ type RegistrationSpec struct {
 }
 
 type KubeClientRegistrationConfig struct {
-	// Permissions represent the permission configurations of the addon agent to access the hub cluster
+	// HubPermissions represent the permission configurations of the addon agent to access the hub cluster
 	// +optional
-	Permissions []HubPermissionConfig `json:"permissions,omitempty"`
+	HubPermissions []HubPermissionConfig `json:"hubPermissions,omitempty"`
 }
 
 // HubPermissionConfig configures the permission of the addon agent to access the hub cluster.
@@ -190,18 +190,19 @@ type CustomSignerRegistrationConfig struct {
 	// Subject is the user subject of the addon agent to be registered to the hub.
 	// If it is not set, the addon agent will have the default subject
 	// "subject": {
-	//	"user": "system:open-cluster-management:addon:{addonName}:{clusterName}:{agentName}",
-	//	"groups: ["system:open-cluster-management:addon", "system:open-cluster-management:addon:{addonName}", "system:authenticated"]
+	//   "user": "system:open-cluster-management:cluster:{clusterName}:addon:{addonName}:agent:{agentName}",
+	//   "groups: ["system:open-cluster-management:cluster:{clusterName}:addon:{addonName}",
+	//             "system:open-cluster-management:addon:{addonName}", "system:authenticated"]
 	// }
 	Subject *Subject `json:"subject,omitempty"`
 
-	// SigningCA represents the reference of the secret to sign the CSR
+	// SigningCA represents the reference of the secret on the hub cluster to sign the CSR
 	// +kubebuilder:validation:Required
 	SigningCA SigningCARef `json:"signingCA"`
 }
 
-// SigningCARef is the reference to the signing CA secret that must contain the certificate authority data with key
-// "ca.crt"
+// SigningCARef is the reference to the signing CA secret that must contain the
+// certificate authority data with key "ca.crt" and the private key data with key "ca.key"
 type SigningCARef struct {
 	// Namespace of the signing CA secret
 	// +kubebuilder:validation:Required
