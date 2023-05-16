@@ -1,0 +1,16 @@
+title: cluster-permission
+authors:
+  - "@xiangjingli"
+  - "@jnpacker"
+  - "@mikeshng"
+reviewers:
+  - "@qiujian16"
+  - "@deads2k"
+approvers:
+  - "@qiujian16"
+  - "@deads2k"
+creation-date: 2023-03-30
+last-updated: 2023-03-30
+status: provisional
+see-also:
+  - "/enhancements/sig-architecture/19-projected-serviceaccount-token"
