@@ -35,6 +35,8 @@ straightforward addon development way.
 ### Non-Goals
 
 - The addon agent image is still required.
+- The hosted mode addon is not supported.
+- The pre-delete-hook feature is not supported.
 - For complicated addon which has special RBAC requirement etc would still need to use addon-framework.
 
 ## Proposal
@@ -75,20 +77,14 @@ type AddOnTemplateSpec struct {
 	// +required
 	AddonName string `json:"addonName"`
 
-	// AgentManifests represents the kubernetes resources of the addon agent to be deployed on a managed cluster.
+	// AgentSpec describes what/how the kubernetes resources of the addon agent to be deployed on a managed cluster.
 	// +kubebuilder:validation:Required
 	// +required
-	AgentManifests []Manifest `json:"agentManifests"`
+	AgentSpec work.ManifestWorkSpec `json:"agentSpec"`
 
 	// Registration holds the registration configuration for the addon
 	// +optional
 	Registration []RegistrationSpec `json:"registration"`
-}
-
-// Manifest represents a resource to be deployed on the managed cluster.
-type Manifest struct {
-	// +kubebuilder:pruning:PreserveUnknownFields
-	runtime.RawExtension `json:",inline"`
 }
 
 // RegistrationType represents the type of the registration configuration,
@@ -221,11 +217,8 @@ Will provide some built-in parameters for using in the template:
 
 - constant parameters(can not be overridden by user's variables):
   - `CLUSTER_NAME`: <managed-cluster-name> (e.g cluster1)
-  - `INSTALL_NAMESPACE`: the agent install namespace
-  - `INSTALL_MODE`: the addon install mode, "Default" or "Hosted"
 - default parameters(can be overridden by user's variables)
   - `HUB_KUBECONFIG`: /managed/hub-kubeconfig/kubeconfig
-  - `MANAGED_KUBECONFIG`: /managed/kubeconfig/kubeconfig
 
 #### Inject env variables
 
@@ -234,7 +227,7 @@ Environments, so developers can use them in their agent code.
 
 #### Inject volumes
 
-1. The hub kuceconfig will be injected to the deployment defined in the addon template
+The hub kuceconfig will be injected to the deployment defined in the addon template
 
 ```yaml
 ...
@@ -253,35 +246,17 @@ spec:
 ...
 ```
 
-2. If the addon agent install mode is `Hosted`, the managed kubeconfig volume will be also injected:
-
-```yaml
-...
-spec:
-  containers:
-    - name: addon-agent
-      ...
-      volumeMounts:
-        - mountPath: /managed/kubeconfig
-          name: managed-kubeconfig
-  volumes:
-    - name: managed-kubeconfig
-      secret:
-        defaultMode: 420
-        secretName: <addon-name>-managed-kubeconfig
-...
-```
-
 #### Use Variables in addonTemplate
 
-Users can use variables in the addon template in the form of `{{VARIABLE_NAME}}`, it is similar to go template syntax
-but not identical, only String value is supported. And there are two types of variables:
+Users can use variables in the `addonTemplate.agentSpec.workload.manifests` field in the form of `{{VARIABLE_NAME}}`,
+it is similar to go template syntax but not identical, only String value is supported. And there are two types of
+variables:
 
-1. built-in variables
-
+1. built-in variables;
 All parameters mentioned in the [Built-in parameters section](#built-in-parameters) can be used.
 
-2. Customize variables, variables defines in `addonDeploymentConfig`.
+2. Customize variables;
+Variables defines in `addonDeploymentConfig.customizedVariables` can be used.
 
 ### Registration
 

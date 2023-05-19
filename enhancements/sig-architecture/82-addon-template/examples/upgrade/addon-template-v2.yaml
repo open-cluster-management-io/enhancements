@@ -4,56 +4,58 @@ metadata:
   name: hello-template-v2
 spec:
   addonName: hello-template
-  agentManifests:
-    - kind: Deployment
-      apiVersion: apps/v1
-      metadata:
-        name: hello-template-agent
-        namespace: '{{INSTALL_NAMESPACE}}' # built-in INSTALL_NAMESPACE
-        labels:
-          app: hello-template-agent
-          addon-template-version: v2
-      spec:
-        replicas: 1
-        selector:
-          matchLabels:
-            app: hello-template-agent
-        template:
+  agentSpec:
+    workload:
+      manifests:
+        - kind: Deployment
+          apiVersion: apps/v1
           metadata:
+            name: hello-template-agent
+            namespace: open-cluster-management-agent-addon
             labels:
               app: hello-template-agent
               addon-template-version: v2
           spec:
-            serviceAccountName: hello-template-agent-sa
-            containers:
-              - name: helloworld-agent
-                image: quay.io/zhujian/addon-examples:latest
-                imagePullPolicy: Always
-                args:
-                  - "/helloworld"
-                  - "agent"
-                  - "--cluster-name={{CLUSTER_NAME}}"
-                  - "--addon-namespace={{INSTALL_NAMESPACE}}"
-                  - "--addon-name=hello-template"
-                  - "--hub-kubeconfig={{HUB_KUBECONFIG}}"
-                  - "--v={{LOG_LEVEL}}" # addonDeploymentConfig variables
-    - kind: ServiceAccount
-      apiVersion: v1
-      metadata:
-        name: hello-template-agent-sa
-        namespace: "{{INSTALL_NAMESPACE}}"
-    - kind: ClusterRoleBinding
-      apiVersion: rbac.authorization.k8s.io/v1
-      metadata:
-        name: hello-template-agent
-      roleRef:
-        apiGroup: rbac.authorization.k8s.io
-        kind: ClusterRole
-        name: cluster-admin
-      subjects:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: hello-template-agent
+            template:
+              metadata:
+                labels:
+                  app: hello-template-agent
+                  addon-template-version: v2
+              spec:
+                serviceAccountName: hello-template-agent-sa
+                containers:
+                  - name: helloworld-agent
+                    image: quay.io/zhujian/addon-examples:latest
+                    imagePullPolicy: Always
+                    args:
+                      - "/helloworld"
+                      - "agent"
+                      - "--cluster-name={{CLUSTER_NAME}}"
+                      - "--addon-namespace=open-cluster-management-agent-addon"
+                      - "--addon-name=hello-template"
+                      - "--hub-kubeconfig={{HUB_KUBECONFIG}}"
+                      - "--v={{LOG_LEVEL}}" # addonDeploymentConfig variables
         - kind: ServiceAccount
-          name: hello-template-agent-sa
-          namespace: "{{INSTALL_NAMESPACE}}"
+          apiVersion: v1
+          metadata:
+            name: hello-template-agent-sa
+            namespace: open-cluster-management-agent-addon
+        - kind: ClusterRoleBinding
+          apiVersion: rbac.authorization.k8s.io/v1
+          metadata:
+            name: hello-template-agent
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: cluster-admin
+          subjects:
+            - kind: ServiceAccount
+              name: hello-template-agent-sa
+              namespace: open-cluster-management-agent-addon
   registration:
     - type: KubeClient
       kubeClient:
