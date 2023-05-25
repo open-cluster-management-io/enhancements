@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: hello-template-agent
+  name: hello-template-agent
+  namespace: open-cluster-management-agent-addon
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hello-template-agent
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: hello-template-agent
+    spec:
+      containers:
+        - args:
+            - /helloworld
+            - agent
+            - --cluster-name=cluster1
+            - --addon-namespace=open-cluster-management-agent-addon
+            - --addon-name=hello-template
+            - --hub-kubeconfig=/managed/hub-kubeconfig/kubeconfig
+            - --v=4
+          image: quay.io/zhujian/addon-examples:latest
+          imagePullPolicy: Always
+          name: helloworld-agent
+          resources: {}
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          env:
+            - name: CLUSTER_NAME
+              value: "cluster1"
+            - name: HUB_KUBECONFIG
+              value: "/managed/hub-kubeconfig/kubeconfig"
+            - name: MANAGED_KUBECONFIG
+              value: "/managed/kubeconfig/kubeconfig"
+          volumeMounts:
+            - name: hub-kubeconfig
+              mountPath: /managed/hub-kubeconfig
+            - name: managed-kubeconfig
+              mountPath: /managed/kubeconfig
+      volumes:
+        - name: hub-kubeconfig
+          secret:
+            secretName: hubKubeConfigSecret
+        - name: managed-kubeconfig
+          secret:
+            secretName: managedKubeConfigSecret
+      serviceAccountName: hello-template-agent-sa

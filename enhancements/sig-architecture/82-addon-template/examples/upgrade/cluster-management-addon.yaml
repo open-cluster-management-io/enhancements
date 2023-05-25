@@ -1,0 +1,31 @@
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: ClusterManagementAddOn
+metadata:
+  name: hello-template
+spec:
+  addOnMeta:
+    description: hello-template
+    displayName: hello-template
+  supportedConfigs:
+    - group: addon.open-cluster-management.io
+      resource: addontemplates
+      defaultConfig:
+        name: hello-template
+    - group: addon.open-cluster-management.io
+      resource: addondeploymentconfigs
+      defaultConfig:
+        name: hello-template
+        namespace: cluster1
+  installStrategy:
+    type: Placements
+    placements:
+      - name: placement-all
+        namespace: default
+        configs:
+          - group: addon.open-cluster-management.io
+            resource: addontemplates
+            name: hello-template-v2
+        rolloutStrategy:
+          type: RollingUpdate
+          rollingUpdate:
+            maxConcurrency: 25%
