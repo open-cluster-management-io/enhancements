@@ -1,9 +1,9 @@
 apiVersion: v1
 data:
-  ca.crt: <ca.crt-value>
-  ca.key: <ca.key-value>
+  tls.crt: <tls.crt-value>
+  tls.key: <tls.key-value>
 kind: Secret
 metadata:
   name: ca-secret
-  namespace: default
-type: Opaque
+  namespace: open-cluster-management-hub
+type: kubernetes.io/tls

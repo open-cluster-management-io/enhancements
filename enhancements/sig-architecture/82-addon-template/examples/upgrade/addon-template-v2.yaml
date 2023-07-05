@@ -29,8 +29,8 @@ spec:
                 serviceAccountName: hello-template-agent-sa
                 containers:
                   - name: helloworld-agent
-                    image: quay.io/zhujian/addon-examples:latest
-                    imagePullPolicy: Always
+                    image: quay.io/open-cluster-management/addon-examples:latest
+                    imagePullPolicy: IfNotPresent
                     args:
                       - "/helloworld"
                       - "agent"
@@ -84,5 +84,4 @@ spec:
             - o1
             - o2
         signingCA:
-          namespace: default
           name: ca-secret
