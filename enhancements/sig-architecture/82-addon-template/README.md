@@ -36,8 +36,10 @@ straightforward addon development way.
 
 - The addon agent image is still required.
 - The hosted mode addon is not supported.
-- The pre-delete-hook feature is not supported.
 - For complicated addon which has special RBAC requirement etc would still need to use addon-framework.
+- For the agent runtime, only `Deployment` is fully supported, for `Daemonset`, `Statefulset`, and other runtime
+  resources can be deployed to the managed cluster, but will no volumes be injected, and can not be used to check the
+  health of the addon.
 
 ## Proposal
 
@@ -70,6 +72,18 @@ register the addon to the hub cluster. And it is needed to reference the `AddonT
 field of `ClusterManagementAddon` to indicate that this addon is using a template.
 
 ```golang
+// AddOnTemplate is a cluster-scoped resource, and will only be used on the hub cluster.
+type AddOnTemplate struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata"`
+
+	// spec holds the registration configuration for the addon and the
+	// addon agent resources yaml description.
+	// +kubebuilder:validation:Required
+	// +required
+	Spec AddOnTemplateSpec `json:"spec"`
+}
+
 // AddOnTemplateSpec defines the template of an addon agent which will be deployed on managed clusters.
 type AddOnTemplateSpec struct {
 	// AddonName represents the name of the addon which the template belongs to
@@ -156,7 +170,10 @@ type KubeClientRegistrationConfig struct {
 // provided ClusterRole/Role to the "system:open-cluster-management:cluster:<cluster-name>:addon:<addon-name>"
 // Group.
 type HubPermissionConfig struct {
-	// Type of the permissions setting. It defines how to bind the roleRef
+	// Type of the permissions setting. It defines how to bind the roleRef on the hub cluster. It can be:
+	// - CurrentCluster: Bind the roleRef to the namespace with the same name as the managedCluster.
+	// - SingleNamespace: Bind the roleRef to the namespace specified by SingleNamespaceBindingConfig.
+	//
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Enum:=CurrentCluster;SingleNamespace
 	Type HubPermissionsBindingType `json:"type"`
@@ -193,16 +210,18 @@ type CustomSignerRegistrationConfig struct {
 	Subject *Subject `json:"subject,omitempty"`
 
 	// SigningCA represents the reference of the secret on the hub cluster to sign the CSR
+	// the secret must be in the namespace where the addon-manager is located, and the secret
+	// type must be "kubernetes.io/tls"
+	// Note: The addon manager will not have permission to access the secret by default, so
+	// the user must grant the permission to the addon manager(by creating rolebinding for
+	// the addon-manager serviceaccount "addon-manager-controller-sa").
 	// +kubebuilder:validation:Required
 	SigningCA SigningCARef `json:"signingCA"`
 }
 
-// SigningCARef is the reference to the signing CA secret that must contain the
-// certificate authority data with key "ca.crt" and the private key data with key "ca.key"
+// SigningCARef is the reference to the signing CA secret which type must be "kubernetes.io/tls" and
+// which namespace must be the same as the addon-manager.
 type SigningCARef struct {
-	// Namespace of the signing CA secret
-	// +kubebuilder:validation:Required
-	Namespace string `json:"namespace"`
 	// Name of the signing CA secret
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
@@ -227,7 +246,10 @@ Environments, so developers can use them in their agent code.
 
 #### Inject volumes
 
-The hub kuceconfig will be injected to the deployment defined in the addon template
+The volumes are generated based on the `addonTemplate.spec.registration` field.
+
+1. If there is a `KubeClient` type registration, the hub kubeconfig will be injected to the deployments defined in the
+addon template
 
 ```yaml
 ...
@@ -244,6 +266,25 @@ spec:
         defaultMode: 420
         secretName: <addon-name>-hub-kubeconfig
 ...
+```
+
+2. If there is a `CustomSigner` type registration, the secret signed via the custom signer defined in the
+`CustomSignerRegistrationConfig` will be injected to the deployments defined in the addon template
+
+```yaml
+...
+spec:
+  containers:
+    - name: addon-agent
+      ...
+      volumeMounts:
+        - mountPath: /managed/<signer-name> # if the signer name contains "/", it will be replaced by "-"
+          name: cert-<signer-name>
+  volumes:
+    - name: cert-<signer-name> # if the signer name contains "/", it will be replaced by "-"
+      secret:
+        defaultMode: 420
+        secretName: <addon-name>-<signer-name>-client-cert # if the signer name contains "/", it will be replaced by "-"
 ```
 
 #### Use Variables in addonTemplate
@@ -284,16 +325,9 @@ The rendering output of the agent deployment will be like [this](./examples/agen
 
 ### Probe the health of addons
 
-By default, the healthiness of the addon is connected with the corresponding lease resource, which has the same name as
-the addon and is located in the same cluster and namespace where the addon agent is deployed. So there is a
-requirement for the addon agent, it is expected to periodically refresh the lease by implementing
-[lease.LeaseUpdater](https://github.com/open-cluster-management-io/addon-framework/blob/9466c062199e66b9e96e6393f5a4c1ac9cf84cd6/pkg/lease/lease_controller.go#L23-L31)
-interface.
-
-But in order to get rid of the requirement for developers, we are considering another type of healthiness probe:
-injecting a feedback rule to check if the agent deployment resource is available(the output of
-`kubectl get deployment -n <addon-agent-namespace> <addon-agent-name> -ojsonpath="{.status.conditions[?(@.type=='Available')].status}"`
-is `True`).
+Since we only support the Deployment resource as the agent runtime workload, we can inject a feedback rule to the
+agent deployment resource, the feedback rule will check if the deployment is available, if not, the addon will be
+considered as unhealthy.
 
 ### Upgrade an addon template
 

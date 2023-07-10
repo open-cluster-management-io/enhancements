@@ -12,42 +12,41 @@ spec:
       app: hello-template-agent
   template:
     metadata:
-      creationTimestamp: null
       labels:
         app: hello-template-agent
     spec:
       containers:
-        - args:
-            - /helloworld
-            - agent
-            - --cluster-name=cluster1
-            - --addon-namespace=open-cluster-management-agent-addon
-            - --addon-name=hello-template
-            - --hub-kubeconfig=/managed/hub-kubeconfig/kubeconfig
-            - --v=4
-          image: quay.io/zhujian/addon-examples:latest
-          imagePullPolicy: Always
-          name: helloworld-agent
-          resources: {}
-          terminationMessagePath: /dev/termination-log
-          terminationMessagePolicy: File
-          env:
-            - name: CLUSTER_NAME
-              value: "cluster1"
-            - name: HUB_KUBECONFIG
-              value: "/managed/hub-kubeconfig/kubeconfig"
-            - name: MANAGED_KUBECONFIG
-              value: "/managed/kubeconfig/kubeconfig"
-          volumeMounts:
-            - name: hub-kubeconfig
-              mountPath: /managed/hub-kubeconfig
-            - name: managed-kubeconfig
-              mountPath: /managed/kubeconfig
-      volumes:
-        - name: hub-kubeconfig
-          secret:
-            secretName: hubKubeConfigSecret
-        - name: managed-kubeconfig
-          secret:
-            secretName: managedKubeConfigSecret
+      - args:
+        - /helloworld
+        - agent
+        - --cluster-name=cluster1
+        - --addon-namespace=open-cluster-management-agent-addon
+        - --addon-name=hello-template
+        - --hub-kubeconfig=/managed/hub-kubeconfig/kubeconfig
+        - --v=4
+        env:
+        - name: HUB_KUBECONFIG
+          value: /managed/hub-kubeconfig/kubeconfig
+        - name: CLUSTER_NAME
+          value: cluster1
+        - name: INSTALL_NAMESPACE
+          value: open-cluster-management-agent-addon
+        image: quay.io/open-cluster-management/addon-examples:latest
+        imagePullPolicy: IfNotPresent
+        name: helloworld-agent
+        volumeMounts:
+        - mountPath: /managed/hub-kubeconfig
+          name: hub-kubeconfig
+        - mountPath: /managed/example.com-signer-name
+          name: cert-example-com-signer-name
+      serviceAccount: hello-template-agent-sa
       serviceAccountName: hello-template-agent-sa
+      volumes:
+      - name: hub-kubeconfig
+        secret:
+          defaultMode: 420
+          secretName: hello-template-hub-kubeconfig
+      - name: cert-example-com-signer-name
+        secret:
+          defaultMode: 420
+          secretName: hello-template-example.com-signer-name-client-cert
