@@ -90,7 +90,7 @@ spec:
     channel: stable
     name: my-operator
     namespace: own-namespace
-    installPlanApproval: Automatic # may be overriden to Manual by other settings
+    installPlanApproval: Automatic # may be overridden to Manual by other settings
     source: my-catalog
     sourceNamespace: my-catalog-namespace
     startingCSV: my-operator.v0.1.0 # optional
@@ -98,17 +98,18 @@ spec:
     - my-operator.v0.1.1
     - my-operator.v0.2.0
   # - "*" # Allow all
-  pruneOnDeletion: # optional
-    - subscriptions
-    - clusterserviceversions
-  # - installplans
-  # - customresourcedefinitions
-  # - apiservicedefinitions
-  violationConditions: # the defaults are set here
-    catalogSourceUnhealthy: false
-    deploymentsUnavailable: true
-    upgradesAvailable: false
-    upgradesProgressing: true
+  removalBehavior:
+    operatorGroups: DeleteIfUnused
+    subscriptions: Delete
+    clusterServiceVersions: Delete
+    installPlans: Keep
+    customResourceDefinitions: Keep
+    apiServiceDefinitions: Keep
+  statusConfig:
+    catalogSourceUnhealthy: Condition
+    deploymentsUnavailable: NonCompliant
+    upgradesAvailable: Condition
+    upgradesProgressing: NonCompliant
 ```
 
 When `remediationAction` is set to `inform`, no actions (creates, deletes, updates) will be taken on
@@ -137,16 +138,17 @@ policy is in `inform` mode, and which InstallPlans can be approved when in `enfo
 exact matches are considered, except for a special value, "*" which matches any version. This field
 must be set, and must have at least one item.
 
-The `spec.pruneOnDeletion` field allows configuration of what will be removed when the policy is
-deleted. The "recommended" setting for workloads would be `[subscriptions, clusterserviceversions]`,
-specifically leaving behind CRDs since they can often require extra attention to properly remove. If
-not set, no resources will be removed when the policy is deleted - the recommended setting above
-will not be a default behavior.
+The `spec.removalBehavior` field allows configuration of what will be removed when the policy is
+deleted. Each kind that might be deleted should support `Keep` and `Delete`, and can potentially
+have additional values specific to the resources in question. For example, the OperatorGroup should
+likely only be removed if it isn't being used by another subscription. 
 
-The `spec.violationConditions` field allows the policy author to specify which conditions should
-result in the policy being marked as NonCompliant. The default behavior (when unset) may vary for
-each condition, but changing the default setting should only happen when the apiVersion changes.
-Additional settings may be added here in the future.
+The `spec.statusConfig` field allows the author to specify what effect specific resource statuses
+will have on the OperatorPolicy status and compliance events. The currently planned values are:
+`Condition`, which will record the status in `status.conditions` and in the compliance event; and
+`NonCompliant`, which additionally updates the `status.compliant` field to NonCompliant which can
+cause the root policy on the hub to become NonCompliant and may throw an alert. Additional values
+could be added in the future.
 
 ### OperatorPolicy Status and Compliance Event Messages
 
@@ -212,10 +214,9 @@ There is also a `status.relatedObjects` for the OLM objects (CatalogSource, Subs
 InstallPlan, etc) related to this operator installation, and the Deployments and ServiceAccounts
 listed in the OperatorCondition. Each of those related objects has a `compliant` field, but a
 NonCompliant object will not necessarily cause the policy to become NonCompliant: for example if the
-CatalogSource is unhealthy, the policy should only become NonCompliant if
-`spec.violationConditions.catalogSourceUnhealthy` is true. The `reason` associated with each object
-is a brief human-readable explanation for the value of the `compliant` field. This matches the
-conventions of ConfigurationPolicy.
+CatalogSource is unhealthy, `spec.statusConfig.catalogSourceUnhealthy` must be considered. The
+`reason` associated with each object is a brief human-readable explanation for the value of the
+`compliant` field. This matches the conventions of ConfigurationPolicy.
 
 When a condition changes the controller will emit a policy compliance event like other policy
 controllers. In particular, the event message should begin with "Compliant; " or "NonCompliant; "
@@ -239,7 +240,7 @@ kind: Event
 lastTimestamp: "2023-07-14T07:34:28Z"
 message: >-
   Compliant; all operator deployments have their minimum availability, all available catalogsources 
-  are healthy, an installplan is pending but nonCompliantIfUpgradesAvailable is false.
+  are healthy, an installplan is pending but not causing noncompliance.
 metadata:
   creationTimestamp: "2023-07-14T07:34:28Z"
   name: policies.my-operator.1771b8bf88adf1ec
@@ -340,8 +341,8 @@ spec:
     startingCSV: strimzi-cluster-operator.v0.35.0
   allowedCSVs:
     - strimzi-cluster-operator.v0.35.0
-  violationConditions:
-    upgradesAvailable: true
+  statusConfig:
+    upgradesAvailable: NonCompliant
 status:
   compliant: NonCompliant
   conditions:
@@ -391,11 +392,11 @@ spec:
     sourceNamespace: openshift-marketplace
   allowedCSVs:
     - "*"
-  violationConditions:
-    catalogSourceUnhealthy: true
-    deploymentsUnavailable: true
-    upgradesAvailable: false
-    upgradesProgressing: true
+  statusConfig:
+    catalogSourceUnhealthy: NonCompliant
+    deploymentsUnavailable: NonCompliant
+    upgradesAvailable: Condition
+    upgradesProgressing: NonCompliant
 ```
 
 The `status` of this policy will be populated with details about the OperatorGroup, Subscription,
@@ -455,10 +456,17 @@ spec:
     sourceNamespace: openshift-marketplace
   allowedCSVs:
     - "*"
-  pruneOnDeletion:
-    - subscriptions
-    - clusterserviceversions
+  removalBehavior:
+    operatorGroups: DeleteIfUnused
+    subscriptions: Delete
+    clusterServiceVersions: Delete
+    installPlans: Keep
+    customResourceDefinitions: Keep
+    apiServiceDefinitions: Keep
 ```
+
+It should be noted that the `removalBehavior` specified here is just the default setting made
+explicit.
 
 ### Implementation Details/Notes/Constraints [optional]
 
