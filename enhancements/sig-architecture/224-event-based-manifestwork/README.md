@@ -103,7 +103,7 @@ Event Schema:
     "resourceVersion": "<resource-version-in-int64>",
     // deletionTimestamp is a timestamp representing the manifests of this message are deleting from the source, the work-agent needs to clean up the manifests from its cluster. It is represented in RFC3339 form and is in UTC. It is an optional property, if not set, the agent will deploy the manifests on its cluster.
     // If present, MUST adhere to the format specified in RFC 3339.
-    "deletionTimestamp": "2018-04-05T17:31:00Z"
+    "deletionTimestamp": "<timestamp-of-the-resource-deletion>",
 }
 // Data
 {
@@ -173,8 +173,7 @@ In this example, we have a hub controller called "mwrs-hub-controller" serving a
 }
 // Data
 {
-"manifests": [
-    {
+"manifests": [{
     "apiVersion": "apps/v1",
     "kind": "Deployment",
     "metadata": {
@@ -198,7 +197,8 @@ In this example, we have a hub controller called "mwrs-hub-controller" serving a
                 "ports": [{"containerPort": 80}]
             }]}
         }
-    }}],
+    }
+}],
 "manifestConfigs": [{
     "resourceIdentifier": {
         "group": "apps",
@@ -235,8 +235,7 @@ In this example, we have a hub controller called "mwrs-hub-controller" serving a
 }
 // Data
 {
-"manifests": [
-    {
+"manifests": [{
     "apiVersion": "apps/v1",
     "kind": "Deployment",
     "metadata": {
@@ -260,7 +259,8 @@ In this example, we have a hub controller called "mwrs-hub-controller" serving a
                 "ports": [{"containerPort": 80}]
             }]}
         }
-    }}],
+    }
+}],
 "manifestConfigs": [{
     "resourceIdentifier": {
         "group": "apps",
@@ -416,8 +416,7 @@ Event Example:
     "message": "1 of 1 resources are not available"
   }
 ],
-"resourceStatus": [
-  {
+"resourceStatus": [{
     "resourceMeta": {
         "ordinal": 0,
         "group": "apps",
