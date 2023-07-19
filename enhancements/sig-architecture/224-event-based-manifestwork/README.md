@@ -604,9 +604,24 @@ Event schema:
 }
 ```
 
-### Open Questions [optional]
+### Failure Handling
 
-N/A
+~~- Retry Mechanism(TBD):~~
+
+~~In the event of a failure during event delivery or processing, a retry mechanism should be implemented to ensure reliable event propagation. When an event fails to reach its destination or encounters an error during processing, it should be retried for a certain number of times before giving up.~~
+
+~~The retry mechanism should employ exponential backoff, gradually increasing the delay between retries to prevent overwhelming the system with failed events. Each retry attempt should be logged, including relevant information such as the event payload, timestamp, and error details.~~
+
+- Resync Mechanism:
+
+To ensure the integrity of the event-based manifestworks system during source or work agent restart or reconnection, the following optimized resync mechanism is employed:
+
+1. On start, the source subscribes to the spec resync event topic /sources/resync/+/manifests from the broker.
+2. On start, the work agent subscribes to the status resync event topic /sources/+/resync/clusters/manifestsstatus from the broker.
+3. Upon work agent restart or reconnect, the work agent generates a spec resync event with resource versions and sends it to the broker.
+4. Upon source restart or reconnect, the source calculates a status hash of its owned resources and sends a status resync event with the resource hash to the broker.
+5. The source compares the resource versions in the spec resync event message with the hub's state and generates spec events to the broker for the work agent to receive missing spec events.
+6. The work agent compares the status hashes in the status resync event message with its own state and generates status events to the broker for the source to receive missing status events.
 
 ### Test Plan
 
