@@ -18,6 +18,8 @@ Manifestworks are used to deliver manifests from a hub cluster to managed cluste
 
 By considering each cluster namespace as a separate topic or channel, managed cluster agents can subscribe to relevant manifestworks. This approach eliminates the need to store manifestworks on the hub cluster, as they are primarily consumed by controllers like the addon manager or manifestworkreplicaset controller. Additionally, this change allows other architectures, such as non-Kubernetes restful services or databases, to consume ManifestWorks.
 
+Moreover, with the adoption of the event-based mechanism, ManifestWorks become highly versatile and applicable in IoT or edge computing scenarios. In IoT setups, where resource constraints and intermittent connectivity are common, the event-driven approach allows ManifestWorks to be efficiently distributed and applied to edge clusters. This enhances the overall flexibility and adaptability of ManifestWorks, extending their utility beyond traditional Kubernetes environments.
+
 To facilitate easy adoption of the event-based mechanism, a client interface should be provided, enabling existing work agents or consumers to transition without extensive code changes.
 
 ### Goals
