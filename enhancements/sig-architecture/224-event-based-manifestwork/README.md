@@ -83,13 +83,17 @@ Event Schema:
     "specversion": "1.0",
     // Unique indentifier for cloud events message.
     "id": "<cloud-events-message-id>",
-    // Use "/sources/<source-id>/clusters/<cluster-id>/<resource-type>" as the cloud events source to identify the context in which an event occurred.
-    // <source-id> should be a unique identifier for the source. For instance, a hub controller can generate a source ID by hashing the hub cluster URL and appending a controller name.
-    // <cluster-id> represents the identifier of the target cluster to which this cloud event is sent.
-    // <resource-type> refers to the resource included in the cloud event payload.
-    "source": "/sources/<source-id>/clusters/<cluster-id>/<resource-type>",
-    // Use "<reverse-domain-name-of-resource-organization>.<resource-version>.<resource-name>.<subsource>.<action>" as the format for this attribute, which contains a value describing the type of event related to the originating occurrence.
-    // For example, "io.open-cluster-management.v1.manifestwork.spec.created" can be used as a sample format.
+    // Use "<source-id>" as the cloud events source to identify the context in which an event occurred.
+    // <source-id> should be a unique identifier for the source.
+    // For example, a hub controller can generate a source ID by hashing the hub cluster URL and appending a controller name,
+    // a work agent can generate a source ID with <hub-id>/<agent-id>.
+    "source": "<source-id>",
+    // Use "<reverse-group-of-resource>.<resource-version>.<resource-name>.<subresource>.<action>" as the format for this attribute, which contains a value describing the type of event data.
+    // The "<reverse-group-of-resource>.<resource-version>.<resource-name>" identifies the type of the resource included in the event payload.
+    // The valid value of "<subresource>" includes: spec or status
+    // The "<action>" represents the action for this resource, e.g. create_request, update_request and delete_request and resync_request.
+    // For example, "io.open-cluster-management.works.v1alpha1.manifestbundle.spec.create_request", "io.open-cluster-management.works.v1alpha1.manifestbundle.status.update_request",
+    // "io.open-cluster-management.works.v1alpha1.manifest.spec.create_request", etc.
     "type": "<reverse-domain-name-of-resource-organization>.<resource-version>.<resource-name>.<subsource>.<action>",
     // Timestamp of when the occurrence happened. Optional, if present, MUST adhere to the format specified in RFC 3339.
     "time": "<timestamp-of-the-event-occurrence>",
@@ -623,6 +627,114 @@ To ensure the integrity of the event-based manifestworks system during source or
 4. Upon source restart or reconnect, the source calculates a status hash of its owned resources and sends a status resync event with the resource hash to the broker.
 5. The source compares the resource versions in the spec resync event message with the hub's state and generates spec events to the broker for the work agent to receive missing spec events.
 6. The work agent compares the status hashes in the status resync event message with its own state and generates status events to the broker for the source to receive missing status events.
+
+### Clients
+
+We provide a generic based client implementation to pub/sub/resync resource objects between sources and agents with
+cloud events.
+
+```golang
+type Interface[T Object] interface {
+	Resync(ctx context.Context, eventType CloudEventType) error
+	Publish(ctx context.Context, eventType CloudEventType, obj T) error
+	Subscribe(ctx context.Context) error
+	SubscriptionResultChan() <-chan Event[T]
+}
+```
+
+The resouce object should implement the following interface, so that we can get the `resourceID` with `GetUID` function
+and get the `resourceVersion` with `GetResourceVersion` function.
+
+```golang
+type Object interface {
+	GetUID() types.UID
+	GetResourceVersion() string
+	GetDeletionTimestamp() *metav1.Time
+	SetDeletionTimestamp(timestamp *metav1.Time)
+}
+```
+
+and the object should have the encoder/decoder to encode/decode the object/cloudevent to cloudevent/object
+
+```golang
+type Encoder[T Object] interface {
+	EncodeSpec(eventType, source string, obj T) (*cloudevents.Event, error)
+	EncodeStatus(eventType, source string, obj T) (*cloudevents.Event, error)
+}
+
+type Decoder[T Object] interface {
+	DecodeSpec(*cloudevents.Event) (T, error)
+	DecodeStatus(*cloudevents.Event) (T, error)
+}
+```
+
+and the object should have the status hash getter, so that we can get the status hash to resync the status
+
+```golang
+type StatusHashGetter[T Object] interface {
+	Get(T) (string, error)
+}
+```
+
+at last, we need lister to list the objects to resync the objects between sources and agents
+
+```golang
+type Lister[T ManifestObject] interface {
+	List() []T
+}
+```
+
+Devlopers can use `NewCloudEventClient[T Object]` function to create the client for their resources, for example, we can
+easily to build a client for `ManifestWork`
+
+```golang
+mwCloudEventClient := NewCloudEventClient[*workv1.ManifestWork](
+			workAgentSourceID,
+			mqttCloudEventSubClient, mqttCloudEventPubClient,
+			manifestWorkLister,
+			manifestWorkStatusHashGetter,
+		)
+
+// add multiple encoders/decoders to support different cloud event payload
+mwCloudEventClient.AddPayloadCoders(
+  {Group: "io.open-cluster-management.works", Version: "v1alpha1", Resource: "manifestbundle"},
+  manifestbundleEncoder,
+  manifestbundleDecoder,
+)
+mwCloudEventClient.AddPayloadCoders(
+  {Group: "io.open-cluster-management.works", Version: "v1alpha1", Resource: "manifest"},
+  manifestEncoder,
+  manifestDecoder,
+)
+```
+
+By default, we provide a work client builder for devlopers, devlopers can enable the cloud event based on the MQTT
+for `ManifestWork` with MQTT options, the builder returns a work client holder, we can get the work client set from this
+holder, e.g.
+
+```golang
+workClientHolder, err := workclient.NewWorkClientBuilder("work-agent-id").
+		WithHubKubeConfig(hubKubeConfig).
+		WithMQTTOptions(o.mqttOptions).
+		WithClusterName(o.SpokeClusterName).
+		WithCloudEventTypes(workclient.ManifestBundle, workclient.Manifest).
+		NewWorkClientHolder(ctx)
+if err != nil {
+		return err
+}
+
+workClientSet := hubWorkClientHolder.GetWorkClientSet()
+```
+
+Using the work client set, developers can access the ManifestWork or create a Kubernetes informer and lister. This
+process closely mirrors what developers typically do in a Kubernetes environment.
+
+```golang
+workInformerFactory := workinformers.NewSharedInformerFactoryWithOptions(workClientSet, 5*time.Minute, workinformers.WithNamespace(o.SpokeClusterName))
+manifestWorkClient := workClientSet.WorkV1().ManifestWorks(o.SpokeClusterName)
+manifestWorkInformer := workInformerFactory.Work().V1().ManifestWorks()
+manifestWorkLister := workInformerFactory.Work().V1().ManifestWorks().Lister().ManifestWorks(o.SpokeClusterName)
+```
 
 ### Test Plan
 
