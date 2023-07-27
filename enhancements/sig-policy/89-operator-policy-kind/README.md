@@ -74,6 +74,7 @@ metadata:
 spec:
   remediationAction: enforce # or inform
   severity: medium
+  complianceType: musthave # or mustnothave
   operatorGroup: # optional
     name: my-operator-group
     namespace: own-namespace
@@ -94,10 +95,9 @@ spec:
     source: my-catalog
     sourceNamespace: my-catalog-namespace
     startingCSV: my-operator.v0.1.0 # optional
-  allowedCSVs:
+  versions:
     - my-operator.v0.1.1
     - my-operator.v0.2.0
-  # - "*" # Allow all
   removalBehavior:
     operatorGroups: DeleteIfUnused
     subscriptions: Delete
@@ -106,9 +106,9 @@ spec:
     customResourceDefinitions: Keep
     apiServiceDefinitions: Keep
   statusConfig:
-    catalogSourceUnhealthy: Condition
+    catalogSourceUnhealthy: StatusMessageOnly
     deploymentsUnavailable: NonCompliant
-    upgradesAvailable: Condition
+    upgradesAvailable: StatusMessageOnly
     upgradesProgressing: NonCompliant
 ```
 
@@ -119,11 +119,18 @@ what is missing, and that it will not be created because the policy is not being
 is set to `enforce`, OperatorGroups and Subscriptions may be created by the controller, InstallPlans
 may be approved, and resources may be removed when the policy is deleted.
 
+The `complianceType` is either "musthave" or "mustnothave" and follows the idea of the same field in
+ConfigurationPolicy. In "musthave" mode, the operator must be present on the cluster as specified in
+the policy for the policy to be marked as Compliant. In "mustnothave" mode, if the specified
+operator is on the cluster (found by matching the name, namespace, source and sourceNamespace, and
+optionally matching one of the specified versions), then the policy will be marked as NonCompliant.
+
 The optional `spec.operatorGroup` section defines an
 [OperatorGroup](https://github.com/operator-framework/api/blob/master/crds/operators.coreos.com_operatorgroups.yaml).
 If not specified, and if the operator supports this InstallMode, then it will ensure that an
 [AllNamespaces](https://olm.operatorframework.io/docs/advanced-tasks/operator-scoping-with-operatorgroups/#targetnamespaces-and-their-relationship-to-installmodes)
-OperatorGroup exists in the namespace of the subscription.
+OperatorGroup exists in the namespace of the subscription. The operatorGroup is not checked in
+"mustnothave" mode.
 
 The `spec.subscription` section includes the fields from the spec of an [OLM
 Subscription](https://github.com/operator-framework/api/blob/master/crds/operators.coreos.com_subscriptions.yaml).
@@ -133,13 +140,17 @@ The `installPlanApproval` field is optional. If the policy is in `enforce` mode 
 are restricted as specified below, then the `installPlanApproval` field on the Subscription will
 always be Manual, regardless of the setting here.
 
-The `spec.allowedCSVs` list specifies what installed versions are considered Compliant when the
-policy is in `inform` mode, and which InstallPlans can be approved when in `enforce` mode. Only
-exact matches are considered, except for a special value, "*" which matches any version. This field
-must be set, and must have at least one item.
+In "musthave" mode, the `spec.versions` list specifies what installed versions are considered
+Compliant when the policy is in `inform` mode, and which InstallPlans can be approved when in
+`enforce` mode. Conversely, in "mustnothave" mode, this list specifies which versions are considered
+NonCompliant. Only exact matches are considered. If the list is unset or empty, then any version on
+the cluster will be considered a match.
 
-The `spec.removalBehavior` field allows configuration of what will be removed when the policy is
-deleted. Each kind that might be deleted should support `Keep` and `Delete`, and can potentially
+The `spec.removalBehavior` field allows configuration of what may be removed by the controller. It
+has no effect when the policy is in "inform" mode. When the policy is in "musthave" mode, and the
+policy is deleted, then controller will remove the types marked for deletion here. In "mustnothave"
+mode, the specified types will be removed if they appear, in order to drive the cluster towards
+compliance. Each kind that might be deleted should support `Keep` and `Delete`, and can potentially
 have additional values specific to the resources in question. For example, the OperatorGroup should
 likely only be removed if it isn't being used by another subscription. 
 
@@ -276,6 +287,7 @@ metadata:
 spec:
   remediationAction: enforce
   severity: medium
+  complianceType: musthave
   subscription:
     channel: stable
     name: strimzi-kafka-operator
@@ -284,7 +296,7 @@ spec:
     source: community-operators
     sourceNamespace: openshift-marketplace
     startingCSV: strimzi-cluster-operator.v0.35.0
-  allowedCSVs:
+  versions:
     - strimzi-cluster-operator.v0.35.0
 ```
 
@@ -304,6 +316,7 @@ metadata:
 spec:
   remediationAction: enforce
   severity: medium
+  complianceType: musthave
   subscription:
     channel: stable
     name: strimzi-kafka-operator
@@ -312,7 +325,7 @@ spec:
     source: community-operators
     sourceNamespace: openshift-marketplace
     startingCSV: strimzi-cluster-operator.v0.35.0
-  allowedCSVs:
+  versions:
     - strimzi-cluster-operator.v0.35.0
     - strimzi-cluster-operator.v0.35.1
 ```
@@ -331,6 +344,7 @@ metadata:
 spec:
   remediationAction: enforce
   severity: medium
+  complianceType: musthave
   subscription:
     channel: stable
     name: strimzi-kafka-operator
@@ -339,7 +353,7 @@ spec:
     source: community-operators
     sourceNamespace: openshift-marketplace
     startingCSV: strimzi-cluster-operator.v0.35.0
-  allowedCSVs:
+  versions:
     - strimzi-cluster-operator.v0.35.0
   statusConfig:
     upgradesAvailable: NonCompliant
@@ -383,6 +397,7 @@ metadata:
 spec:
   remediationAction: inform
   severity: medium
+  complianceType: musthave
   subscription:
     channel: stable
     name: strimzi-kafka-operator
@@ -390,8 +405,6 @@ spec:
     installPlanApproval: Automatic
     source: community-operators
     sourceNamespace: openshift-marketplace
-  allowedCSVs:
-    - "*"
   statusConfig:
     catalogSourceUnhealthy: NonCompliant
     deploymentsUnavailable: NonCompliant
@@ -416,6 +429,7 @@ metadata:
 spec:
   remediationAction: enforce
   severity: medium
+  complianceType: musthave
   operatorGroup:
     name: og-strimzi
     namespace: strimzi-app-one
@@ -429,8 +443,6 @@ spec:
     installPlanApproval: Automatic
     source: community-operators
     sourceNamespace: openshift-marketplace
-  allowedCSVs:
-    - "*"
 ```
 
 #### Story 6
@@ -447,6 +459,7 @@ metadata:
 spec:
   remediationAction: enforce
   severity: medium
+  complianceType: musthave
   subscription:
     channel: stable
     name: strimzi-kafka-operator
@@ -454,8 +467,6 @@ spec:
     installPlanApproval: Automatic
     source: community-operators
     sourceNamespace: openshift-marketplace
-  allowedCSVs:
-    - "*"
   removalBehavior:
     operatorGroups: DeleteIfUnused
     subscriptions: Delete
@@ -467,6 +478,38 @@ spec:
 
 It should be noted that the `removalBehavior` specified here is just the default setting made
 explicit.
+
+#### Story 7
+
+As a policy user, I want to ensure that a certain version of an operator is not present on the
+cluster. If that version of the operator is found, I want its installation to be deleted.
+
+```yaml
+apiVersion: policy.open-cluster-management.io/v1beta1
+kind: OperatorPolicy
+metadata:
+  name: strimzi-policy
+spec:
+  remediationAction: enforce
+  severity: medium
+  complianceType: mustnothave
+  subscription:
+    channel: stable
+    name: strimzi-kafka-operator
+    namespace: strimzi-app-one
+    installPlanApproval: Automatic
+    source: community-operators
+    sourceNamespace: openshift-marketplace
+  versions:
+    - "strimzi-cluster-operator.v0.35.0"
+  removalBehavior:
+    operatorGroups: DeleteIfUnused
+    subscriptions: Delete
+    clusterServiceVersions: Delete
+    installPlans: Keep
+    customResourceDefinitions: Keep
+    apiServiceDefinitions: Keep
+```
 
 ### Implementation Details/Notes/Constraints [optional]
 
