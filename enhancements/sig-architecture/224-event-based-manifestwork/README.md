@@ -10,17 +10,23 @@
 
 ## Summary
 
-This proposal optimizes scaling and performance by treating manifestworks as event messages, reducing excessive storage on the hub cluster. This allows managed cluster agents to subscribe to relevant manifestworks, eliminating the need for extensive hub storage. The proposed changes also enable diverse architectures to consume ManifestWorks, while providing a client interface for seamless adoption of the event-based mechanism.
+This proposal optimizes scaling and performance by treating manifestworks as event messages, reducing excessive storage on the kube-apiserver of hub cluster. This allows managed cluster agents to subscribe to relevant manifestworks, eliminating the need for extensive hub storage. The proposed changes also enable diverse architectures to consume ManifestWorks, while providing a client interface for seamless adoption of the event-based mechanism.
 
 ## Motivation
 
 Manifestworks are used to deliver manifests from a hub cluster to managed clusters. As manifestwork adoption and managed cluster numbers increase, we encounter scaling issues due to excessive manifestwork creation on the hub. This adversely affects the performance of the hub apiserver. This proposal is to explore treating manifestworks as event messages instead of storing them in etcd.
 
-By considering each cluster namespace as a separate topic or channel, managed cluster agents can subscribe to relevant manifestworks. This approach eliminates the need to store manifestworks on the hub cluster, as they are primarily consumed by controllers like the addon manager or manifestworkreplicaset controller. Additionally, this change allows other architectures, such as non-Kubernetes restful services or databases, to consume ManifestWorks.
+By considering each cluster namespace as a separate topic or channel, managed cluster agents can subscribe to relevant manifestworks. This approach eliminates the need to store manifestworks on the hub cluster, as they are primarily consumed by controllers like the addon manager or manifestworkreplicaset controller. Additionally, this change allows other architectures, such as non-Kubernetes restful services with databases, to consume ManifestWorks.
 
-Moreover, with the adoption of the event-based mechanism, ManifestWorks become highly versatile and applicable in IoT or edge computing scenarios. In IoT setups, where resource constraints and intermittent connectivity are common, the event-driven approach allows ManifestWorks to be efficiently distributed and applied to edge clusters. This enhances the overall flexibility and adaptability of ManifestWorks, extending their utility beyond traditional Kubernetes environments.
+Moreover, with the adoption of the event-based mechanism, ManifestWorks become highly versatile and applicable in IoT or edge computing scenarios, in which resource constraints and intermittent connectivity are common, the event-driven approach allows ManifestWorks to be efficiently distributed and applied to edge clusters. This enhances the overall flexibility and adaptability of ManifestWorks, extending their utility beyond traditional Kubernetes environments.
 
 To facilitate easy adoption of the event-based mechanism, a client interface should be provided, enabling existing work agents or consumers to transition without extensive code changes.
+
+### Terminology
+
+- Source: The API consumer or component that utilizes this specification for ManifestWorks. It can be a controller on the hub cluster or a RESTful service handling resource requests. For RESTful service source, it often has a database to store the resources. Source should have a unique identifier to ensure its uniqueness and consistency, for example, a hub controller can generate a source ID by hashing the hub cluster URL and appending the controller name. Similarly, a RESTful service can select a unique name or generate a unique ID in the associated database for its source identification.
+- Work Agent: The controller that handles the deployment of requested resources on the managed cluster and status report to the source. Work agent should have a unique identifier to ensure its uniqueness and consistency. Usually, work agent is uniquely identified by a string that combines mangaed cluster name and agent name for consistency.
+- Broker: The message broker that handles the event transfer between the source and the work agent. It is represented by a message broker, such as MQTT or Kafka.
 
 ### Goals
 
@@ -30,7 +36,8 @@ To facilitate easy adoption of the event-based mechanism, a client interface sho
 
 ### Non-Goals
 
-- Define the controlplane to act as a consumer of the protocol.
+- Define the source architecture to act as a consumer of the protocol.
+- Define the storage and persistence requirement of message broker.
 
 ## Proposal
 
@@ -42,7 +49,7 @@ To facilitate easy adoption of the event-based mechanism, a client interface sho
 
 #### Story 2
 
-- As a service developer, I can effortlessly utilize the event-based manifestwork API to construct a service that delivers manifestworks to managed clusters.
+- As a service developer, I can effortlessly utilize the event-based manifestwork API to construct a service that delivers manifestworks to managed clusters and gather status information.
 
 ### Risks and Mitigation
 
@@ -50,13 +57,11 @@ To facilitate easy adoption of the event-based mechanism, a client interface sho
 
 ## Design Details
 
-We will adopt the CloudEvents specification as the message format for ManifestWorks. Multiple API consumers, referred to as "sources," can utilize this format. Each source must have a unique source ID to ensure proper identification and handling of events.
-
-To ensure the uniqueness and immutability of source components, every source, whether it is a consumer on the open cluster management hub cluster or a RESTful service handling resource requests, should possess a unique identifier. For example, the open cluster management hub consumer can generate a source ID by hashing the hub cluster URL and appending a consumer name. Similarly, a RESTful service can select a unique name or generate a unique ID in the associated database for its source identification.
+We will adopt the CloudEvents specification as the message format for ManifestWorks. Multiple API consumers, referred to as "sources," can utilize this format to deliver resources to managed cluster and receive status information. Each source must have a unique source ID to ensure proper identification and handling of events. The work agent is the controller that handles the deployment of requested resources on the managed cluster and status feedback to the source.
 
 ### Spec Event
 
-Sources send their resources along with the message to the work agent, enabling the creation, updating, or deletion of the respective resources on the managed cluster. "Source" is used to refer to the API consumers or components that utilize the CloudEvents specification for ManifestWorks.
+Sources send their resources along with the message to the work agent, enabling the creation, updating, or deletion of the respective resources on the managed cluster.
 
 Event transfer flow:
 
