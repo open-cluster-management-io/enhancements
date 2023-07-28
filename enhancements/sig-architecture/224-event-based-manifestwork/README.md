@@ -10,7 +10,7 @@
 
 ## Summary
 
-This proposal optimizes scaling and performance by treating manifestworks as event messages, reducing excessive storage on the kube-apiserver of hub cluster. This allows managed cluster agents to subscribe to relevant manifestworks, eliminating the need for extensive hub storage. The proposed changes also enable diverse architectures to consume ManifestWorks, while providing a client interface for seamless adoption of the event-based mechanism.
+This proposal optimizes scaling and performance by treating manifestworks as event messages, reducing excessive storage on the kube-apiserver of hub cluster. This allows managed cluster agents to subscribe to relevant manifestworks, reducing the data being stored in ETCD of hub cluster. The proposed changes also enable diverse architectures to consume ManifestWorks, while providing a client interface for seamless adoption of the event-based mechanism.
 
 ## Motivation
 
