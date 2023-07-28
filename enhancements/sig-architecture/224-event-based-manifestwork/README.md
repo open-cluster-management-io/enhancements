@@ -63,7 +63,7 @@ We will adopt the CloudEvents specification as the message format for ManifestWo
 
 Sources send their resources along with the message to the work agent, enabling the creation, updating, or deletion of the respective resources on the managed cluster.
 
-Event transfer flow:
+#### Event Transfer Flow
 
 1. The work agent subscribes to the spec event topic `/sources/+/clusters/<cluster-id>/manifests` from the broker, for example: `/sources/+/clusters/cluster1/manifests`.
 2. The source receives high level API request and publishes its resources using the spec event to the topic `/sources/<source-id>/clusters/<cluster-id>/manifests`, for example: `/sources/sdbdeavo-mwrs-hub-controller/clusters/cluster1/manifests`.
@@ -78,45 +78,66 @@ sequenceDiagram
     WorkAgent -->> WorkAgent: Decode spec event and apply manifestwork
 ```
 
-Event Schema:
+#### Event Schema
 
+1. Context Attributes
 ```JSON5
-// Context Attributes
 {
     // The version of the CloudEvents specification which the event uses.
     // Compliant event producers MUST use a value of "1.0" when referring to this version of the specification.
     "specversion": "1.0",
     // Unique indentifier for cloud events message.
     "id": "<cloud-events-message-id>",
-    // Use "<source-id>" as the cloud events source to identify the context in which an event occurred.
-    // <source-id> should be a unique identifier for the source.
+    // <source-id> should be a unique identifier for the source to identify the context in which an event occurred.
     // For example, a hub controller can generate a source ID by hashing the hub cluster URL and appending a controller name,
     // a work agent can generate a source ID with <hub-id>/<agent-id>.
     "source": "<source-id>",
-    // Use "<reverse-group-of-resource>.<resource-version>.<resource-name>.<subresource>.<action>" as the format for this attribute, which contains a value describing the type of event data.
-    // The "<reverse-group-of-resource>.<resource-version>.<resource-name>" identifies the type of the resource included in the event payload.
-    // The valid value of "<subresource>" includes: spec or status
-    // The "<action>" represents the action for this resource, e.g. create_request, update_request and delete_request and resync_request.
-    // For example, "io.open-cluster-management.works.v1alpha1.manifestbundle.spec.create_request", "io.open-cluster-management.works.v1alpha1.manifestbundle.status.update_request",
-    // "io.open-cluster-management.works.v1alpha1.manifest.spec.create_request", etc.
-    "type": "<reverse-domain-name-of-resource-organization>.<resource-version>.<resource-name>.<subsource>.<action>",
+    // The type of the CloudEvents, use "<reverse-group-of-resource>.<resource-version>.<resource-name>.<subresource>.<action>"
+    // as the format for this attribute, which contains a value describing the type of event data.
+    // "<reverse-group-of-resource>.<resource-version>.<resource-name>" identifies the type of the resource included in the event payload;
+    // "<subresource>" can be one of "spec" and "status";
+    // "<action>" represents the action for this resource, e.g. create_request, update_request and delete_request and resync_request.
+    // Eg. "io.open-cluster-management.works.v1alpha1.manifestbundle.spec.create_request", "io.open-cluster-management.works.v1alpha1.manifestbundle.status.update_request", "io.open-cluster-management.works.v1alpha1.manifest.spec.create_request", etc.
+    "type": "<reverse-group-of-resource>.<resource-version>.<resource-name>.<subsource>.<action>",
     // Timestamp of when the occurrence happened. Optional, if present, MUST adhere to the format specified in RFC 3339.
     "time": "<timestamp-of-the-event-occurrence>",
     // Content type of data value, If present, MUST adhere to the format specified in RFC 2046.
     // By default "application/json" will be used if it is not set.
     "datacontenttype": "<data-content-type>"
 }
-// Extensions
+```
+
+2. Extensions
+```JSON5
 {
     // resourceID is a required string property representing the unique identifier for this manifestwork. It is the responsibility of the source to ensure its uniqueness and consistency. MUST adhere to the format specified in RFC 4122.
     "resourceID": "<uuid-of-the-resource>", 
-    // resourceVersion is an int64 sequence number that must be incremented by the source whenever the data of this message changes. This property is required, and it is the responsibility of the source to guarantee its incremental nature.
+    // resourceVersion is a required int64 sequence number property that must be incremented by the source whenever the data of this message changes. It is the responsibility of the source to guarantee its incremental nature.
     "resourceVersion": "<resource-version-in-int64>",
-    // deletionTimestamp is a timestamp representing the manifests of this message are deleting from the source, the work-agent needs to clean up the manifests from its cluster. It is represented in RFC3339 form and is in UTC. It is an optional property, if not set, the agent will deploy the manifests on its cluster.
+    // deletionTimestamp is an optional timestamp property representing the manifests of this message are deleting from the source, the work-agent needs to clean up the manifests from its cluster. It is represented in RFC3339 form and is in UTC. If not set, the agent will deploy or update the manifests on its cluster.
     // If present, MUST adhere to the format specified in RFC 3339.
     "deletionTimestamp": "<timestamp-of-the-resource-deletion>",
 }
-// Data
+```
+
+3. Payload
+
+The payload of the spec event varies based on the resource name. Two supported resource types are "manifest" (for single resource) and "manifestbundle" (for multiple resources in an event message). For "manifest" resources, the payload matches the corresponding Kubernetes API resource. For "manifestbundle" resources, the payload aligns with the Kubernetes API's ManifestWork resource.
+
+- **manifest (for single resource)**
+
+```JSON5
+{
+  // manifest represents a Kuberenetes resource to be deployed on the cluster that the work agent is running.
+  // It is represented in string.
+  // It is a required property.
+  "manifest": {}
+}
+```
+
+- **manbifestbundle (for multiple resources)**
+
+```JSON5
 {
     // manifest represents a list of Kuberenetes resources to be deployed on the cluster that the work agent is running.
     // It is represented in string.
@@ -161,9 +182,11 @@ Event Schema:
 }
 ```
 
-Event Example:
+#### Event Example
 
 In this example, we have a hub controller called "mwrs-hub-controller" serving as the resource management source. Additionally, we have a work agent operating on "cluster1" that handles the deployment of requested resources within the cluster.
+
+- **manifest (for single resource)**
 
 1. Resource creation - the mwrs-hub-controller can send a cloud event to the topic `/sources/sdbdeavo-mwrs-hub-controller/clusters/cluster1/manifests`:
 
@@ -171,7 +194,122 @@ In this example, we have a hub controller called "mwrs-hub-controller" serving a
 // Context Attributes
 {
   "specversion": "1.0",
-  "type": "io.open-cluster-management.v1.manifestwork.spec.created",
+  "type": "io.open-cluster-management.works.v1alpha1.manifest.spec.create_request",
+  "source": "/sources/sd3ded4-mwrs-hub-controller/clusters/cluster1/manifests",
+  "id": "35dc1966-1447-49f4-95ae-7fba6017a4fd",
+  "time": "2023-07-19T03:01:11.548189454Z",
+  "datacontenttype": "application/json",
+}
+// Extensions
+{
+  "resourceid": "a52adbe8-b6f2-52c8-9378-c4f544502fb7",
+  "resourceversion": 1
+}
+// Data
+{
+  "manifest": {
+    "apiVersion": "apps/v1",
+    "kind": "Deployment",
+    "metadata": {
+      "name": "busybox-48150",
+      "namespace": "default"
+    },
+    "spec": {
+      "replicas": 1,
+      "selector": {"matchLabels": {"app": "busybox"}},
+      "template": {
+        "metadata": {
+          "labels": {"app": "busybox"}
+        },
+        "spec": {
+          "containers": [{
+              "command": ["sh", "-c", "sleep 3600"],
+              "image": "busybox:1.28",
+              "imagePullPolicy": "IfNotPresent",
+              "name": "busybox",
+            }]}
+      }
+    },
+  }
+}
+```
+
+2. Updating resource (updating the deployment replicas) - the mwrs-hub-controller can send a cloud event to the topic `/sources/sdbdeavo-mwrs-hub-controller/clusters/cluster1/manifests`:
+
+```JSON5
+// Context Attributes
+{
+  "specversion": "1.0",
+  "type": "io.open-cluster-management.works.v1alpha1.manifest.spec.update_request",
+  "source": "/sources/sd3ded4-mwrs-hub-controller/clusters/cluster1/manifests",
+  "id": "35dc1966-1447-49f4-95ae-7fba6017a4fd",
+  "time": "2023-07-19T03:02:30.548189454Z",
+  "datacontenttype": "application/json",
+}
+// Extensions
+{
+  "resourceid": "a52adbe8-b6f2-52c8-9378-c4f544502fb7",
+  "resourceversion": 2
+}
+// Data
+{
+  "manifest": {
+    "apiVersion": "apps/v1",
+    "kind": "Deployment",
+    "metadata": {
+      "name": "busybox-48150",
+      "namespace": "default"
+    },
+    "spec": {
+      "replicas": 2,
+      "selector": {"matchLabels": {"app": "busybox"}},
+      "template": {
+        "metadata": {
+          "labels": {"app": "busybox"}
+        },
+        "spec": {
+          "containers": [
+            {
+              "command": ["sh", "-c", "sleep 3600"],
+              "image": "busybox:1.28",
+              "imagePullPolicy": "IfNotPresent",
+              "name": "busybox",
+            }]}
+      }
+    },
+  }
+}
+```
+
+3. Deletion resource - the mwrs-hub-controller can send a cloud event to the topic `/sources/sdbdeavo-mwrs-hub-controller/clusters/cluster1/manifests`:
+
+```JSON5
+// Context Attributes
+{
+  "specversion": "1.0",
+  "type": "io.open-cluster-management.works.v1alpha1.manifest.spec.delete_request",
+  "source": "/sources/sd3ded4-mwrs-hub-controller/clusters/cluster1/manifests",
+  "id": "35dc1966-1447-49f4-95ae-7fba6017a4fd",
+  "time": "2023-07-19T03:03:11.548189454Z",
+  "datacontenttype": "application/json",
+}
+// Extensions
+{
+  "resourceid": "a52adbe8-b6f2-52c8-9378-c4f544502fb7",
+  "resourceversion": 2,
+  "deletiontimestamp": "2023-07-19T03:03:46.841308779Z"
+}
+```
+
+- **manifestbundle (for multiple resources)**
+
+1. Resource creation - the mwrs-hub-controller can send a cloud event to the topic `/sources/sdbdeavo-mwrs-hub-controller/clusters/cluster1/manifests`:
+
+```JSON5
+// Context Attributes
+{
+  "specversion": "1.0",
+  "type": "io.open-cluster-management.works.v1alpha1.manifestbundle.spec.create_request",
   "source": "/sources/sd3ded4-mwrs-hub-controller/clusters/cluster1/manifests",
   "id": "35dc1966-1447-49f4-95ae-7fba6017a4fd",
   "time": "2023-07-19T03:01:11.548189454Z",
@@ -227,13 +365,13 @@ In this example, we have a hub controller called "mwrs-hub-controller" serving a
 }
 ```
 
-2. Updating resource - the mwrs-hub-controller can send a cloud event to the topic `/sources/sdbdeavo-mwrs-hub-controller/clusters/cluster1/manifests`:
+2. Updating resource (updating the deployment replicas) - the mwrs-hub-controller can send a cloud event to the topic `/sources/sdbdeavo-mwrs-hub-controller/clusters/cluster1/manifests`:
 
 ```JSON5
 // Context Attributes
 {
   "specversion": "1.0",
-  "type": "io.open-cluster-management.v1.manifestwork.spec.updated",
+  "type": "io.open-cluster-management.works.v1alpha1.manifestbundle.spec.update_request",
   "source": "/sources/sd3ded4-mwrs-hub-controller/clusters/cluster1/manifests",
   "id": "35dc1966-1447-49f4-95ae-7fba6017a4fd",
   "time": "2023-07-19T03:02:11.548189454Z",
@@ -295,7 +433,7 @@ In this example, we have a hub controller called "mwrs-hub-controller" serving a
 // Context Attributes
 {
   "specversion": "1.0",
-  "type": "io.open-cluster-management.v1.manifestwork.spec.deleted",
+  "type": "io.open-cluster-management.works.v1alpha1.manifestbundle.spec.delete_request",
   "source": "/sources/sd3ded4-mwrs-hub-controller/clusters/cluster1/manifests",
   "id": "35dc1966-1447-49f4-95ae-7fba6017a4fd",
   "time": "2023-07-19T03:03:11.548189454Z",
@@ -311,9 +449,9 @@ In this example, we have a hub controller called "mwrs-hub-controller" serving a
 
 ### Status Event
 
-The work agent communicates the state of the resources it manages to the respective source using this message. "Source" is used to refer to the API consumers or components that utilize the CloudEvents specification for ManifestWorks.
+The work agent communicates the state of the resources it manages to the respective source using this message.
 
-Event transfer flow:
+#### Event Transfer Flow
 
 1. The source subscribes to the status event topic `/sources/<source-id>/clusters/+/manifestsstatus` from the broker, for example: `/sources/sdbdeavo-mwrs-hub-controller/clusters/+/manifestsstatus`.
 2. The work agent publishes the status of the resources using the status event to topic `/sources/<source-id>/clusters/<cluster-id>/manifestsstatus`, for example: `/sources/sdbdeavo-mwrs-hub-controller/clusters/cluster1/manifestsstatus`.
@@ -328,31 +466,38 @@ sequenceDiagram
     Source -->> Source: Decode status event and retrieve manifestwork status
 ```
 
-Event Schema:
+#### Event Schema
 
+1. Context Attributes
 ```JSON5
-// Context Attributes
+
 {
     // The version of the CloudEvents specification which the event uses.
     // Compliant event producers MUST use a value of "1.0" when referring to this version of the specification.
     "specversion": "1.0",
     // Unique indentifier for cloud events message.
     "id": "<cloud-events-message-id>",
-    // Use "/sources/<source-id>/clusters/<cluster-id>/<resource-type>" as the cloud events source to identify the context in which an event occurred.
-    // <source-id> should be a unique identifier for the source. For instance, a agent controller can generate a source ID by hashing the agent hash and appending a controller name.
-    // <cluster-id> represents the identifier of the cluster from which this cloud event is sent.
-    // <resource-type> refers to the resource included in the cloud event payload.
-    "source": "/sources/<source-id>/clusters/<cluster-id>/<resource-type>",
-    // Use "<reverse-domain-name-of-resource-organization>.<resource-version>.<resource-name>.<subsource>.<action>" as the format for this attribute, which contains a value describing the type of event related to the originating occurrence.
-    // For example, "io.open-cluster-management.v1.manifestwork.spec.created" can be used as a sample format.
-    "type": "<reverse-domain-name-of-resource-organization>.<resource-version>.<resource-name>.<subsource>.<action>",
+    // <source-id> should be a unique identifier for the source to identify the context in which an event occurred.
+    // For example, a hub controller can generate a source ID by hashing the hub cluster URL and appending a controller name,
+    // a work agent can generate a source ID with <hub-id>/<agent-id>.
+    "source": "<source-id>",
+    // The type of the CloudEvents, use "<reverse-group-of-resource>.<resource-version>.<resource-name>.<subresource>.<action>"
+    // as the format for this attribute, which contains a value describing the type of event data.
+    // "<reverse-group-of-resource>.<resource-version>.<resource-name>" identifies the type of the resource included in the event payload;
+    // "<subresource>" can be one of "spec" and "status";
+    // "<action>" represents the action for this resource, e.g. create_request, update_request and delete_request and resync_request.
+    // For example, "io.open-cluster-management.works.v1alpha1.manifestbundle.status.update_request".
+    "type": "<reverse-group-of-resource>.<resource-version>.<resource-name>.<subsource>.<action>",
     // Timestamp of when the occurrence happened. Optional, if present, MUST adhere to the format specified in RFC 3339.
     "time": "<timestamp-of-the-event-occurrence>",
     // Content type of data value, If present, MUST adhere to the format specified in RFC 2046.
     // By default "application/json" will be used if it is not set.
     "datacontenttype": "<data-content-type>"
 }
-// Extensions
+```
+
+2. Extensions
+```JSON5
 {
     // specResourceID is from identifier of the corresponding spec message.
     // It is represented in string.
@@ -363,7 +508,39 @@ Event Schema:
     // It is a required property.
     "specResouceVersion": "<resource-version-in-int64>",
 }
-// Data
+```
+
+3. Payload
+
+The payload of the status event varies based on the resource name. For "manifest" (single resource), the status event payload contains the reconcile status and resource status of the resource. For "manifestbundle" (multiple resources), the status event payload contains the status of each resource in the manifestwork.
+
+- **manifest (for single resource)**
+
+```JSON5
+{
+  // resourceStatus represents the reconcile status of the resource deployed on a managed cluster.
+  "reconcileStatus": {
+    // conditions represents the reconcile conditions of this resource on a managed cluster. The condition format is same with the Kuberenetes condition (k8s.io/apimachinery/pkg/apis/meta/v1)
+    // Valid condition types are:
+    // 1. Applied represents workload in ManifestWork is applied successfully on a managed cluster.
+    // 2. Progressing represents workload in ManifestWork that is being applied to a managed cluster.
+    // 3. Available represents workload in ManifestWork exists on the managed cluster.
+    // 4. Degraded represents the current state of workload does not match the desired
+    // 5. Deleted represents the current ManifestWork is deleted successfully from a managed cluster.  
+    "conditions": []
+  },
+  // resourceMeta represents the group, version, kind, name and namespace of a resource.
+  "resourceMeta": {},
+  "contentStatus": {
+    // conditions represents the conditions of this resource on a managed cluster. The condition format is same with the Kuberenetes condition (k8s.io/apimachinery/pkg/apis/meta/v1)
+    "conditions": []
+  }
+}
+```
+
+- **manifestbundle (for multiple resources)**
+
+```JSON5
 {
     // conditions contains the different condition statuses for this manifestwork. The condition format is same with the Kuberenetes condition (k8s.io/apimachinery/pkg/apis/meta/v1).
     // Valid condition types are:
@@ -388,7 +565,11 @@ Event Schema:
 }
 ```
 
-Event Example:
+#### Event Example
+
+In this example, we have a hub controller called "mwrs-hub-controller" serving as the resource management source. Additionally, we have a work agent operating on "cluster1" that handles the deployment and status report of requested resources within the cluster.
+
+- **manifest (for single resource)**
 
 1. Report resource status - the mwrs-agent-controller can send a cloud event to the topic `/sources/vctpxaqk-mwrs-agent-controller/clusters/cluster1/manifestsstatus`:
 
@@ -396,7 +577,72 @@ Event Example:
 // Context Attributes,
 {
   "specversion": "1.0",
-  "type": "io.open-cluster-management.v1.manifestwork.status.updated",
+  "type": "io.open-cluster-management.works.v1alpha1.manifest.status.update_request",
+  "source": "/sources/vctpxaqk-mwrs-agent-controller/clusters/cluster1/manifestsstatus",
+  "id": "2623db30-32ee-4309-b464-b46f42737af3",
+  "time": "2023-07-19T03:03:11.548189454Z",
+  "datacontenttype": "application/json",
+}
+// Extensions
+{
+  "specResourceid": "a52adbe8-b6f2-52c8-9378-c4f544502fb7",
+  "specResourceversion": 1
+}
+// Data
+{
+  "reconcileStatus": {
+    "conditions": [
+      {
+        "type": "Applied",
+        "status": "True",
+        "observedGeneration": 1,
+        "lastTransitionTime": "2023-07-28T01:58:01Z",
+        "reason": "AppliedManifestWorkComplete",
+        "message": "Apply manifest work complete"
+      },
+      {
+        "type": "Available",
+        "status": "True",
+        "observedGeneration": 1,
+        "lastTransitionTime": "2023-07-28T01:58:01Z",
+        "reason": "ResourcesAvailable",
+        "message": "All resources are available"
+      }
+    ]
+  },
+  "resourceMeta": {
+    "ordinal": 0,
+    "group": "apps",
+    "version": "v1",
+    "kind": "Deployment",
+    "resource": "deployments",
+    "name": "busybox-48150",
+    "namespace": "default"
+  },
+  "contentStatus": {
+    "conditions": [
+      {
+        "lastTransitionTime": "2023-07-28T01:58:01Z",
+        "lastUpdateTime": "2023-07-28T01:58:01Z",
+        "message": "Created new replica set \"busybox-48150-79477589cf\"",
+        "reason": "NewReplicaSetCreated",
+        "status": "True",
+        "type": "Progressing"
+      }
+    ]
+  }
+}
+```
+
+- **manifestbundle (for multiple resources)**
+
+1. Report resource status - the mwrs-agent-controller can send a cloud event to the topic `/sources/vctpxaqk-mwrs-agent-controller/clusters/cluster1/manifestsstatus`:
+
+```JSON5
+// Context Attributes,
+{
+  "specversion": "1.0",
+  "type": "io.open-cluster-management.works.v1alpha1.manifestbundle.status.update_request",
   "source": "/sources/vctpxaqk-mwrs-agent-controller/clusters/cluster1/manifestsstatus",
   "id": "2623db30-32ee-4309-b464-b46f42737af3",
   "time": "2023-07-19T03:03:11.548189454Z",
@@ -476,13 +722,13 @@ Event Example:
 
 ### Spec Resync Event
 
-Event Scenarios:
+#### Event Scenarios
 
-1. After a work agent restarts, it sends a spec resync event with empty payload to the broker to synchronize all resources and avoid missing events during the restart period.
+1. After a work agent restarts, it sends a spec resync event with empty payload to the broker to synchronize all resources to avoid missing events during the restart period.
 2. When a work agent reconnects to the broker after a disconnection, it sends a spec resync event containing the current versions of all resources to ensure synchronization and prevent data loss.
 3. (Optional) The work agent may periodically send spec resync events to mitigate unexpected errors.
 
-Event transfer flow:
+#### Event Transfer Flow
 
 1. The source subscribes to the spec resync event topic `/sources/resync/+/manifests` from the broker to receive spec resync request.
 2. The work agent generates a spec resync event based on its current maintained resources.
@@ -516,14 +762,17 @@ Event schema:
     "specversion": "1.0",
     // Unique indentifier for cloud events message.
     "id": "<cloud-events-message-id>",
-    // Use "/sources/<source-id>/clusters/<cluster-id>/<resource-type>" as the cloud events source to identify the context in which an event occurred.
-    // <source-id> should be a unique identifier for the source. For instance, a agent controller can generate a source ID by hashing the agent hash and appending a controller name.
-    // <cluster-id> represents the identifier of the cluster from which this cloud event is sent.
-    // <resource-type> refers to the resource included in the cloud event payload.
-    "source": "/sources/<source-id>/clusters/<cluster-id>/<resource-type>",
-    // Use "<reverse-domain-name-of-resource-organization>.<resource-version>.<resource-name>.<subsource>.<action>" as the format for this attribute, which contains a value describing the type of event related to the originating occurrence.
-    // For example, "io.open-cluster-management.v1.manifestwork.specresync.requested" can be used as a sample format.
-    "type": "<reverse-domain-name-of-resource-organization>.<resource-version>.<resource-name>.<subsource>.<action>",
+    // <source-id> should be a unique identifier for the source to identify the context in which an event occurred.
+    // For example, a hub controller can generate a source ID by hashing the hub cluster URL and appending a controller name,
+    // a work agent can generate a source ID with <hub-id>/<agent-id>.
+    "source": "<source-id>",
+    // The type of the CloudEvents, use "<reverse-group-of-resource>.<resource-version>.<resource-name>.<subresource>.<action>"
+    // as the format for this attribute, which contains a value describing the type of event data.
+    // "<reverse-group-of-resource>.<resource-version>.<resource-name>" identifies the type of the resource included in the event payload;
+    // "<subresource>" can be one of "spec" and "status";
+    // "<action>" represents the action for this resource, e.g. create_request, update_request and delete_request and resync_request.
+    // For example, "io.open-cluster-management.works.v1alpha1.manifest.spec.resync_request".
+    "type": "<reverse-group-of-resource>.<resource-version>.<resource-name>.<subsource>.<action>",
     // Timestamp of when the occurrence happened. Optional, if present, MUST adhere to the format specified in RFC 3339.
     "time": "<timestamp-of-the-event-occurrence>",
     // Content type of data value, If present, MUST adhere to the format specified in RFC 2046.
@@ -547,13 +796,13 @@ Event schema:
 
 ### Status Resync Event
 
-Event Scenarios:
+#### Event Scenarios
 
 1. When a source restarts, it sends a status resync event to the broker to synchronize all resource status and prevent data loss. If the component has a database, it calculates the status hash of all resources stored in the database and includes it in the event. If the component does not have a database, it sends an status resync event with empty payload.
 2. When a source reconnects to the broker after a disconnection, it sends a status resync event including the status hash of all its owned resources to ensure synchronization and prevent data loss.
 3. (Optional) A source may periodically send status resync events to mitigate unexpected errors.
 
-Event transfer flow:
+#### Event Transfer Flow
 
 1. The work agent subscribes to the status resync event topic `/sources/+/resync/clusters/manifestsstatus`, for example: `/sources/+/resync/clusters/manifestsstatus`.
 2. The source calculates the hash of all resources it owns to generate a status hash.
@@ -575,7 +824,7 @@ sequenceDiagram
     Source -->> Source: Decode status event and retrieve manifestwork status
 ```
 
-Event schema:
+#### Event Schema
 
 ```JSON5
 // Context Attributes
@@ -585,14 +834,17 @@ Event schema:
     "specversion": "1.0",
     // Unique indentifier for cloud events message.
     "id": "<cloud-events-message-id>",
-    // Use "/sources/<source-id>/clusters/<cluster-id>/<resource-type>" as the cloud events source to identify the context in which an event occurred.
-    // <source-id> should be a unique identifier for the source. For instance, a hub controller can generate a source ID by hashing the hub cluster URL and appending a controller name.
-    // <cluster-id> represents the identifier of the target cluster to which this cloud event is sent.
-    // <resource-type> refers to the resource included in the cloud event payload.
-    "source": "/sources/<source-id>/clusters/<cluster-id>/<resource-type>",
-    // Use "<reverse-domain-name-of-resource-organization>.<resource-version>.<resource-name>.<subsource>.<action>" as the format for this attribute, which contains a value describing the type of event related to the originating occurrence.
-    // For example, "io.open-cluster-management.v1.manifestwork.statusresync.requested" can be used as a sample format.
-    "type": "<reverse-domain-name-of-resource-organization>.<resource-version>.<resource-name>.<subsource>.<action>",
+    // <source-id> should be a unique identifier for the source to identify the context in which an event occurred.
+    // For example, a hub controller can generate a source ID by hashing the hub cluster URL and appending a controller name,
+    // a work agent can generate a source ID with <hub-id>/<agent-id>.
+    "source": "<source-id>",
+    // The type of the CloudEvents, use "<reverse-group-of-resource>.<resource-version>.<resource-name>.<subresource>.<action>"
+    // as the format for this attribute, which contains a value describing the type of event data.
+    // "<reverse-group-of-resource>.<resource-version>.<resource-name>" identifies the type of the resource included in the event payload;
+    // "<subresource>" can be one of "spec" and "status";
+    // "<action>" represents the action for this resource, e.g. create_request, update_request and delete_request and resync_request.
+    // For example, "io.open-cluster-management.works.v1alpha1.manifest.status.resync_request".
+    "type": "<reverse-group-of-resource>.<resource-version>.<resource-name>.<subsource>.<action>",
     // Timestamp of when the occurrence happened. Optional, if present, MUST adhere to the format specified in RFC 3339.
     "time": "<timestamp-of-the-event-occurrence>",
     // Content type of data value, If present, MUST adhere to the format specified in RFC 2046.
