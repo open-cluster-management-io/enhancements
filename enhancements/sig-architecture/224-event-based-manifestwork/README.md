@@ -65,15 +65,15 @@ Sources send their resources along with the message to work agent, enabling the 
 
 #### Event Transfer Flow
 
-1. The work agent subscribes to the spec event topic `/sources/+/clusters/<agent-id>/manifests` from the broker, for example: `/sources/+/clusters/cluster1-work-agent/manifests`.
-2. The source receives high level API request and publishes its resources using the spec event to the topic `/sources/<source-id>/clusters/<agent-id>/manifests`, for example: `/sources/sd3ded4-mwrs-hub-controller/clusters/cluster1-work-agent/manifests`.
+1. The work agent subscribes to the spec event topic `/sources/+/clusters/<cluster-name>/spec` from the broker, for example: `/sources/+/clusters/cluster1/spec`.
+2. The source receives high level API request and publishes its resources using the spec event to the topic `/sources/<source-id>/clusters/<cluster-name>/spec`, for example: `/sources/sd3ded4v-mwrs-hub-controller/clusters/cluster1/spec`.
 3. The work agent receives the published event from the source and deploys the manifests included in the event.
 
 ```mermaid
 sequenceDiagram
-    WorkAgent -->> Broker: Subscribe topic - /sources/+/clusters/<agent-id>/manifests
+    WorkAgent -->> Broker: Subscribe topic - /sources/+/clusters/<cluster-name>/spec
     Source -->> Source: Receive high-level API request and encode manifestwork into spec event
-    Source -->> Broker: Publish spec event to topic -  /sources/<source-id>/clusters/<agent-id>/manifests
+    Source -->> Broker: Publish spec event to topic -  /sources/<source-id>/clusters/<cluster-name>/spec
     Broker -->> WorkAgent: Send spec event to subscribers
     WorkAgent -->> WorkAgent: Decode spec event into manifestwork and reconcile it
 ```
@@ -90,7 +90,7 @@ sequenceDiagram
     "id": "<cloud-events-message-id>",
     // <source-id> should be a unique identifier for the source to identify the context in which an event occurred.
     // For example, a hub controller can generate a source ID by hashing the hub cluster URL and appending a controller name,
-    // a work agent can generate a source ID with cluster name and agent id.
+    // a work agent can generate a source ID with cluster name and agent name.
     "source": "<source-id>",
     // The type of the CloudEvents, use "<reverse-group-of-resource>.<resource-version>.<resource-name>.<subresource>.<action>"
     // as the format for this attribute, which contains a value describing the type of event data.
@@ -129,7 +129,6 @@ The payload of the spec event varies based on the resource name. Two supported r
 ```JSON5
 {
   // manifest represents a Kuberenetes resource to be deployed on the cluster that the work agent is running.
-  // It is represented in string.
   // It is a required property.
   "manifest": {}
 }
@@ -140,7 +139,6 @@ The payload of the spec event varies based on the resource name. Two supported r
 ```JSON5
 {
     // manifest represents a list of Kuberenetes resources to be deployed on the cluster that the work agent is running.
-    // It is represented in string.
     // It is a required property.
     "manifests": [],
     // deleteOption represents deletion strategy when the manifests are deleted.
@@ -188,14 +186,14 @@ In this example, we have a hub controller called "mwrs-hub-controller" serving a
 
 - **manifest (for single resource)**
 
-1. Resource creation - the mwrs-hub-controller can send a cloud event to the topic `/sources/sd3ded4-mwrs-hub-controller/clusters/cluster1-work-agent/manifests`:
+1. Resource creation - the mwrs-hub-controller can send a cloud event to the topic `/sources/sd3ded4v-mwrs-hub-controller/clusters/cluster1/spec`:
 
 ```JSON5
 // Context Attributes
 {
   "specversion": "1.0",
   "type": "io.open-cluster-management.works.v1alpha1.manifest.spec.create_request",
-  "source": "sd3ded4-mwrs-hub-controller",
+  "source": "sd3ded4v-mwrs-hub-controller",
   "id": "35dc1966-1447-49f4-95ae-7fba6017a4fd",
   "time": "2023-07-19T03:01:11.548189454Z",
   "datacontenttype": "application/json",
@@ -234,14 +232,14 @@ In this example, we have a hub controller called "mwrs-hub-controller" serving a
 }
 ```
 
-2. Updating resource (updating the deployment replicas) - the mwrs-hub-controller can send a cloud event to the topic `/sources/sd3ded4-mwrs-hub-controller/clusters/cluster1-work-agent/manifests`:
+2. Updating resource (updating the deployment replicas) - the mwrs-hub-controller can send a cloud event to the topic `/sources/sd3ded4v-mwrs-hub-controller/clusters/cluster1/spec`:
 
 ```JSON5
 // Context Attributes
 {
   "specversion": "1.0",
   "type": "io.open-cluster-management.works.v1alpha1.manifest.spec.update_request",
-  "source": "sd3ded4-mwrs-hub-controller",
+  "source": "sd3ded4v-mwrs-hub-controller",
   "id": "35dc1966-1447-49f4-95ae-7fba6017a4fd",
   "time": "2023-07-19T03:02:30.548189454Z",
   "datacontenttype": "application/json",
@@ -281,14 +279,14 @@ In this example, we have a hub controller called "mwrs-hub-controller" serving a
 }
 ```
 
-3. Deletion resource - the mwrs-hub-controller can send a cloud event to the topic `/sources/sd3ded4-mwrs-hub-controller/clusters/cluster1-work-agent/manifests`:
+3. Deletion resource - the mwrs-hub-controller can send a cloud event to the topic `/sources/sd3ded4v-mwrs-hub-controller/clusters/cluster1/spec`:
 
 ```JSON5
 // Context Attributes
 {
   "specversion": "1.0",
   "type": "io.open-cluster-management.works.v1alpha1.manifest.spec.delete_request",
-  "source": "d3ded4-mwrs-hub-controller",
+  "source": "d3ded4/mwrs-hub-controller",
   "id": "35dc1966-1447-49f4-95ae-7fba6017a4fd",
   "time": "2023-07-19T03:03:11.548189454Z",
   "datacontenttype": "application/json",
@@ -303,14 +301,14 @@ In this example, we have a hub controller called "mwrs-hub-controller" serving a
 
 - **manifestbundle (for multiple resources)**
 
-1. Resource creation - the mwrs-hub-controller can send a cloud event to the topic `/sources/sd3ded4-mwrs-hub-controller/clusters/cluster1-work-agent/manifests`:
+1. Resource creation - the mwrs-hub-controller can send a cloud event to the topic `/sources/sd3ded4v-mwrs-hub-controller/clusters/cluster1/spec`:
 
 ```JSON5
 // Context Attributes
 {
   "specversion": "1.0",
   "type": "io.open-cluster-management.works.v1alpha1.manifestbundle.spec.create_request",
-  "source": "sd3ded4-mwrs-hub-controller",
+  "source": "sd3ded4v-mwrs-hub-controller",
   "id": "35dc1966-1447-49f4-95ae-7fba6017a4fd",
   "time": "2023-07-19T03:01:11.548189454Z",
   "datacontenttype": "application/json",
@@ -365,14 +363,14 @@ In this example, we have a hub controller called "mwrs-hub-controller" serving a
 }
 ```
 
-2. Updating resource (updating the deployment replicas) - the mwrs-hub-controller can send a cloud event to the topic `/sources/sd3ded4-mwrs-hub-controller/clusters/cluster1-work-agent/manifests`:
+2. Updating resource (updating the deployment replicas) - the mwrs-hub-controller can send a cloud event to the topic `/sources/sd3ded4v-mwrs-hub-controller/clusters/cluster1/spec`:
 
 ```JSON5
 // Context Attributes
 {
   "specversion": "1.0",
   "type": "io.open-cluster-management.works.v1alpha1.manifestbundle.spec.update_request",
-  "source": "sd3ded4-mwrs-hub-controller",
+  "source": "sd3ded4v-mwrs-hub-controller",
   "id": "35dc1966-1447-49f4-95ae-7fba6017a4fd",
   "time": "2023-07-19T03:02:11.548189454Z",
   "datacontenttype": "application/json",
@@ -427,14 +425,14 @@ In this example, we have a hub controller called "mwrs-hub-controller" serving a
 }
 ```
 
-3. Deletion resource - the mwrs-hub-controller can send a cloud event to the topic `/sources/sd3ded4-mwrs-hub-controller/clusters/cluster1-work-agent/manifests`:
+3. Deletion resource - the mwrs-hub-controller can send a cloud event to the topic `/sources/sd3ded4v-mwrs-hub-controller/clusters/cluster1/spec`:
 
 ```JSON5
 // Context Attributes
 {
   "specversion": "1.0",
   "type": "io.open-cluster-management.works.v1alpha1.manifestbundle.spec.delete_request",
-  "source": "sd3ded4-mwrs-hub-controller",
+  "source": "sd3ded4v-mwrs-hub-controller",
   "id": "35dc1966-1447-49f4-95ae-7fba6017a4fd",
   "time": "2023-07-19T03:03:11.548189454Z",
   "datacontenttype": "application/json",
@@ -453,15 +451,15 @@ The work agent communicates the state of the resources it manages to the respect
 
 #### Event Transfer Flow
 
-1. The source subscribes to the status event topic `/sources/<source-id>/clusters/+/manifestsstatus` from the broker, for example: `/sources/sd3ded4-mwrs-hub-controller/clusters/+/manifestsstatus`.
-2. The work agent publishes the status of the resources using the status event to topic `/sources/<source-id>/clusters/<agent-id>/manifestsstatus`, for example: `/sources/sd3ded4-mwrs-hub-controller/clusters/cluster1-work-agent/manifestsstatus`.
+1. The source subscribes to the status event topic `/sources/<source-id>/clusters/+/status` from the broker, for example: `/sources/sd3ded4v-mwrs-hub-controller/clusters/+/status`.
+2. The work agent publishes the status of the resources using the status event to topic `/sources/<source-id>/clusters/<cluster-name>/status`, for example: `/sources/sd3ded4v-mwrs-hub-controller/clusters/cluster1/status`.
 3. The source receives the published status event and updates the status of its corresponding resources.
 
 ```mermaid
 sequenceDiagram
-    Source -->> Broker: Subscribe topic - /sources/<source-id>/clusters/+/manifestsstatus
+    Source -->> Broker: Subscribe topic - /sources/<source-id>/clusters/+/status
     WorkAgent -->> WorkAgent: Reconcile Manifestwork and encode manifestwork status into status event
-    WorkAgent -->> Broker: Publish status event to topic - /sources/<source-id>/clusters/<agent-id>/manifestsstatus
+    WorkAgent -->> Broker: Publish status event to topic - /sources/<source-id>/clusters/<cluster-name>>/status
     Broker -->> Source: Send status event to subscribers
     Source -->> Source: Decode status event and retrieve manifestwork status
 ```
@@ -479,7 +477,7 @@ sequenceDiagram
     "id": "<cloud-events-message-id>",
     // <source-id> should be a unique identifier for the source to identify the context in which an event occurred.
     // For example, a hub controller can generate a source ID by hashing the hub cluster URL and appending a controller name,
-    // a work agent can generate a source ID with cluster name and agent id.
+    // a work agent can generate a source ID with cluster name and agent name.
     "source": "<source-id>",
     // The type of the CloudEvents, use "<reverse-group-of-resource>.<resource-version>.<resource-name>.<subresource>.<action>"
     // as the format for this attribute, which contains a value describing the type of event data.
@@ -571,7 +569,7 @@ In this example, we have a hub controller called "mwrs-hub-controller" serving a
 
 - **manifest (for single resource)**
 
-1. Report resource status - the work-agent can send a cloud event to the topic `/sources/sd3ded4-mwrs-hub-controller/clusters/cluster1-work-agent/manifestsstatus`:
+1. Report resource status - the work-agent can send a cloud event to the topic `/sources/sd3ded4v-mwrs-hub-controller/clusters/cluster1/status`:
 
 ```JSON5
 // Context Attributes,
@@ -636,7 +634,7 @@ In this example, we have a hub controller called "mwrs-hub-controller" serving a
 
 - **manifestbundle (for multiple resources)**
 
-1. Report resource status - the work-agent can send a cloud event to the topic `/sources/sd3ded4-mwrs-hub-controller/clusters/cluster1-work-agent/manifestsstatus`:
+1. Report resource status - the work-agent can send a cloud event to the topic `/sources/sd3ded4v-mwrs-hub-controller/clusters/cluster1/status`:
 
 ```JSON5
 // Context Attributes,
@@ -730,9 +728,9 @@ In this example, we have a hub controller called "mwrs-hub-controller" serving a
 
 #### Event Transfer Flow
 
-1. The source subscribes to the spec resync event topic `/sources/clusters/+/manifestsresync` from the broker to receive spec resync request.
+1. The source subscribes to the spec resync event topic `/sources/clusters/+/specresync` from the broker to receive spec resync request.
 2. The work agent generates a spec resync event based on its current maintained resources.
-3. The work agent sends the spec resync event to the broker with the topic `/sources/clusters/<agent-id>/manifestsresync`, for example: `/sources/clusters/cluster1-work-agent/manifestsresync`.
+3. The work agent sends the spec resync event to the broker with the topic `/sources/clusters/<cluster-name>/specresync`, for example: `/sources/clusters/cluster1/specresync`.
 4. Upon receiving the spec resync event, the source processes the event message and interacts with the broker as follows:
   - If the request event message is empty, the source returns all resources associated with the work agent.
   - If the request event message contains resource IDs and versions, the source retrieves the resource with the specified ID and compares the versions.
@@ -741,15 +739,15 @@ In this example, we have a hub controller called "mwrs-hub-controller" serving a
 
 ```mermaid
 sequenceDiagram
-    Source -->> Broker: Subscribe topic - /sources/clusters/+/manifestsresync
-    WorkAgent -->> Broker: Subscribe topic - /sources/+/clusters/<agent-id>/manifests
+    Source -->> Broker: Subscribe topic - /sources/clusters/+/specresync
+    WorkAgent -->> Broker: Subscribe topic - /sources/+/clusters/<cluster-name>/spec
     WorkAgent -->> WorkAgent: Generate resource version map and encode as spec resync event
-    WorkAgent -->> Broker: Publish spec resync event to topic - /sources/clusters/<agent-id>/manifestsresync
+    WorkAgent -->> Broker: Publish spec resync event to topic - /sources/clusters/<cluster-name>/specresync
     Broker -->> Source: Send spec resync event to subscribers
-    Source -->> Source: Compare the resource versions in event message and hub and generate spec event
-    Source -->> Broker: Publish spec event to topic - /sources/<source-id>/clusters/<agent-id>/manifests
+    Source -->> Source: Compare the resource versions in event message and local soource and generate spec event
+    Source -->> Broker: Publish spec event to topic - /sources/<source-id>/clusters/<cluster-name>/spec
     Broker -->> WorkAgent: Send spec event to subscribers
-    WorkAgent -->> WorkAgent: Decode spec event to manifestworks and reconcile it
+    WorkAgent -->> WorkAgent: Decode spec event to manifestwork and reconcile it
 ```
 
 Event schema:
@@ -764,7 +762,7 @@ Event schema:
     "id": "<cloud-events-message-id>",
     // <source-id> should be a unique identifier for the source to identify the context in which an event occurred.
     // For example, a hub controller can generate a source ID by hashing the hub cluster URL and appending a controller name,
-    // a work agent can generate a source ID with cluster name and agent id.
+    // a work agent can generate a source ID with cluster name and agent name.
     "source": "<source-id>",
     // The type of the CloudEvents, use "<reverse-group-of-resource>.<resource-version>.<resource-name>.<subresource>.<action>"
     // as the format for this attribute, which contains a value describing the type of event data.
@@ -781,14 +779,11 @@ Event schema:
 }
 // Data
 {
+    // resourceVersions represents the resource versions of the resources maintained by the work agent. It is a map of resource ID and resource version.
     "resourceVersions": [
         {
-        "resourceID": "748d04ad-887a-43aa-b123-da1373227011",
-        "resourceVersion": "3"
-        },
-        {
-        "resourceID": "858d03ad-997b-52bc-b456-ab1473228022",
-        "resourceVersion": "1"
+        "resourceID": "<uuid-of-the-resource>",
+        "resourceVersion": "<resource-version-in-int64>"
         }
     ]
 }
@@ -804,22 +799,22 @@ Event schema:
 
 #### Event Transfer Flow
 
-1. The work agent subscribes to the status resync event topic `/sources/+/clusters/manifestsstatusresync` from the broker to receive status resync request.
+1. The work agent subscribes to the status resync event topic `sources/+/clusters/statusresync` from the broker to receive status resync request.
 2. The source calculates the hash of all resources it owns to generate a status hash.
-3. The source sends a status resync event with the resources hash as the event payload to the broker with the topic `/sources/<source-id>/clusters/manifestsstatusresync`, for example: `/sources/sd3ded4-mwrs-hub-controller/clusters/manifestsstatusresync`.
+3. The source sends a status resync event with the resources hash as the event payload to the broker with the topic `sources/<source-id>/clusters/statusresync`, for example: `/sources/sd3ded4v-mwrs-hub-controller/clusters/statusresync`.
 4. Upon receiving the status resync event, the work agent responds by sending resource status events to the broker as follows:
   - If the event payload is empty, the work agent returns the status of all resources it maintains.
   - If the event payload is not empty, the work agent retrieves the resource with the specified ID and compares the received resource status hash with the current resource status hash. If they are not equal, the work agent resends the resource status message.
 
 ```mermaid
 sequenceDiagram
-    WorkAgent -->> Broker: Subscribe topic - /sources/+/clusters/manifestsstatusresync
-    Source -->> Broker: Subscribe topic - /sources/<source-id>/clusters/+/manifestsstatus
+    WorkAgent -->> Broker: Subscribe topic - /sources/+/clusters/statusresync
+    Source -->> Broker: Subscribe topic - /sources/<source-id>/clusters/+/status
     Source -->> Source: Generate status hash map and encode as status resync event
-    Source -->> Broker: Publish status resync event to topic - /sources/<source-id>/clusters/manifestsstatusresync
+    Source -->> Broker: Publish status resync event to topic - /sources/<source-id>/clusters/statusresync
     Broker -->> WorkAgent: Send status resync event to subscribers
-    WorkAgent -->> WorkAgent: Compare the status hashes in event message and agent and generate status event
-    WorkAgent -->> Broker: Publish status event to topic - /sources/<source-id>/clusters/<agent-id>/manifestsstatus
+    WorkAgent -->> WorkAgent: Compare the status hashes in event message and agent cluster and generate status event
+    WorkAgent -->> Broker: Publish status event to topic - /sources/<source-id>/clusters/<cluster-name>/status
     Broker -->> Source: Send status event to subscribers
     Source -->> Source: Decode status event and retrieve manifestwork status
 ```
@@ -836,7 +831,7 @@ sequenceDiagram
     "id": "<cloud-events-message-id>",
     // <source-id> should be a unique identifier for the source to identify the context in which an event occurred.
     // For example, a hub controller can generate a source ID by hashing the hub cluster URL and appending a controller name,
-    // a work agent can generate a source ID with cluster name and agent id.
+    // a work agent can generate a source ID with cluster name and agent name.
     "source": "<source-id>",
     // The type of the CloudEvents, use "<reverse-group-of-resource>.<resource-version>.<resource-name>.<subresource>.<action>"
     // as the format for this attribute, which contains a value describing the type of event data.
@@ -853,14 +848,11 @@ sequenceDiagram
 }
 // Data
 {
+    // statusHashes represents the status hash of the resources maintained by the source. It is a map of resource ID and status hash.
     "statusHashes": [
         {
-        "resourceID": "748d04ad-887a-43aa-b123-da1373227011",
-        "statusHash": "12345abc"
-        },
-        {
-        "resourceID":  "858d03ad-997b-52bc-b456-ab1473228022",
-        "statusHash": "abc12345"
+        "resourceID": "<uuid-of-the-resource>",
+        "statusHash": "<status-hash-of-the-resource>"
         }
     ]
 }
@@ -878,10 +870,10 @@ sequenceDiagram
 
 To ensure the integrity of the event-based manifestworks system during source or work agent restart or reconnection, the following optimized resync mechanism is employed:
 
-1. On start, the source subscribes to the spec resync event topic /sources/resync/+/manifests from the broker.
-2. On start, the work agent subscribes to the status resync event topic /sources/+/resync/clusters/manifestsstatus from the broker.
-3. Upon work agent restart or reconnect, the work agent generates a spec resync event with resource versions and sends it to the broker.
-4. Upon source restart or reconnect, the source calculates a status hash of its owned resources and sends a status resync event with the resource hash to the broker.
+1. On start, the source subscribes to the spec resync event topic `/sources/clusters/+/specresync` from the broker.
+2. On start, the work agent subscribes to the status resync event topic `/sources/+/clusters/statusresync` from the broker.
+3. Upon work agent restarts or reconnects, the work agent generates a spec resync event with resource versions and sends it to the broker.
+4. Upon source restarts or reconnects, the source calculates a status hash of its owned resources and sends a status resync event with the resource hash to the broker.
 5. The source compares the resource versions in the spec resync event message with the hub's state and generates spec events to the broker for the work agent to receive missing spec events.
 6. The work agent compares the status hashes in the status resync event message with its own state and generates status events to the broker for the source to receive missing status events.
 
