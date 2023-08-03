@@ -117,6 +117,8 @@ sequenceDiagram
     // deletionTimestamp is an optional timestamp property representing the manifests of this message are deleting from the source, the work-agent needs to clean up the manifests from its cluster. It is represented in RFC3339 form and is in UTC. If not set, the agent will deploy or update the manifests on its cluster.
     // If present, MUST adhere to the format specified in RFC 3339.
     "deletionTimestamp": "<timestamp-of-the-resource-deletion>",
+    // clusterName indecates the resource will be deployed to which clsuter
+    "clusterName": "<cluster-name>"
 }
 ```
 
@@ -497,14 +499,16 @@ sequenceDiagram
 2. Extensions
 ```JSON5
 {
-    // specResourceID is from identifier of the corresponding spec message.
+    // ResourceID is from identifier of the corresponding spec message.
     // It is represented in string.
     // It is a required property.
-    "specResourceID": "<uuid-of-the-resource>",
-    // specResouceVersion is resource version of the corresponding spec message.
+    "ResourceID": "<uuid-of-the-resource>",
+    // ResouceVersion is resource version of the corresponding spec message.
     // It is represented in int64.
     // It is a required property.
-    "specResouceVersion": "<resource-version-in-int64>",
+    "ResouceVersion": "<resource-version-in-int64>",
+    // clusterName indecates the resource status from which clsuter
+    "clusterName": "<cluster-name>"
 }
 ```
 
@@ -886,8 +890,7 @@ cloud events.
 type Interface[T Object] interface {
 	Resync(ctx context.Context, eventType CloudEventType) error
 	Publish(ctx context.Context, eventType CloudEventType, obj T) error
-	Subscribe(ctx context.Context) error
-	SubscriptionResultChan() <-chan Event[T]
+	Subscribe(ctx context.Context, handlers ...ResourceHandler[T]) error
 }
 ```
 
@@ -903,17 +906,12 @@ type Object interface {
 }
 ```
 
-and the object should have the encoder/decoder to encode/decode the object/cloudevent to cloudevent/object
+and the object should have its Codec to encode the object to cloud event and decode the cloud event to the object.
 
 ```golang
-type Encoder[T Object] interface {
-	EncodeSpec(eventType, source string, obj T) (*cloudevents.Event, error)
-	EncodeStatus(eventType, source string, obj T) (*cloudevents.Event, error)
-}
-
-type Decoder[T Object] interface {
-	DecodeSpec(*cloudevents.Event) (T, error)
-	DecodeStatus(*cloudevents.Event) (T, error)
+type Codec[T Object] interface {
+	Encode(eventType, source string, obj T) (*cloudevents.Event, error)
+  Decode(*cloudevents.Event) (T, error)
 }
 ```
 
@@ -929,7 +927,7 @@ at last, we need lister to list the objects to resync the objects between source
 
 ```golang
 type Lister[T ManifestObject] interface {
-	List() []T
+	List(source, clusterName string) ([]T, error)
 }
 ```
 
@@ -945,16 +943,8 @@ mwCloudEventClient := NewCloudEventClient[*workv1.ManifestWork](
 		)
 
 // add multiple encoders/decoders to support different cloud event payload
-mwCloudEventClient.AddPayloadCoders(
-  {Group: "io.open-cluster-management.works", Version: "v1alpha1", Resource: "manifestbundle"},
-  manifestbundleEncoder,
-  manifestbundleDecoder,
-)
-mwCloudEventClient.AddPayloadCoders(
-  {Group: "io.open-cluster-management.works", Version: "v1alpha1", Resource: "manifest"},
-  manifestEncoder,
-  manifestDecoder,
-)
+mwCloudEventClient.AddCodec("io.open-cluster-management.works.v1alpha1.manifestbundle", manifestbundleCodec)
+mwCloudEventClient.AddCodec("io.open-cluster-management.works.v1alpha1.manifest", manifestCodec)
 ```
 
 By default, we provide a work client builder for devlopers, devlopers can enable the cloud event based on the MQTT
