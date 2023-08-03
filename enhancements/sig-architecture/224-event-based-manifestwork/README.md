@@ -911,7 +911,7 @@ and the object should have its Codec to encode the object to cloud event and dec
 ```golang
 type Codec[T Object] interface {
 	Encode(eventType, source string, obj T) (*cloudevents.Event, error)
-  Decode(*cloudevents.Event) (T, error)
+	Decode(*cloudevents.Event) (T, error)
 }
 ```
 
