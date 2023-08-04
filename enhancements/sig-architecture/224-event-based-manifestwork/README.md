@@ -963,6 +963,10 @@ To ensure the integrity of the event-based manifestworks system during source or
 5. The source compares the resource versions in the spec resync event message with the hub's state and generates spec events to the broker for the work agent to receive missing spec events.
 6. The work agent compares the status hashes in the status resync event message with its own state and generates status events to the broker for the source to receive missing status events.
 
+### Impact to Relevant Components
+
+Using cloud event based manifestwork can streamline resource delivery and status retrieval for various components managing resources. For instance, the policy controller can utilize this feature, eliminating the necessity for Policy agent to report status to the hub cluster namespace. Instead, Work-agent will handle reporting the policy status. The Policy propagator controller will aggregate the status through status report cloud event, obviating the need for replicatedPolicy. Additionally, there will be no cluster namespace in the hub side. This approach enhances efficiency and simplifies resource management across managed clusters.
+
 ### Risks and Mitigation
 
 The following security principles should be considered between the broker and sources/agents
