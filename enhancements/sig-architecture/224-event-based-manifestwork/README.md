@@ -25,7 +25,7 @@ To facilitate easy adoption of the event-based mechanism, a client interface sho
 ### Terminology
 
 - Source: The API consumer or component that utilizes this specification for ManifestWorks. It can be a controller on the hub cluster or a RESTful service handling resource requests. For RESTful service source, it often has a database to store the requested resources. Source should have a unique identifier to ensure its uniqueness and consistency, for example, a hub controller can generate a source ID by hashing the hub cluster URL and appending the controller name. Similarly, a RESTful service can select a unique name or generate a unique ID in the associated database for its source identification.
-- Work Agent: The controller that handles the deployment of requested resources on the managed cluster and status report to the source. Work agent should have a unique identifier to ensure its uniqueness and consistency. Usually, work agent is uniquely identified by a string that combines mangaed cluster name and agent name for consistency.
+- Work Agent: The controller that handles the deployment of requested resources on the managed cluster and status report to the source. Work agent should have a unique identifier to ensure its uniqueness and consistency. Usually, work agent is uniquely identified by a string that combines managed cluster name and agent name for consistency.
 - Broker: The message broker that handles the event transfer between the source and the work agent. It is represented by a message broker, such as MQTT or Kafka.
 
 ### Goals
@@ -86,7 +86,7 @@ sequenceDiagram
     // The version of the CloudEvents specification which the event uses.
     // Compliant event producers MUST use a value of "1.0" when referring to this version of the specification.
     "specversion": "1.0",
-    // Unique indentifier for cloud events message.
+    // Unique identifier for cloud events message.
     "id": "<cloud-events-message-id>",
     // <source-id> should be a unique identifier for the source to identify the context in which an event occurred.
     // For example, a hub controller can generate a source ID by hashing the hub cluster URL and appending a controller name,
@@ -110,15 +110,15 @@ sequenceDiagram
 2. Extensions
 ```JSON5
 {
-    // resourceID is a required string property representing the unique identifier for this manifestwork. It is the responsibility of the source to ensure its uniqueness and consistency. MUST adhere to the format specified in RFC 4122.
-    "resourceID": "<uuid-of-the-resource>", 
-    // resourceVersion is a required int64 sequence number property that must be incremented by the source whenever the data of this message changes. It is the responsibility of the source to guarantee its incremental nature.
-    "resourceVersion": "<resource-version-in-int64>",
-    // deletionTimestamp is an optional timestamp property representing the manifests of this message are deleting from the source, the work-agent needs to clean up the manifests from its cluster. It is represented in RFC3339 form and is in UTC. If not set, the agent will deploy or update the manifests on its cluster.
+    // resourceid is a required string property representing the unique identifier for this manifestwork. It is the responsibility of the source to ensure its uniqueness and consistency. MUST adhere to the format specified in RFC 4122.
+    "resourceid": "<uuid-of-the-resource>", 
+    // resourceversion is a required int64 sequence number property that must be incremented by the source whenever the data of this message changes. It is the responsibility of the source to guarantee its incremental nature.
+    "resourceversion": "<resource-version-in-int64>",
+    // deletiontimestamp is an optional timestamp property representing the manifests of this message are deleting from the source, the work-agent needs to clean up the manifests from its cluster. It is represented in RFC3339 form and is in UTC. If not set, the agent will deploy or update the manifests on its cluster.
     // If present, MUST adhere to the format specified in RFC 3339.
-    "deletionTimestamp": "<timestamp-of-the-resource-deletion>",
-    // clusterName indecates the resource will be deployed to which clsuter
-    "clusterName": "<cluster-name>"
+    "deletiontimestamp": "<timestamp-of-the-resource-deletion>",
+    // clustername indicates the resource will be deployed to which cluster
+    "clustername": "<cluster-name>"
 }
 ```
 
@@ -136,7 +136,7 @@ The payload of the spec event varies based on the resource name. Two supported r
 }
 ```
 
-- **manbifestbundle (for multiple resources)**
+- **manifestbundle (for multiple resources)**
 
 ```JSON5
 {
@@ -460,7 +460,7 @@ The work agent communicates the state of the resources it manages to the respect
 ```mermaid
 sequenceDiagram
     Source -->> Broker: Subscribe topic - /sources/<source-id>/clusters/+/status
-    WorkAgent -->> WorkAgent: Reconcile Manifestwork and encode manifestwork status into status event
+    WorkAgent -->> WorkAgent: Reconcile manifestwork and encode manifestwork status into status event
     WorkAgent -->> Broker: Publish status event to topic - /sources/<source-id>/clusters/<cluster-name>>/status
     Broker -->> Source: Send status event to subscribers
     Source -->> Source: Decode status event and retrieve manifestwork status
@@ -475,7 +475,7 @@ sequenceDiagram
     // The version of the CloudEvents specification which the event uses.
     // Compliant event producers MUST use a value of "1.0" when referring to this version of the specification.
     "specversion": "1.0",
-    // Unique indentifier for cloud events message.
+    // Unique identifier for cloud events message.
     "id": "<cloud-events-message-id>",
     // <source-id> should be a unique identifier for the source to identify the context in which an event occurred.
     // For example, a hub controller can generate a source ID by hashing the hub cluster URL and appending a controller name,
@@ -499,16 +499,16 @@ sequenceDiagram
 2. Extensions
 ```JSON5
 {
-    // ResourceID is from identifier of the corresponding spec message.
+    // resourceid is from identifier of the corresponding spec message.
     // It is represented in string.
     // It is a required property.
-    "ResourceID": "<uuid-of-the-resource>",
-    // ResouceVersion is resource version of the corresponding spec message.
+    "resourceid": "<uuid-of-the-resource>",
+    // resouceversion is resource version of the corresponding spec message.
     // It is represented in int64.
     // It is a required property.
-    "ResouceVersion": "<resource-version-in-int64>",
-    // clusterName indecates the resource status from which clsuter
-    "clusterName": "<cluster-name>"
+    "resouceversion": "<resource-version-in-int64>",
+    // clustername indicates the resource status from which cluster
+    "clustername": "<cluster-name>"
 }
 ```
 
@@ -587,8 +587,8 @@ In this example, we have a hub controller called "mwrs-hub-controller" serving a
 }
 // Extensions
 {
-  "specResourceid": "a52adbe8-b6f2-52c8-9378-c4f544502fb7",
-  "specResourceversion": 1
+  "resourceid": "a52adbe8-b6f2-52c8-9378-c4f544502fb7",
+  "resourceversion": 1
 }
 // Data
 {
@@ -652,8 +652,8 @@ In this example, we have a hub controller called "mwrs-hub-controller" serving a
 }
 // Extensions
 {
-  "specResourceid": "a52adbe8-b6f2-52c8-9378-c4f544502fb7",
-  "specResourceversion": 1
+  "resourceid": "a52adbe8-b6f2-52c8-9378-c4f544502fb7",
+  "resourceversion": 1
 }
 // Data
 {
@@ -748,7 +748,7 @@ sequenceDiagram
     WorkAgent -->> WorkAgent: Generate resource version map and encode as spec resync event
     WorkAgent -->> Broker: Publish spec resync event to topic - /sources/clusters/<cluster-name>/specresync
     Broker -->> Source: Send spec resync event to subscribers
-    Source -->> Source: Compare the resource versions in event message and local soource and generate spec event
+    Source -->> Source: Compare the resource versions in event message and local source and generate spec event
     Source -->> Broker: Publish spec event to topic - /sources/<source-id>/clusters/<cluster-name>/spec
     Broker -->> WorkAgent: Send spec event to subscribers
     WorkAgent -->> WorkAgent: Decode spec event to manifestwork and reconcile it
@@ -762,7 +762,7 @@ Event schema:
     // The version of the CloudEvents specification which the event uses.
     // Compliant event producers MUST use a value of "1.0" when referring to this version of the specification.
     "specversion": "1.0",
-    // Unique indentifier for cloud events message.
+    // Unique identifier for cloud events message.
     "id": "<cloud-events-message-id>",
     // <source-id> should be a unique identifier for the source to identify the context in which an event occurred.
     // For example, a hub controller can generate a source ID by hashing the hub cluster URL and appending a controller name,
@@ -831,7 +831,7 @@ sequenceDiagram
     // The version of the CloudEvents specification which the event uses.
     // Compliant event producers MUST use a value of "1.0" when referring to this version of the specification.
     "specversion": "1.0",
-    // Unique indentifier for cloud events message.
+    // Unique identifier for cloud events message.
     "id": "<cloud-events-message-id>",
     // <source-id> should be a unique identifier for the source to identify the context in which an event occurred.
     // For example, a hub controller can generate a source ID by hashing the hub cluster URL and appending a controller name,
@@ -894,7 +894,7 @@ type Interface[T Object] interface {
 }
 ```
 
-The resouce object should implement the following interface, so that we can get the `resourceID` with `GetUID` function
+The resource object should implement the following interface, so that we can get the `resourceID` with `GetUID` function
 and get the `resourceVersion` with `GetResourceVersion` function.
 
 ```golang
@@ -931,7 +931,7 @@ type Lister[T ManifestObject] interface {
 }
 ```
 
-Devlopers can use `NewCloudEventClient[T Object]` function to create the client for their resources, for example, we can
+Developers can use `NewCloudEventClient[T Object]` function to create the client for their resources, for example, we can
 easily to build a client for `ManifestWork`
 
 ```golang
@@ -947,7 +947,7 @@ mwCloudEventClient.AddCodec("io.open-cluster-management.works.v1alpha1.manifestb
 mwCloudEventClient.AddCodec("io.open-cluster-management.works.v1alpha1.manifest", manifestCodec)
 ```
 
-By default, we provide a work client builder for devlopers, devlopers can enable the cloud event based on the MQTT
+By default, we provide a work client builder for developers, developers can enable the cloud event based on the MQTT
 for `ManifestWork` with MQTT options, the builder returns a work client holder, we can get the work client set from this
 holder, e.g.
 
