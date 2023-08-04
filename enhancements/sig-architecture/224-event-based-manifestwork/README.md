@@ -51,10 +51,6 @@ To facilitate easy adoption of the event-based mechanism, a client interface sho
 
 - As a service developer, I can effortlessly utilize the event-based manifestwork API to construct a service that delivers manifestworks to managed clusters and gather status information.
 
-### Risks and Mitigation
-
-- The authentication to the event transport layer (TBD)
-
 ## Design Details
 
 We will adopt the CloudEvents specification as the message format for ManifestWorks. Multiple API consumers, referred to as "sources," can utilize this format to deliver resources to managed cluster and receive status information. Each source must have a unique source ID to ensure proper identification and handling of events. The work agent is the controller that handles the deployment of requested resources on the managed cluster and status feedback to the source.
@@ -736,10 +732,10 @@ In this example, we have a hub controller called "mwrs-hub-controller" serving a
 2. The work agent generates a spec resync event based on its current maintained resources.
 3. The work agent sends the spec resync event to the broker with the topic `/sources/clusters/<cluster-name>/specresync`, for example: `/sources/clusters/cluster1/specresync`.
 4. Upon receiving the spec resync event, the source processes the event message and interacts with the broker as follows:
-  - If the request event message is empty, the source returns all resources associated with the work agent.
-  - If the request event message contains resource IDs and versions, the source retrieves the resource with the specified ID and compares the versions.
-  - If the requested resource version matches the source's current maintained resource version, the source does not resend the resource.
-  - If the requested resource version is older than the source's current maintained resource version, the source sends the resource.
+    - If the request event message is empty, the source returns all resources associated with the work agent.
+    - If the request event message contains resource IDs and versions, the source retrieves the resource with the specified ID and compares the versions.
+    - If the requested resource version matches the source's current maintained resource version, the source does not resend the resource.
+    - If the requested resource version is older than the source's current maintained resource version, the source sends the resource.
 
 ```mermaid
 sequenceDiagram
@@ -807,8 +803,8 @@ Event schema:
 2. The source calculates the hash of all resources it owns to generate a status hash.
 3. The source sends a status resync event with the resources hash as the event payload to the broker with the topic `sources/<source-id>/clusters/statusresync`, for example: `/sources/sd3ded4v-mwrs-hub-controller/clusters/statusresync`.
 4. Upon receiving the status resync event, the work agent responds by sending resource status events to the broker as follows:
-  - If the event payload is empty, the work agent returns the status of all resources it maintains.
-  - If the event payload is not empty, the work agent retrieves the resource with the specified ID and compares the received resource status hash with the current resource status hash. If they are not equal, the work agent resends the resource status message.
+    - If the event payload is empty, the work agent returns the status of all resources it maintains.
+    - If the event payload is not empty, the work agent retrieves the resource with the specified ID and compares the received resource status hash with the current resource status hash. If they are not equal, the work agent resends the resource status message.
 
 ```mermaid
 sequenceDiagram
@@ -861,25 +857,6 @@ sequenceDiagram
     ]
 }
 ```
-
-### Failure Handling
-
-~~- Retry Mechanism(TBD):~~
-
-~~In the event of a failure during event delivery or processing, a retry mechanism should be implemented to ensure reliable event propagation. When an event fails to reach its destination or encounters an error during processing, it should be retried for a certain number of times before giving up.~~
-
-~~The retry mechanism should employ exponential backoff, gradually increasing the delay between retries to prevent overwhelming the system with failed events. Each retry attempt should be logged, including relevant information such as the event payload, timestamp, and error details.~~
-
-- Resync Mechanism:
-
-To ensure the integrity of the event-based manifestworks system during source or work agent restart or reconnection, the following optimized resync mechanism is employed:
-
-1. On start, the source subscribes to the spec resync event topic `/sources/clusters/+/specresync` from the broker.
-2. On start, the work agent subscribes to the status resync event topic `/sources/+/clusters/statusresync` from the broker.
-3. Upon work agent restarts or reconnects, the work agent generates a spec resync event with resource versions and sends it to the broker.
-4. Upon source restarts or reconnects, the source calculates a status hash of its owned resources and sends a status resync event with the resource hash to the broker.
-5. The source compares the resource versions in the spec resync event message with the hub's state and generates spec events to the broker for the work agent to receive missing spec events.
-6. The work agent compares the status hashes in the status resync event message with its own state and generates status events to the broker for the source to receive missing status events.
 
 ### Clients
 
@@ -974,6 +951,25 @@ manifestWorkClient := workClientSet.WorkV1().ManifestWorks(o.SpokeClusterName)
 manifestWorkInformer := workInformerFactory.Work().V1().ManifestWorks()
 manifestWorkLister := workInformerFactory.Work().V1().ManifestWorks().Lister().ManifestWorks(o.SpokeClusterName)
 ```
+
+### Failure Handling
+
+To ensure the integrity of the event-based manifestworks system during source or work agent restart or reconnection, the following optimized resync mechanism is employed:
+
+1. On start, the source subscribes to the spec resync event topic `/sources/clusters/+/specresync` from the broker.
+2. On start, the work agent subscribes to the status resync event topic `/sources/+/clusters/statusresync` from the broker.
+3. Upon work agent restarts or reconnects, the work agent generates a spec resync event with resource versions and sends it to the broker.
+4. Upon source restarts or reconnects, the source calculates a status hash of its owned resources and sends a status resync event with the resource hash to the broker.
+5. The source compares the resource versions in the spec resync event message with the hub's state and generates spec events to the broker for the work agent to receive missing spec events.
+6. The work agent compares the status hashes in the status resync event message with its own state and generates status events to the broker for the source to receive missing status events.
+
+### Risks and Mitigation
+
+The following security principles should be considered between the broker and sources/agents
+
+- The sources and agents should be authenticated by broker to prevent arbitrary clients can consume the event messages from the broker
+- The sources should be authorized by broker to avoid one source can consume event messages from other sources
+- The agent should be authorized by broker to avoid one agent can consume event messages from other clusters 
 
 ### Test Plan
 
