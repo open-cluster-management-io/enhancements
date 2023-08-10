@@ -873,19 +873,18 @@ type Interface[T Object] interface {
 }
 ```
 
-The resource object should implement the following interface, so that we can get the `resourceID` with `GetUID` function
-and get the `resourceVersion` with `GetResourceVersion` function.
+The resource object should implement the following interface, so that we can get the `resourceid` with `GetUID` function
+and get the `resourceversion` with `GetResourceVersion` function.
 
 ```golang
 type Object interface {
 	GetUID() types.UID
 	GetResourceVersion() string
 	GetDeletionTimestamp() *metav1.Time
-	SetDeletionTimestamp(timestamp *metav1.Time)
 }
 ```
 
-and the object should have its Codec to encode the object to cloud event and decode the cloud event to the object.
+the object should have its Codec to encode the object to cloud event and decode the cloud event to the object.
 
 ```golang
 type Codec[T Object] interface {
@@ -894,7 +893,7 @@ type Codec[T Object] interface {
 }
 ```
 
-and the object should have the status hash getter, so that we can get the status hash to resync the status
+the object should have the status hash getter, so that we can get the status hash to handle the status resync
 
 ```golang
 type StatusHashGetter[T Object] interface {
@@ -902,7 +901,7 @@ type StatusHashGetter[T Object] interface {
 }
 ```
 
-at last, we need lister to list the objects to resync the objects between sources and agents
+at last, we need a lister to list the objects to resync the objects between sources and agents
 
 ```golang
 type Lister[T ManifestObject] interface {
@@ -910,12 +909,26 @@ type Lister[T ManifestObject] interface {
 }
 ```
 
-Developers can use `NewCloudEventClient[T Object]` function to create the client for their resources, for example, we can
-easily to build a client for `ManifestWork`
+Developers can use `NewCloudEventSourceClient[T Object]`/`NewCloudEventAgentClient[T Object]` function to create the
+source/agent client for their resources, for example, the developers can easily to build a source client for
+`ManifestWork` on the hub
 
 ```golang
-mwCloudEventClient := NewCloudEventClient[*workv1.ManifestWork](
-			workAgentSourceID,
+mwCloudEventClient := NewCloudEventSourceClient[*workv1.ManifestWork](
+			"hub1-manifestworkreplicaset-controller",
+			mqttCloudEventSubClient, mqttCloudEventPubClient,
+			manifestWorkLister,
+			manifestWorkStatusHashGetter,
+		)
+
+mwCloudEventClient.AddCodec("io.open-cluster-management.works.v1alpha1.manifestbundle", manifestbundleCodec)
+```
+
+Also the developers can easily to build an agent client for `ManifestWork` on the managed cluster
+```golang
+mwCloudEventClient := NewCloudEventSourceClient[*workv1.ManifestWork](
+			"cluster1-work-agent",
+      "cluster1",
 			mqttCloudEventSubClient, mqttCloudEventPubClient,
 			manifestWorkLister,
 			manifestWorkStatusHashGetter,
