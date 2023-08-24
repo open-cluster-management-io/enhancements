@@ -37,6 +37,7 @@ To facilitate easy adoption of the event-based mechanism, a client interface sho
 ### Non-Goals
 
 - Define the source architecture to act as a consumer of the protocol.
+- Define network requirement changes, such as port, protocol, and initiation direction.
 - Define the storage and persistence requirement of message broker.
 
   _Note:_ The specifics of message broker type and storage aren't required, as long as the broker provides the subscribe and publish interfaces. In implementation, diverse strategies can be employed to enhance message efficiency. For instance, leveraging MQTT involves activating the 'clean_session' flag to curtail message redundancy. Alternatively, with Kafka, fine-tuning the retention policy helps minimize superfluous message proliferation. Additionally, MQTT's 'last will testament' feature proves invaluable in managing agent failures.
