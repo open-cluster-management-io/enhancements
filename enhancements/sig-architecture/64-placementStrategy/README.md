@@ -450,8 +450,8 @@ const (
 type RolloutStrategy struct {
 	// Rollout strategy Types are All, Progressive and ProgressivePerGroup
 	// 1) All means apply the workload to all clusters in the decision groups at once.
-	// 2) Progressive means apply the workload to the selected clusters progressively per cluster. The workload will not be applied to the next cluster unless one of the current applied clusters reach the successful state or timeout.
-	// 3) ProgressivePerGroup means apply the workload to decisionGroup clusters progressively per group. The workload will not be applied to the next decisionGroup unless all clusters in the current group reach the successful state or timeout.
+	// 2) Progressive means apply the workload to the selected clusters progressively per cluster. The workload will not be applied to the next cluster unless one of the current applied clusters reach the successful state and haven't breached the MaxFailures configuration.
+	// 3) ProgressivePerGroup means apply the workload to decisionGroup clusters progressively per group. The workload will not be applied to the next decisionGroup unless all clusters in the current group reach the successful state and haven't breached the MaxFailures configuration.
   // +kubebuilder:validation:Enum=All;Progressive;ProgressivePerGroup
 	// +kubebuilder:default:=All
 	// +optional
@@ -470,15 +470,30 @@ type RolloutStrategy struct {
 	ProgressivePerGroup *RolloutProgressivePerGroup `json:"progressivePerGroup,omitempty"`
 }
 
-// Timeout to consider while applying the workload.
-type Timeout struct {
-	// Timeout define how long workload applier controller will wait till workload reach successful state in the cluster. Only considered for Rollout Type Progressive and ProgressivePerGroup.
-	// Timeout default value is None meaning the workload applier will not proceed apply workload to other clusters if did not reach the successful state.
-	// Timeout must be defined in [0-9h]|[0-9m]|[0-9s] format examples; 2h , 90m , 360s
+// RolloutConfig contains common configurations for the rollout strategies.
+type RolloutConfig struct {
+	// MinSuccessTime is a "soak" time. In other words, the minimum amount of time the workload applier controller will 
+  // wait from the start of each rollout before proceeding (assuming a successful state has been reached and MaxFailures wasn't breached).
+  // MinSuccessTime is only considered for rollout types Progressive and ProgressivePerGroup.
+	// The default value is 0 meaning the workload applier proceed immediately after a successful state is reached.
+	// MinSuccessTime must be defined in [0-9h]|[0-9m]|[0-9s] format examples; 2h , 90m , 360s
+	// +kubebuilder:default:=0
+	// +optional
+	MinSuccessTime metav1.Time `json:"minSuccessTime,omitempty"`
+  // ProgressDeadline defines how long the workload applier controller will wait until workload reaches a successful 
+  // state in the cluster, marking it as failed after the deadline.
+	// The default value is None meaning the workload applier will continue to wait for a status if did not reach the successful state.
+	// ProgressDeadline must be defined in [0-9h]|[0-9m]|[0-9s] format examples; 2h , 90m , 360s
 	// +kubebuilder:validation:Pattern="^(([0-9])+[h|m|s])|None$"
 	// +kubebuilder:default:=None
 	// +optional
-	Timeout string `json:"timeout,omitempty"`
+  ProgressDeadline string `json:"progressDeadline,omitempty"`
+  // MaxFailures is a percentage of or number of clusters in the current rollout that can fail before proceeding to the next rollout.
+	// Default is that no failures are tolerated.
+  // +kubebuilder:validation:Pattern="^((100|[0-9]{1,2})%|[0-9]+)$"
+  // +kubebuilder:default=0
+	// +optional
+  MaxFailures string `json:"maxFailures,omitempty"`
 }
 
 // MandatoryDecisionGroup set the decision group name or group index.
@@ -502,21 +517,21 @@ type MandatoryDecisionGroups struct {
 
 // RolloutAll is RolloutStrategyType
 type RolloutAll struct {
-	// +optional
-	Timeout Timeout `json:",inline"`
+	RolloutConfig `json:",inline"`
 }
 
 // RolloutProgressivePerGroup is RolloutStrategyType
 type RolloutProgressivePerGroup struct {
-	// +optional
-	MandatoryDecisionGroups MandatoryDecisionGroups `json:",inline"`
+	RolloutConfig `json:",inline"`
 
 	// +optional
-	Timeout Timeout `json:",inline"`
+	MandatoryDecisionGroups MandatoryDecisionGroups `json:",inline"`
 }
 
 // RolloutProgressive is RolloutStrategyType
 type RolloutProgressive struct {
+	RolloutConfig `json:",inline"`
+
 	// +optional
 	MandatoryDecisionGroups MandatoryDecisionGroups `json:",inline"`
 
@@ -524,18 +539,19 @@ type RolloutProgressive struct {
 	// +kubebuilder:validation:Pattern="^((100|[0-9]{1,2})%|[0-9]+)$"
 	// +optional
 	MaxConcurrency intstr.IntOrString `json:"maxConcurrency,omitempty"`
-
-	// +optional
-	Timeout Timeout `json:",inline"`
 }
 ```
 
 **RolloutStrategy Types;**
 1) All means apply the workload to all clusters in the decision groups at once.
-2) Progressive means apply the workload to the selected clusters progressively per cluster. The workload will not be applied to the next cluster unless one of the current applied clusters reach the successful state or timeout.
-3) ProgressivePerGroup means apply the workload to decisionGroup clusters progressively per group. The workload will not be applied to the next decisionGroup unless all clusters in the current group reach the successful state or timeout.
+2) Progressive means apply the workload to the selected clusters progressively per cluster. The workload will not be applied to the next cluster unless one of the current applied clusters reach the successful state and haven't breached the MaxFailures configuration.
+3) ProgressivePerGroup means apply the workload to decisionGroup clusters progressively per group. The workload will not be applied to the next decisionGroup unless all clusters in the current group reach the successful state and haven't breached the MaxFailures configuration.
 
-**Timeout** defined in seconds/minutes/hours for how long workload applier controller will wait till workload reach successful state in the spoke cluster.
+**MinSuccessTime** defined in seconds/minutes/hours for how long workload applier controller will wait from the beginning of the rollout to proceed with the next rollout, assuming a successful state had been reached.
+
+**ProgressDeadline** defined in seconds/minutes/hours for how long workload applier controller will wait until the workload reaches a successful state in the spoke cluster, after which it's marked as failed.
+
+**MaxFailures** defined as the maximum percentage of or number of clusters that can fail in order to proceed with the rollout.
 
 **MandatoryDecisionGroups** is a list of decision groups to apply the workload first. If mandatoryDecisionGroups not defined the decision group index is considered to apply the workload in groups by order. The MandatoryDecisionGroups can be defined only in case rollout type is progressive or progressivePerGroup.
 
@@ -555,7 +571,9 @@ spec:
       rolloutStrategy:
         rolloutType: Progressive
         progressive:
-          timeout: 50min
+          minSuccessTime: 30m
+          progressDeadline: 50m
+          maxFailures: 5%
           mandatoryDecisionGroups:
           - prod-canary-west
           - prod-canary-east
@@ -589,9 +607,9 @@ The decision groups associated with ztp-placement as below
     clusterCount: 140 
 ```
 
-The ManifestWorkReplicaSet controller apply the workload to the decision groups prod-canary-west & prod-canary-east progressively first and wait till all the clusters in those decision groups have the manifestWork in available state.
+The ManifestWorkReplicaSet controller apply the workload to the decision groups prod-canary-west & prod-canary-east progressively first and wait until all the clusters in those decision groups have the manifestWork in available state and until the `minSuccessTime` of 30 minutes has passed.
 If one of the managedCluster in the decision groups prod-canary-west & prod-canary-east has the manifestWork not in available state the ManifestWorkReplicaSet controller will not proceed to apply the manifestWork to the other decision groups.
-After all clusters in decision groups prod-canary-west & prod-canary-east have the manifestWork in available state, the ManifestWorkReplicaSet controller will apply the manifestWorkTemplate on the clusters in decision groups 2 and 3 progressively.
+After all clusters in decision groups prod-canary-west & prod-canary-east have the manifestWork in available state or less than 5% of the clusters in the decision group are failed as defined in `MaxFailures`, the ManifestWorkReplicaSet controller will apply the manifestWorkTemplate on the clusters in decision groups 2 and 3 progressively.
 
 #### Special case handling for applier controller.
 
@@ -599,7 +617,7 @@ After all clusters in decision groups prod-canary-west & prod-canary-east have t
 
 * While applying the workloads on decision group index 2 the placement has been changed and all cluster groups changed. The applier controller should act accordingly and apply the workload to the added/removed clusters in decision group index 0 then decision group index 1.
 
-* Soaktime the workload applier controller can define the soak time needed to consider the workload has been reached the successful state. (Soaktime will avoid miss leading state by the spokes)
+* Additional soak time may be needed before considering whether the workload has reached the successful state. (Soak time will avoid miss leading state by the spokes.)
 
 * For MandatoryDecisionGroups and progressivePerGroup rollout type variationNumber can be defined to avoid waiting for all clusters to reach successful state within the group. Example; for decisionGroup has 100 clusters variationNumber could be 5% meaning when 95 clusters reach the successful state the applier controller can apply the workloads to the next decision group.
 
