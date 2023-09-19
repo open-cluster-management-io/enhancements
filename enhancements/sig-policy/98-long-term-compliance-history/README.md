@@ -135,8 +135,8 @@ As previously mentioned, the compliance events will be stored in a relational da
 managed by Open Cluster Management and is limited to just Postgresql at the momement. The connection information for
 this database will be in a secret called `governance-policy-database` in the `open-cluster-management` namespace and
 will require either a key of `connectionURL` in the format of
-`postgres://username:password@localhost:5432/database_name` or the separate keys of `username`, `password`, `server`,
-and `databaseName`.
+`postgres://username:password@localhost:5432/database_name` or the separate keys of `user`, `password`, `host`, `port`,
+`dbname`, and `sslmode`.
 
 For security reasons, each managed cluster cannot directly write to the database. Instead, an HTTP endpoint is to be
 added to the Policy Propagator to perform authorization checks and translating compliance events to the appropriate SQL
