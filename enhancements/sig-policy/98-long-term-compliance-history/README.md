@@ -336,6 +336,11 @@ was evaluated. With this additional information, the Status Sync controller can 
 `/api/v1/compliance-events` `POST` request. If the spec couldn't be determined, a value of `unknown` will be recorded.
 The rest of the data can be found in the Kuberenetes `Event` object.
 
+To record a compliance event when a policy is deleted, the Spec Sync controller will record these compliance events
+before it deletes the policy template (e.g. ConfigurationPolicy). A finalizer on the policy template objects was
+considered but it adds complexity with little additional value since anyone with access to delete a policy can remove
+the finalizer.
+
 There is an existing compliance history in the replicated `Policy` objects on the hub, though it is potentially
 incomplete due to the shortcomings previously mentioned. If a user wants to import that data in the new compliance event
 store, a script will be provided that will add entries from the replicated `Policy` objects' `status.details` field on
