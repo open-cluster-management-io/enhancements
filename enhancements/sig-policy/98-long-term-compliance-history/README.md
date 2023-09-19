@@ -81,18 +81,19 @@ string/text column, then those could be used instead of a substring query.
 
 ##### policies Table
 
-| Column           | Description                                                                                                 |
-| ---------------- | ----------------------------------------------------------------------------------------------------------- |
-| id               | an internal primary key                                                                                     |
-| kind             | a string column of the policy Kind (e.g. ConfigurationPolicy)                                               |
-| api_group        | a string column of the policy group (e.g. policy.open-cluster-management.io)                                |
-| name             | a string column for the name of the policy                                                                  |
-| parent_policy_id | a foreign key to the parent policy in the managed cluster namespace on the hub in the parent_policies table |
-| spec             | a string column of the spec field of the replicated policy as JSON                                          |
-| spec_hash        | a string column of a SHA1 hash of the spec field of the replicated policy                                   |
+| Column           | Description                                                                                                           |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------- |
+| id               | an internal primary key                                                                                               |
+| kind             | a string column of the policy Kind (e.g. ConfigurationPolicy)                                                         |
+| api_group        | a string column of the policy group (e.g. policy.open-cluster-management.io)                                          |
+| name             | a string column for the name of the policy                                                                            |
+| parent_policy_id | an optional foreign key to the parent policy in the managed cluster namespace on the hub in the parent_policies table |
+| spec             | a string column of the spec field of the replicated policy as JSON                                                    |
+| spec_hash        | a string column of a SHA1 hash of the spec field of the replicated policy                                             |
 
 There would be a combined unique constraint on the `kind`, `api_group`, `name`, `parent_policy_id`, and `spec_hash`
-columns. `spec_hash` would have an index as well.
+columns. `spec_hash` would have an index as well. Note that `parent_policy_id` is optional so that this schema work can
+allow non-OCM policy results to be added.
 
 The `spec` of the policy (e.g. `ConfigurationPolicy`) is stored for a customer to audit the policy contents that
 generated a compliance event. This would be stored as JSON with no new lines and no optional spaces for size efficiency.
@@ -115,7 +116,9 @@ would be calculated from the `spec` column value.
 
 The `metadata` field would be empty for now but could be eventually used to store information such as the object diff of
 an inform `ConfigurationPolicy` without altering the database schema. This field is not designed for filtering when
-generating reports.
+generating reports. In the event this feature is expanded to allow non-OCM policy results, the `metadata` field would
+likely be used to include `standards`, `categories`, and `controls` fields since they would not inherit those from an
+OCM parent policy.
 
 #### How a Compliance Event is Recorded
 
