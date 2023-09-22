@@ -28,6 +28,6 @@ spec:
             resource: addontemplates
             name: hello-template-v2
         rolloutStrategy:
-          type: RollingUpdate
-          rollingUpdate:
-            maxConcurrency: 25%
+          type: All
+          all:
+            timeout: 30m
