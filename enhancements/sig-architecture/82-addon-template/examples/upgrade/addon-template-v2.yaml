@@ -61,17 +61,15 @@ spec:
       kubeClient:
         hubPermissions:
           - type: CurrentCluster
-            roleRef:
-              apiGroup: rbac.authorization.k8s.io
-              kind: ClusterRole
-              name: cm-admin
+            currentCluster:
+              clusterRoleName: cm-admin
           - type: SingleNamespace
-            roleRef:
-              apiGroup: rbac.authorization.k8s.io
-              kind: Role
-              name: cm-reader
             singleNamespace:
               namespace: open-cluster-management
+              roleRef:
+                apiGroup: rbac.authorization.k8s.io
+                kind: Role
+                name: cm-reader
     - type: CustomSigner
       customSigner:
         signerName: example.com/signer-name
