@@ -21,6 +21,7 @@ Currently policies and subsequent updates are pushed out to clusters en masse ba
 been bound. The new `DecisionStrategy` field in the `Placement` API creates cluster groupings that controllers can
 leverage to have segmented, configurable rollouts of resources. This will aid use cases where high availability may be a
 priority or a set of test clusters should receive and verify the updates before the remaining clusters get updated.
+Additionally, adding `PolicySet` rollouts will allow users to slice updates by cluster rather than by `Policy`.
 
 ### Goals
 
@@ -39,6 +40,7 @@ priority or a set of test clusters should receive and verify the updates before 
   - `MandatoryDecisionGroups`: groups that should be handled before other groups
   - `MaxConcurrency`: Concurrency during a progressive rollout
 - Add an aggregated rollout status for the root policy status.
+- Implement rollout for `PolicySet`, allowing rollouts to proceed on a per-cluster basis across all policies in the set
 
 ### Non-Goals
 
@@ -135,15 +137,16 @@ rollout" as described in the [Design section](#design).
 
 There is some additional complexity brought into the rollout because policies are bound to `Placement` using
 `PlacementBindings`, so there could be multiple `Placements` bound to each policy. To remedy this, `All` and
-`Progressive` (which is per-cluster) would be handled by pulling in all `PlacementDecisions` from all `Placements`. In
-the case of multiple `Placements` where `ProgressivePerGroup` is specified, this would be handled by taking groups from
-one placement and then moving on to the next placement.
+`Progressive` (which is per-cluster) is handled by pulling in all `PlacementDecisions` from all `Placements`. In the
+case of multiple `Placements` where `ProgressivePerGroup` is specified, this is handled by taking groups from one
+placement and then moving on to the next placement.
 
 Additionally, the `PlacementBinding` has specifications for selective policy enforcement to override the
 `remediationAction` and selectively apply policies to managed clusters. (See the
 [Selective Policy Enforcement enhancement](https://github.com/open-cluster-management-io/enhancements/tree/main/enhancements/sig-policy/28-selective-policy-enforcment).)
-Since these may conflict with the rollout and has similar intentions, these specifications will be ignored if they are
-provided with a policy specifying a rollout strategy other than `All`.
+The rollout will occur in tandem with selective policy enforcement. If selective policy enforcement is in play, the
+rollout will occur but would respect the remediation action overrides and only roll out enforcement to clusters selected
+by the `PlacementBinding`'s overrides.
 
 ### User Stories
 
@@ -319,6 +322,149 @@ the updates, and continue enforcement rollout only when the policy on previous c
                   operator: Exist
   ```
 
+#### Story 3
+
+As a system administrator, I want to specify a placement `DecisionStrategy` bound with policy sets, allowing rollouts to
+proceed across the set on a per-cluster basis and, optionally, in the order specified.
+
+- **Summary**
+
+  - Add an option in the policy set to specify an `orderPolicies` boolean, signaling to the
+    `governance-policy-propagator` controller to automatically inject policy dependencies down the list of policies in
+    the policy set when replicating policies (i.e. policy 1 is a dependency for policy 2, policy 2 is a dependency for
+    policy 3, and so on).
+  - Add `rolloutStrategy` and `rolloutStatus` to the `PolicySet`. For a policy set, the rollout is successful for a
+    cluster only after all policies in the set become compliant.
+  - The `rolloutStatus` would be an aggregated status across all clusters and policies. The aggregated root policy
+    status would be: `Progressing` (this would include `ToApply`), `Succeeded`, or `Failed`.
+  - Since a policy set has multiple policies that might be updated separately, policy set progressive rollouts are
+    triggered by clearing the `policy.open-cluster-management.io/last-rollout` annotation on the policy set, signaling
+    that the rollout should start.
+  - Rollout strategies specified at the policy set level overrides those at the policy level.
+
+  (For technical notes see [Development Phase 4](#development-phase-4))
+
+- **Snippet**
+
+  **Policy set with `rolloutStrategy` and status**
+
+  ```yaml
+  apiVersion: policy.open-cluster-management.io/v1beta1
+  kind: PolicySet
+  metadata:
+    annoations:
+      policy.open-cluster-management.io/last-rollout: ""
+    name: sample-policyset
+    namespace: policy-namespace
+  spec:
+    description: ""
+    orderPolicies: true # <-- New field
+    policies:
+      - sample-policy-1
+      - sample-policy-2
+      - sample-policy-3
+    rolloutStrategy: # <-- New field
+      type: Progressive
+      progressive:
+        minSuccessTime: 30s
+        progressDeadline: None
+        maxFailures: 1
+        maxConcurrency: 2
+        mandatoryDecisionGroups: []
+  status:
+    compliant: ""
+    rolloutStatus: Progressing # <-- New field
+    placement:
+      - placement: sample-placement
+        placementBinding: sample-placementbinding
+    statusMessage: "No status provided while awaiting policy status: sample-policy-1, sample-policy-2, sample-policy-3"
+    clusters: # <-- New field
+      - clustername: cluster1
+        compliant: ""
+        rolloutStatus: Progressing
+      - clustername: cluster2
+        compliant: ""
+        rolloutStatus: Progressing
+      - clustername: cluster3
+        compliant: ""
+        rolloutStatus: ToApply
+  ```
+
+  **Replicated policy 1**
+
+  ```yaml
+  apiVersion: policy.open-cluster-management.io/v1
+  kind: Policy
+  metadata:
+    name: policy-namespace.sample-policy-1
+    namespace: cluster1
+  spec:
+    disabled: false
+    remediationAction: enforce
+    policy-templates:
+      - objectDefinition:
+          apiVersion: policy.open-cluster-management.io/v1
+          kind: ConfigurationPolicy
+          ...
+  status:
+    compliant: ""
+    rolloutStatus: Progressing # <-- Policy is enforced and waiting for status
+  ```
+
+  **Replicated policy 2**
+
+  ```yaml
+  apiVersion: policy.open-cluster-management.io/v1
+  kind: Policy
+  metadata:
+    name: policy-namespace.sample-policy-2
+    namespace: cluster1
+  spec:
+    disabled: false
+    remediationAction: inform
+    dependencies:
+      - apiVersion: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: sample-policy-1 # <--- Dependency on policy 1
+        namespace: policy-namespace
+        compliance: Compliant
+    policy-templates:
+      - objectDefinition:
+          apiVersion: policy.open-cluster-management.io/v1
+          kind: ConfigurationPolicy
+          ...
+  status:
+    compliant: Pending     # <-- Policy is waiting for dependencies
+    rolloutStatus: ToApply # <-- Policy is waiting to be enforced
+  ```
+
+  **Replicated policy 3**
+
+  ```yaml
+  apiVersion: policy.open-cluster-management.io/v1
+  kind: Policy
+  metadata:
+    name: policy-namespace.sample-policy-3
+    namespace: cluster1
+  spec:
+    disabled: false
+    remediationAction: inform
+    dependencies:
+      - apiVersion: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: sample-policy-2 # <--- Dependency on policy 2
+        namespace: policy-namespace
+        compliance: Compliant
+    policy-templates:
+      - objectDefinition:
+          apiVersion: policy.open-cluster-management.io/v1
+          kind: ConfigurationPolicy
+          ...
+  status:
+    compliant: Pending     # <-- Policy is waiting for dependencies
+    rolloutStatus: ToApply # <-- Policy is waiting to be enforced
+  ```
+
 ### Implementation Details
 
 #### Development Phase 1
@@ -460,6 +606,8 @@ the updates, and continue enforcement rollout only when the policy on previous c
   - Update the `ClusterRolloutStatusFunc`, (the `GetClusterRolloutStatus` function from
     [Development Phase 2](#development-phase-2)) to fetch the rollout status and last transition time from the
     replicated policy status. (See the [Design section](#design).)
+  - In the case of multiple placements where `ProgressivePerGroup` is specified, handle each placement individually
+    (i.e. rollout out to the first placement's groups and then proceed with subsequent placements)
 
     | Status        | Description                                                                                                                                           |
     | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -493,6 +641,55 @@ the updates, and continue enforcement rollout only when the policy on previous c
     Dependencies []PolicyDependency `json:"dependencies,omitempty"`
     // +kubebuilder:validation:Optional
     RolloutStrategy clusterv1alpha1.RolloutStrategy `json:"rolloutStrategy,omitempty"` // <-- New field
+  }
+  ```
+
+#### Development Phase 4
+
+- **Summary**
+
+  - Implement rollouts for policy sets.
+
+- **Details**
+
+  - Add an `OrderPolicies` boolean and the `RolloutStrategy` struct to the spec of the `PolicySet`.
+  - `OrderPolicies` signals to the `governance-policy-propagator` controller whether to inject a dependency on the
+    previous policy in the set when propagating policies to the managed cluster namespaces.
+  - Logic would need to be added to the `governance-policy-propagator` controller to detect when a policy is bound to a
+    placement via a policy set to roll out policies in a set per cluster. The `GetClusterRolloutStatus` function should
+    be updated to consider all policies in the policy set for a particular cluster so that the library returns clusters
+    to roll out to based on the entire set of policies (rather than the individual policy). This flow looks like:
+    - Policies in the set across all managed cluster namespaces are set to `remediationAction: inform` upon update, as
+      specified in this enhancement, with the policy set overriding any `rolloutStrategy` specified in the individual
+      policy.
+    - When the policy set rollout is signaled by the `policy.open-cluster-management.io/last-rollout` annotation, the
+      propagator identifies whether a policy was bound to a placement via a policy set. From there:
+      1. Set replicated policies for that cluster to `remediationAction: enforce` as determined by the Placement
+         library.
+      2. Add a dependency on the previous policy in the set if specified by `OrderPolicies`.
+  - Add the `RolloutStatus` to the policy set to reflect per-cluster and aggregated rollout status. The aggregated
+    policy set status is the same as the individual policy: `Progressing` (this would include `ToApply`), `Succeeded`,
+    or `Failed`. (The `TimeOut` status would not be reflected.)
+  - For convenience and discoverability, add a per-cluster status to the policy set (this could alternatively be a
+    constructed string for rollout status as the policy status message currently is).
+
+- **Snippet**
+
+  ```golang
+  // ClusterStatus defines a per-cluster status for the policy set
+  type ClusterStatus struct { // <-- New struct
+    ComplianceState  ComplianceState               `json:"compliant,omitempty"`
+    RolloutStatus    clusterv1alpha1.RolloutStatus `json:"rolloutStatus,omitempty"`
+    ClusterName      string                        `json:"clustername,omitempty"`
+  }
+
+  // PolicySetStatus defines the observed state of PolicySet
+  type PolicySetStatus struct {
+    Placement     []PolicySetStatusPlacement    `json:"placement,omitempty"`
+    Compliant     string                        `json:"compliant,omitempty"`
+    RolloutStatus clusterv1alpha1.RolloutStatus `json:"rolloutStatus,omitempty"` // <-- New field
+    ClusterStatus []*ClusterStatus              `json:"clusters,omitempty"`      // <-- New field
+    StatusMessage string                        `json:"statusMessage,omitempty"`
   }
   ```
 
