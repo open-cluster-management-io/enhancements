@@ -81,18 +81,19 @@ string/text column, then those could be used instead of a substring query.
 
 ##### policies Table
 
-| Column           | Description                                                                                                 |
-| ---------------- | ----------------------------------------------------------------------------------------------------------- |
-| id               | an internal primary key                                                                                     |
-| kind             | a string column of the policy Kind (e.g. ConfigurationPolicy)                                               |
-| api_group        | a string column of the policy group (e.g. policy.open-cluster-management.io)                                |
-| name             | a string column for the name of the policy                                                                  |
-| parent_policy_id | a foreign key to the parent policy in the managed cluster namespace on the hub in the parent_policies table |
-| spec             | a string column of the spec field of the replicated policy as JSON                                          |
-| spec_hash        | a string column of a SHA1 hash of the spec field of the replicated policy                                   |
+| Column           | Description                                                                                                           |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------- |
+| id               | an internal primary key                                                                                               |
+| kind             | a string column of the policy Kind (e.g. ConfigurationPolicy)                                                         |
+| api_group        | a string column of the policy group (e.g. policy.open-cluster-management.io)                                          |
+| name             | a string column for the name of the policy                                                                            |
+| parent_policy_id | an optional foreign key to the parent policy in the managed cluster namespace on the hub in the parent_policies table |
+| spec             | a string column of the spec field of the replicated policy as JSON                                                    |
+| spec_hash        | a string column of a SHA1 hash of the spec field of the replicated policy                                             |
 
 There would be a combined unique constraint on the `kind`, `api_group`, `name`, `parent_policy_id`, and `spec_hash`
-columns. `spec_hash` would have an index as well.
+columns. `spec_hash` would have an index as well. Note that `parent_policy_id` is optional so that this schema work can
+allow non-OCM policy results to be added.
 
 The `spec` of the policy (e.g. `ConfigurationPolicy`) is stored for a customer to audit the policy contents that
 generated a compliance event. This would be stored as JSON with no new lines and no optional spaces for size efficiency.
@@ -115,7 +116,9 @@ would be calculated from the `spec` column value.
 
 The `metadata` field would be empty for now but could be eventually used to store information such as the object diff of
 an inform `ConfigurationPolicy` without altering the database schema. This field is not designed for filtering when
-generating reports.
+generating reports. In the event this feature is expanded to allow non-OCM policy results, the `metadata` field would
+likely be used to include `standards`, `categories`, and `controls` fields since they would not inherit those from an
+OCM parent policy.
 
 #### How a Compliance Event is Recorded
 
@@ -132,8 +135,9 @@ As previously mentioned, the compliance events will be stored in a relational da
 managed by Open Cluster Management and is limited to just Postgresql at the momement. The connection information for
 this database will be in a secret called `governance-policy-database` in the `open-cluster-management` namespace and
 will require either a key of `connectionURL` in the format of
-`postgres://username:password@localhost:5432/database_name` or the separate keys of `username`, `password`, `server`,
-and `databaseName`.
+`postgres://username:password@localhost:5432/database_name` or the separate keys of `user`, `password`, `host`, `port`,
+`dbname`, and `sslmode`. Additionally, a `ca` key can be set with the PEM encoded certificate authority certificate to
+trust for SSL/TLS connections to the Postgres server.
 
 For security reasons, each managed cluster cannot directly write to the database. Instead, an HTTP endpoint is to be
 added to the Policy Propagator to perform authorization checks and translating compliance events to the appropriate SQL
@@ -331,6 +335,11 @@ the controllers are missing some metadata. To resolve this, the events will set 
 was evaluated. With this additional information, the Status Sync controller can avoid sending the whole spec in the
 `/api/v1/compliance-events` `POST` request. If the spec couldn't be determined, a value of `unknown` will be recorded.
 The rest of the data can be found in the Kuberenetes `Event` object.
+
+To record a compliance event when a policy is deleted, the Spec Sync controller will record these compliance events
+before it deletes the policy template (e.g. ConfigurationPolicy). A finalizer on the policy template objects was
+considered but it adds complexity with little additional value since anyone with access to delete a policy can remove
+the finalizer.
 
 There is an existing compliance history in the replicated `Policy` objects on the hub, though it is potentially
 incomplete due to the shortcomings previously mentioned. If a user wants to import that data in the new compliance event
