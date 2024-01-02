@@ -67,7 +67,8 @@ confusing if a separate database on the same Postgresql database be used.
 | Column     | Description                                                         |
 | ---------- | ------------------------------------------------------------------- |
 | id         | an internal primary key                                             |
-| name       | a string column for the name of the parent replicated policy        |
+| name       | a string column for the name of the parent root policy              |
+| namespace  | a string column for the namespace of the parent root policy         |
 | categories | an array column of the sorted categories associated with the policy |
 | controls   | an array column of the sorted controls associated with the policy   |
 | standards  | an array column of the sorted standards associated with the policy  |
@@ -81,15 +82,15 @@ string/text column, then those could be used instead of a substring query.
 
 ##### policies Table
 
-| Column           | Description                                                                                                           |
-| ---------------- | --------------------------------------------------------------------------------------------------------------------- |
-| id               | an internal primary key                                                                                               |
-| kind             | a string column of the policy Kind (e.g. ConfigurationPolicy)                                                         |
-| api_group        | a string column of the policy group (e.g. policy.open-cluster-management.io)                                          |
-| name             | a string column for the name of the policy                                                                            |
-| parent_policy_id | an optional foreign key to the parent policy in the managed cluster namespace on the hub in the parent_policies table |
-| spec             | a string column of the spec field of the replicated policy as JSON                                                    |
-| spec_hash        | a string column of a SHA1 hash of the spec field of the replicated policy                                             |
+| Column    | Description                                                                                                                        |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| id        | an internal primary key                                                                                                            |
+| kind      | a string column of the policy Kind (e.g. ConfigurationPolicy)                                                                      |
+| api_group | a string column of the policy group (e.g. policy.open-cluster-management.io)                                                       |
+| name      | a string column for the name of the policy                                                                                         |
+| namespace | an optional string column for the namespace of the policy. This will not be set for native OCM policies to avoid data duplication. |
+| spec      | a string column of the spec field of the replicated policy as JSON (e.g. ConfigurationPolicy after Hub templates)                  |
+| spec_hash | a string column of a SHA1 hash of the spec field                                                                                   |
 
 There would be a combined unique constraint on the `kind`, `api_group`, `name`, `parent_policy_id`, and `spec_hash`
 columns. `spec_hash` would have an index as well. Note that `parent_policy_id` is optional so that this schema work can
@@ -104,15 +105,16 @@ would be calculated from the `spec` column value.
 
 ##### compliance_events Table
 
-| Column     | Description                                                                               |
-| ---------- | ----------------------------------------------------------------------------------------- |
-| id         | an internal primary key                                                                   |
-| cluster_id | a foreign key to the `id` column in the `clusters` table                                  |
-| policy_id  | a foreign key to the `id` column in the `policies` table                                  |
-| compliance | a string column of a compliance state name (i.e. Compliant); this will have an index      |
-| message    | a string column with the compliance message                                               |
-| timestamp  | a UTC date time column for the timestamp of the compliance event; this will have an index |
-| metadata   | a JSON (or string in SQLite) column with additional metadata                              |
+| Column           | Description                                                                               |
+| ---------------- | ----------------------------------------------------------------------------------------- |
+| id               | an internal primary key                                                                   |
+| cluster_id       | a foreign key to the `id` column in the `clusters` table                                  |
+| policy_id        | a foreign key to the `id` column in the `policies` table                                  |
+| parent_policy_id | an optional foreign key to the parent policy on the hub in the parent_policies table      |
+| compliance       | a string column of a compliance state name (i.e. Compliant); this will have an index      |
+| message          | a string column with the compliance message                                               |
+| timestamp        | a UTC date time column for the timestamp of the compliance event; this will have an index |
+| metadata         | a JSON (or string in SQLite) column with additional metadata                              |
 
 The `metadata` field would be empty for now but could be eventually used to store information such as the object diff of
 an inform `ConfigurationPolicy` without altering the database schema. This field is not designed for filtering when
@@ -180,7 +182,8 @@ The HTTP endpoint would be at `/api/v1/compliance-events` and would accept a `PO
 {
   "cluster": { "name": "cluster1" },
   "parent_policy": {
-    "name": "policies.etcd-encryption",
+    "name": "etcd-encryption",
+    "namespace": "policies",
     // Optional
     "catageories": [],
     // Optional
@@ -255,7 +258,8 @@ the user's access as described above:
         "name": "cluster1"
       },
       "parent_policy": {
-        "name": "policies.etcd-encryption",
+        "name": "etcd-encryption",
+        "namespace": "policies",
         "catageories": ["CM Configuration Management"],
         "controls": ["CM-2 Baseline Configuration"],
         "standards": ["NIST SP 800-53"]
@@ -264,6 +268,7 @@ the user's access as described above:
         "apiGroup": "policy.open-cluster-management.io",
         "kind": "ConfigurationPolicy",
         "name": "etcd-encryption",
+        "namespace": "",
         // Only shown if `include_spec=true`
         "spec": {}
       },
@@ -279,7 +284,8 @@ the user's access as described above:
         "name": "cluster2"
       },
       "parent_policy": {
-        "name": "policies.etcd-encryption",
+        "name": "etcd-encryption",
+        "namespace": "policies",
         "catageories": [],
         "controls": [],
         "standards": []
@@ -288,6 +294,7 @@ the user's access as described above:
         "apiGroup": "policy.open-cluster-management.io",
         "kind": "ConfigurationPolicy",
         "name": "etcd-encryption",
+        "namespace": "",
         "spec": {},
         "specHash": {}
       },
@@ -328,13 +335,17 @@ to lost connectivity to the hub since there would not be a compliance event queu
 addressed in phase 2.
 
 The Policy Propagator will add entries to the `policies` and `parent_policies` tables as it creates replicated policies.
-This way the Status Sync controller won't need to provide as much data when recording a compliance event. Reducing
-bandwidth utilization to the hub is helpful in edge scenarios. With this in mind, the current compliance events sent by
-the controllers are missing some metadata. To resolve this, the events will set a new annotation of
-`policy.open-cluster-management.io/policy-spec-sha1` set to the hex format of the SHA1 of the `spec` of the policy that
-was evaluated. With this additional information, the Status Sync controller can avoid sending the whole spec in the
-`/api/v1/compliance-events` `POST` request. If the spec couldn't be determined, a value of `unknown` will be recorded.
-The rest of the data can be found in the Kuberenetes `Event` object.
+It will also set the annotations of `policy.open-cluster-management.io/policy-compliance-db-id` and
+`policy.open-cluster-management.io/parent-policy-compliance-db-id` on each replicated policy template (e.g.
+`ConfigurationPolicy`) entry within the replicated policy to match what was inserted in the database. Additionally,
+it'll set the `policy.open-cluster-management.io/policy-spec-sha1` set to the hex format of the SHA1 of the `spec` of
+the policy (e.g. `ConfigurationPolicy`). This way, the Status Sync controller won't need to provide as much data when
+recording a compliance event. Reducing bandwidth utilization to the hub is helpful in edge scenarios. With this in mind,
+the current compliance events sent by the controllers will set the database related annotations from the policy being
+evaluated. With this additional information, the Status Sync controller can avoid sending the whole spec, policy, and
+parent policy in the`/api/v1/compliance-events` `POST` request. This also reduces the chance of race conditions where a
+compliance event is sent and the policy is updated before the compliance event is recorded in the database. The rest of
+the data required for the `POST` request can be found in the Kuberenetes `Event` object.
 
 To record a compliance event when a policy is deleted, the Spec Sync controller will record these compliance events
 before it deletes the policy template (e.g. ConfigurationPolicy). A finalizer on the policy template objects was
