@@ -308,6 +308,7 @@ the user's access as described above:
   ],
   "metadata": {
     "page": 1,
+    "pages": 7,
     "per_page": 20,
     "total": 123
   }
