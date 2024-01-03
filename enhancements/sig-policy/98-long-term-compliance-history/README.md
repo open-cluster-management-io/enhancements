@@ -246,6 +246,10 @@ The following optional query parameters would be accepted on this HTTP endpoint:
 - after - an ISO-8601 timestamp to indicate only compliance events after this time should be shown.
 - page - the page number in the query. This defaults to 1.
 - per_page - the number of compliance events returned per page. This defaults to 20 and maxes out at 100.
+- sort - the field to sort by. This defaults to `event.timestamp`. All fields except `policy.spec` and `event.metadata`
+  are sortable by using dot notation. To specify multiple sort options, use commas such as
+  `?sort=policy.name,policy.namespace`.
+- direction - the direction to sort by. This defaults to `desc`. It can be `asc` or `desc`.
 
 The output would look as follows and be sorted by timestamps in descending order. The content would be filtered based on
 the user's access as described above:
