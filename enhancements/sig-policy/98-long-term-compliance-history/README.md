@@ -255,7 +255,7 @@ The following optional query parameters would be accepted on this HTTP endpoint:
 - policy_api_group - the `apiGroup` of the policy (e.g. `policy.open-cluster-management.io`) that generated the
   compliance event to filter on.
 - message_includes - a filter for compliance messages that include the following substring.
-- include_spec - a boolean to include the policy's spec in the return value. This is `false` by default.
+- include_spec - a flag to include the policy's spec in the return value. This is not set by default.
 - before - an ISO-8601 timestamp to indicate only compliance events before this time should be shown.
 - after - an ISO-8601 timestamp to indicate only compliance events after this time should be shown.
 - page - the page number in the query. This defaults to 1.
@@ -290,7 +290,7 @@ the user's access as described above:
         "kind": "ConfigurationPolicy",
         "name": "etcd-encryption",
         "namespace": "",
-        // Only shown if `include_spec=true`
+        // Only shown with `?include_spec`
         "spec": {}
       },
       "event": {
@@ -319,6 +319,7 @@ the user's access as described above:
         "kind": "ConfigurationPolicy",
         "name": "etcd-encryption",
         "namespace": "",
+        // Only shown with `?include_spec`
         "spec": {}
       },
       "event": {
