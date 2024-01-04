@@ -89,19 +89,14 @@ string/text column, then those could be used instead of a substring query.
 | api_group | a string column of the policy group (e.g. policy.open-cluster-management.io)                                                       |
 | name      | a string column for the name of the policy                                                                                         |
 | namespace | an optional string column for the namespace of the policy. This will not be set for native OCM policies to avoid data duplication. |
-| spec      | a string column of the spec field of the replicated policy as JSON (e.g. ConfigurationPolicy after Hub templates)                  |
-| spec_hash | a string column of a SHA1 hash of the spec field                                                                                   |
+| spec      | a JSONB column of the spec field of the replicated policy as JSON (e.g. ConfigurationPolicy after Hub templates)                   |
 
-There would be a combined unique constraint on the `kind`, `api_group`, `name`, `parent_policy_id`, and `spec_hash`
-columns. `spec_hash` would have an index as well. Note that `parent_policy_id` is optional so that this schema work can
-allow non-OCM policy results to be added.
+There would be a combined unique constraint on the `kind`, `api_group`, `name`, `parent_policy_id`, and `spec` columns.
+`spec` would have an index as well.
 
 The `spec` of the policy (e.g. `ConfigurationPolicy`) is stored for a customer to audit the policy contents that
-generated a compliance event. This would be stored as JSON with no new lines and no optional spaces for size efficiency.
-
-The `spec_hash` field would be used for efficient querying to find the `policy_id` value for a `compliance_events` table
-entry. It is also an efficient way to determine uniqueness of a spec for data deduplication in this table. The SHA1 hash
-would be calculated from the `spec` column value.
+generated a compliance event. This would be stored as JSONB for uniqueness constraints capabilities in Postgres and
+efficient search.
 
 ##### compliance_events Table
 
@@ -114,7 +109,7 @@ would be calculated from the `spec` column value.
 | compliance       | a string column of a compliance state name (i.e. Compliant); this will have an index      |
 | message          | a string column with the compliance message                                               |
 | timestamp        | a UTC date time column for the timestamp of the compliance event; this will have an index |
-| metadata         | a JSON (or string in SQLite) column with additional metadata                              |
+| metadata         | a JSONB column with additional metadata                                                   |
 
 The `metadata` field would be empty for now but could be eventually used to store information such as the object diff of
 an inform `ConfigurationPolicy` without altering the database schema. This field is not designed for filtering when
@@ -195,11 +190,30 @@ The HTTP endpoint would be at `/api/v1/compliance-events` and would accept a `PO
     "apiGroup": "policy.open-cluster-management.io",
     "kind": "ConfigurationPolicy",
     "name": "etcd-encryption",
-    // Optional if specHash is provided and an entry already exists for that spec hash in the database.
-    // This approach saves on network bandwidth since the spec can be quite large.
-    "spec": {},
-    // Optional if spec is provided
-    "specHash": {}
+    "spec": {
+      "remediationAction": "enforce"
+    }
+  },
+  "event": {
+    "compliance": "NonCompliant",
+    "message": "configmaps [app-data] not found in namespace default",
+    "timestamp": "2023-07-19T18:25:43.511Z",
+    // Optional
+    "metadata": {}
+  }
+}
+```
+
+To save on network bandwidth and resource utilization, the alternative format is accepted if the database IDs are known:
+
+```json
+{
+  "cluster": { "name": "cluster1" },
+  "parent_policy": {
+    "id": "1"
+  },
+  "policy": {
+    "id": "2"
   },
   "event": {
     "compliance": "NonCompliant",
@@ -258,10 +272,12 @@ the user's access as described above:
 {
   "data": [
     {
+      "id": 2, // Internally, this is the ID of the compliance_events table to allow a GET query of a particular compliance event.
       "cluster": {
         "name": "cluster1"
       },
       "parent_policy": {
+        "id": 3,
         "name": "etcd-encryption",
         "namespace": "policies",
         "catageories": ["CM Configuration Management"],
@@ -270,6 +286,7 @@ the user's access as described above:
       },
       "policy": {
         "apiGroup": "policy.open-cluster-management.io",
+        "id": 2,
         "kind": "ConfigurationPolicy",
         "name": "etcd-encryption",
         "namespace": "",
@@ -284,10 +301,12 @@ the user's access as described above:
       }
     },
     {
+      "id": 1,
       "cluster": {
         "name": "cluster2"
       },
       "parent_policy": {
+        "id": 2,
         "name": "etcd-encryption",
         "namespace": "policies",
         "catageories": [],
@@ -296,11 +315,11 @@ the user's access as described above:
       },
       "policy": {
         "apiGroup": "policy.open-cluster-management.io",
+        "id": 4,
         "kind": "ConfigurationPolicy",
         "name": "etcd-encryption",
         "namespace": "",
-        "spec": {},
-        "specHash": {}
+        "spec": {}
       },
       "event": {
         "compliance": "Compliant",
