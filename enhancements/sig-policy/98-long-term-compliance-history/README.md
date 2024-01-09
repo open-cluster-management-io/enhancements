@@ -237,33 +237,39 @@ a user per request. We can utilize the
 [github.com/stolostron/rbac-api-utils](https://github.com/stolostron/rbac-api-utils/blob/159deac7d398c3470ae730c3fbb8ffbbcca1ac5a/pkg/rbac/rbac.go#L187)
 library to do this.
 
-The following optional query parameters would be accepted on this HTTP endpoint:
+The following optional query parameters would be accepted on this HTTP endpoint. Note that those without descriptions
+just filter on the field it references. Additionally, multiple values can be specified with commas (e.g.
+`?cluster.name=cluster1,cluster2`) for "or" filtering. Commas can be escaped with `\,` if necessary.
 
-- cluster - the name of the cluster to filter on. Multiple can be provided with `?cluster=local-cluster&cluster=managed`
-  syntax.
-- parent_policy_name - the name of the parent policy (i.e. a `Policy`) of the policy (e.g. a `ConfigurationPolicy`) that
-  generated the compliance event to filter on.
-- parent_policy_category - a category name of the parent policy (e.g. `CM Configuration Management`) to filter on.
-  Multiple can be provided with
-  `?parent_policy_category=CM%20Configuration%20Management&parent_policy_category=CF%20Configuration` syntax.
-- parent_policy_control - a control name of the parent policy (e.g. `Baseline Configuration`) to filter on. Multiple can
-  be provided with `?parent_policy_control=Baseline%20Configuration&parent_policy_control=Other%20Configuration` syntax.
-- parent_policy_standard - a standard name of the parent policy (e.g. `NIST SP 800-53`) to filter on. Multiple can be
-  provided with `?parent_policy_standard=NIST%20SP%20800-53&parent_policy_standard=NIST%20SP%20231-41` syntax.
-- policy - the name of the policy (e.g. a `ConfigurationPolicy`) that generated the compliance event to filter on.
-- policy_kind - the kind of the policy (e.g. `ConfigurationPolicy`) that generated the compliance event to filter on.
-- policy_api_group - the `apiGroup` of the policy (e.g. `policy.open-cluster-management.io`) that generated the
-  compliance event to filter on.
-- message_includes - a filter for compliance messages that include the following substring.
+- cluster.cluster_id
+- cluster.name
+- direction - the direction to sort by. This defaults to `desc`. It can be `asc` or `desc`.
+- event.compliance
+- event.message
+- event.message_includes - a filter for compliance messages that include the following substring.
+- event.reported_by
+- event.timestamp
+- event.timestamp_after - an RFC 3339 timestamp to indicate only compliance events after this time should be shown.
+- event.timestamp_before - an RFC 3339 timestamp to indicate only compliance events before this time should be shown.
+- id
 - include_spec - a flag to include the policy's spec in the return value. This is not set by default.
-- before - an ISO-8601 timestamp to indicate only compliance events before this time should be shown.
-- after - an ISO-8601 timestamp to indicate only compliance events after this time should be shown.
 - page - the page number in the query. This defaults to 1.
+- parent_policy.categories
+- parent_policy.controls
+- parent_policy.id
+- parent_policy.name
+- parent_policy.namespace
+- parent_policy.standards
 - per_page - the number of compliance events returned per page. This defaults to 20 and maxes out at 100.
+- policy.apiGroup
+- policy.id
+- policy.kind
+- policy.name
+- policy.namespace
+- policy.severity
 - sort - the field to sort by. This defaults to `event.timestamp`. All fields except `policy.spec` and `event.metadata`
   are sortable by using dot notation. To specify multiple sort options, use commas such as
   `?sort=policy.name,policy.namespace`.
-- direction - the direction to sort by. This defaults to `desc`. It can be `asc` or `desc`.
 
 The output would look as follows and be sorted by timestamps in descending order. The content would be filtered based on
 the user's access as described above:
