@@ -238,8 +238,9 @@ a user per request. We can utilize the
 library to do this.
 
 The following optional query parameters would be accepted on this HTTP endpoint. Note that those without descriptions
-just filter on the field it references. Additionally, multiple values can be specified with commas (e.g.
-`?cluster.name=cluster1,cluster2`) for "or" filtering. Commas can be escaped with `\,` if necessary.
+just filter on the field it references. These fields also support an empty value to filter for no value (i.e. null).
+Additionally, multiple values can be specified with commas (e.g. `?cluster.name=cluster1,cluster2`) for "or" filtering.
+Commas can be escaped with `\,` if necessary.
 
 - cluster.cluster_id
 - cluster.name
@@ -249,7 +250,7 @@ just filter on the field it references. Additionally, multiple values can be spe
 - event.message_includes - a filter for compliance messages that include the following substring. Only a single value is
   supported.
 - event.message_like - a SQL "LIKE" filter for compliance messages. The percent sign `%` represents a wildcard of zero
-  or more characters. The underscore sign `*` represents a wildcard of a single character. For example
+  or more characters. The underscore sign `_` represents a wildcard of a single character. For example
   `%configmaps [%my-configmap%]%` would match any configuration policy compliance message that refers to the configmap
   `my-configmap`.
 - event.reported_by
