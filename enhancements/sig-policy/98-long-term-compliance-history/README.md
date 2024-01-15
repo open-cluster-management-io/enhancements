@@ -246,7 +246,12 @@ just filter on the field it references. Additionally, multiple values can be spe
 - direction - the direction to sort by. This defaults to `desc`. It can be `asc` or `desc`.
 - event.compliance
 - event.message
-- event.message_includes - a filter for compliance messages that include the following substring.
+- event.message_includes - a filter for compliance messages that include the following substring. Only a single value is
+  supported.
+- event.message_like - a SQL "LIKE" filter for compliance messages. The percent sign `%` represents a wildcard of zero
+  or more characters. The underscore sign `*` represents a wildcard of a single character. For example
+  `%configmaps [%my-configmap%]%` would match any configuration policy compliance message that refers to the configmap
+  `my-configmap`.
 - event.reported_by
 - event.timestamp
 - event.timestamp_after - an RFC 3339 timestamp to indicate only compliance events after this time should be shown.
