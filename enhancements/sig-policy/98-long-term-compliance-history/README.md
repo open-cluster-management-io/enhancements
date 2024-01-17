@@ -388,11 +388,6 @@ before it deletes the policy template (e.g. ConfigurationPolicy). A finalizer on
 considered but it adds complexity with little additional value since anyone with access to delete a policy can remove
 the finalizer.
 
-There is an existing compliance history in the replicated `Policy` objects on the hub, though it is potentially
-incomplete due to the shortcomings previously mentioned. If a user wants to import that data in the new compliance event
-store, a script will be provided that will add entries from the replicated `Policy` objects' `status.details` field on
-the hub. In this case, the `spec` would be set to `unknown`.
-
 ##### Managed Cluster Phase 2 - Add Resiliency
 
 ![Phase 2 Diagram](phase-2.jpeg)
@@ -482,10 +477,6 @@ to make auditing easier.
 As a policy user, I require that compliance history events contain additional metadata about the violation such as the
 diff between what is declared in the policy and what is on the cluster to know what the exact violation was. This will
 help in forensic investigations after a breach has occurred of a managed cluster.
-
-#### Story 5
-
-As a policy user, I'd like to import my existing compliance history to the new compliance events database.
 
 ### Implementation Details/Notes/Constraints [optional]
 
