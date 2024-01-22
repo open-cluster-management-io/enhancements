@@ -374,25 +374,19 @@ addressed in phase 2.
 The Policy Propagator will add entries to the `policies` and `parent_policies` tables as it creates replicated policies.
 It will also set the annotations of `policy.open-cluster-management.io/policy-compliance-db-id` and
 `policy.open-cluster-management.io/parent-policy-compliance-db-id` on each replicated policy template (e.g.
-`ConfigurationPolicy`) entry within the replicated policy to match what was inserted in the database. Additionally,
-it'll set the `policy.open-cluster-management.io/policy-spec-sha1` set to the hex format of the SHA1 of the `spec` of
-the policy (e.g. `ConfigurationPolicy`). This way, the Status Sync controller won't need to provide as much data when
-recording a compliance event. Reducing bandwidth utilization to the hub is helpful in edge scenarios. With this in mind,
-the current compliance events sent by the controllers will set the database related annotations from the policy being
-evaluated. With this additional information, the Status Sync controller can avoid sending the whole spec, policy, and
-parent policy in the`/api/v1/compliance-events` `POST` request. This also reduces the chance of race conditions where a
-compliance event is sent and the policy is updated before the compliance event is recorded in the database. The rest of
-the data required for the `POST` request can be found in the Kuberenetes `Event` object.
+`ConfigurationPolicy`) entry within the replicated policy to match what was inserted in the database. This way, the
+Status Sync controller won't need to provide as much data when recording a compliance event. Reducing bandwidth
+utilization to the hub is helpful in edge scenarios. With this in mind, the current compliance events sent by the
+controllers will set the database related annotations from the policy being evaluated. With this additional information,
+the Status Sync controller can avoid sending the whole spec, policy, and parent policy in the`/api/v1/compliance-events`
+`POST` request. This also reduces the chance of race conditions where a compliance event is sent and the policy is
+updated before the compliance event is recorded in the database. The rest of the data required for the `POST` request
+can be found in the Kuberenetes `Event` object.
 
 To record a compliance event when a policy is deleted, the Spec Sync controller will record these compliance events
 before it deletes the policy template (e.g. ConfigurationPolicy). A finalizer on the policy template objects was
 considered but it adds complexity with little additional value since anyone with access to delete a policy can remove
 the finalizer.
-
-There is an existing compliance history in the replicated `Policy` objects on the hub, though it is potentially
-incomplete due to the shortcomings previously mentioned. If a user wants to import that data in the new compliance event
-store, a script will be provided that will add entries from the replicated `Policy` objects' `status.details` field on
-the hub. In this case, the `spec` would be set to `unknown`.
 
 ##### Managed Cluster Phase 2 - Add Resiliency
 
@@ -483,10 +477,6 @@ to make auditing easier.
 As a policy user, I require that compliance history events contain additional metadata about the violation such as the
 diff between what is declared in the policy and what is on the cluster to know what the exact violation was. This will
 help in forensic investigations after a breach has occurred of a managed cluster.
-
-#### Story 5
-
-As a policy user, I'd like to import my existing compliance history to the new compliance events database.
 
 ### Implementation Details/Notes/Constraints [optional]
 
