@@ -286,7 +286,8 @@ the user's access as described above:
     {
       "id": 2, // Internally, this is the ID of the compliance_events table to allow a GET query of a particular compliance event.
       "cluster": {
-        "name": "cluster1"
+        "name": "cluster1",
+        "cluster_id": "215ce184-8dee-4cab-b99b-1f8f29dff611"
       },
       "parent_policy": {
         "id": 3,
@@ -315,7 +316,8 @@ the user's access as described above:
     {
       "id": 1,
       "cluster": {
-        "name": "cluster2"
+        "name": "cluster2",
+        "cluster_id": "415ce234-8dee-4cab-b99b-1f8f29dff461"
       },
       "parent_policy": {
         "id": 2,
