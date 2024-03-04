@@ -2,9 +2,13 @@ title: policy-placement-strategy
 authors:
   - "@dhaiducek"
 reviewers:
-  - TBD
+  - "@mprahl"
+  - "@gparvin"
+  - "@melserngawy"
+  - "@imiller0"
 approvers:
-  - TBD
+  - "@mprahl"
+  - "@gparvin"
 creation-date: 2023-08-03
-last-updated: 2023-09-11
+last-updated: 2023-10-02
 status: implementable
