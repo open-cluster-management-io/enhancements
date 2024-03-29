@@ -80,6 +80,19 @@ filters on theses columns would check for the substring surrounded by quotes. Fo
 `SELECT * FROM parent_policies WHERE categories LIKE '%"my category"%'`. If the database supports JSON functions on a
 string/text column, then those could be used instead of a substring query.
 
+##### specs Table
+
+| Column | Description                                                                                                      |
+| ------ | ---------------------------------------------------------------------------------------------------------------- |
+| id     | an internal primary key                                                                                          |
+| spec   | a JSONB column of the spec field of the replicated policy as JSON (e.g. ConfigurationPolicy after Hub templates) |
+
+There is an exclude on `spec` using a hash index to prevent duplicate values.
+
+The `spec` of the policy (e.g. `ConfigurationPolicy`) is stored for a customer to audit the policy contents that
+generated a compliance event. This would be stored as JSONB for uniqueness constraints capabilities in Postgres and
+efficient search.
+
 ##### policies Table
 
 | Column    | Description                                                                                                                        |
@@ -89,10 +102,10 @@ string/text column, then those could be used instead of a substring query.
 | api_group | a string column of the policy group (e.g. policy.open-cluster-management.io)                                                       |
 | name      | a string column for the name of the policy                                                                                         |
 | namespace | an optional string column for the namespace of the policy. This will not be set for native OCM policies to avoid data duplication. |
-| spec      | a JSONB column of the spec field of the replicated policy as JSON (e.g. ConfigurationPolicy after Hub templates)                   |
+| spec_id   | a foreign key to the `id` column in the `specs` table                                                                              |
 
-There would be a combined unique constraint on the `kind`, `api_group`, `name`, `parent_policy_id`, and `spec` columns.
-`spec` would have an index as well.
+There would be a combined unique constraint on the `kind`, `api_group`, `name`, `namespace`, `parent_policy_id`, and
+`spec_id` columns.
 
 The `spec` of the policy (e.g. `ConfigurationPolicy`) is stored for a customer to audit the policy contents that
 generated a compliance event. This would be stored as JSONB for uniqueness constraints capabilities in Postgres and
@@ -108,8 +121,11 @@ efficient search.
 | parent_policy_id | an optional foreign key to the parent policy on the hub in the parent_policies table      |
 | compliance       | a string column of a compliance state name (i.e. Compliant); this will have an index      |
 | message          | a string column with the compliance message                                               |
+| message_hash     | a string column with the SHA1 of the compliance message for a unique constraint           |
 | timestamp        | a UTC date time column for the timestamp of the compliance event; this will have an index |
 | metadata         | a JSONB column with additional metadata                                                   |
+
+Note that `message_hash` only exists to workaround size limitations for rows in a unique constraint.
 
 The `metadata` field would be empty for now but could be eventually used to store information such as the object diff of
 an inform `ConfigurationPolicy` without altering the database schema. This field is not designed for filtering when
