@@ -47,9 +47,10 @@ difficult with current solutions.
    Subscription, as well as the associated Deployments.
 4. The policy should report when the CatalogSource for the operator is unhealthy. It should be
    configurable whether this will cause the policy to become NonCompliant.
-5. What happens when the policy is deleted should be configurable: the operator might be deleted, or
-   the operator and its CRDs might be deleted, or nothing might be deleted. By default, only the
-   Subscription and CSVs will be deleted (matching the suggestion from OLM).
+5. It should be possible to remove an operator installation with a policy. Exactly which resources
+   are removed should be configurable to match what the user wants: by default only the Subscription
+   and ClusterServiceVersion will be removed (matching the suggestion from OLM) but additionally
+   things like the CustomResourceDefinitions or InstallPlans could be removed.
 
 ### Non-Goals
 
@@ -104,7 +105,6 @@ spec:
     clusterServiceVersions: Delete
     installPlans: Keep
     customResourceDefinitions: Keep
-    apiServiceDefinitions: Keep
   statusConfig:
     catalogSourceUnhealthy: StatusMessageOnly
     deploymentsUnavailable: NonCompliant
@@ -127,16 +127,19 @@ optionally matching one of the specified versions), then the policy will be mark
 
 The optional `spec.operatorGroup` section defines an
 [OperatorGroup](https://github.com/operator-framework/api/blob/master/crds/operators.coreos.com_operatorgroups.yaml).
-If not specified, and if the operator supports this InstallMode, then it will ensure that an
+If not specified, the controller will check for an existing OperatorGroup in the namespace that can
+be used. If none exists, it will create an
 [AllNamespaces](https://olm.operatorframework.io/docs/advanced-tasks/operator-scoping-with-operatorgroups/#targetnamespaces-and-their-relationship-to-installmodes)
-OperatorGroup exists in the namespace of the subscription. The operatorGroup is not checked in
-"mustnothave" mode.
+OperatorGroup with a generated name.
 
 The `spec.subscription` section includes the fields from the spec of an [OLM
 Subscription](https://github.com/operator-framework/api/blob/master/crds/operators.coreos.com_subscriptions.yaml).
 For more information on the `config` field, see:
 https://github.com/operator-framework/api/blob/v0.17.3/pkg/operators/v1alpha1/subscription_types.go#L42.
-The `installPlanApproval` field is optional. If the policy is in `enforce` mode and the allowed CSVs
+We plan to make many of these fields optional, the controller can fill in required Subscription
+fields based on specified defaults in the operator's PackageManifest. For example, this allows the
+default channel to possibly be different on different clusters, reflecting the default channel in
+each cluster's catalog. Note: if the policy is in `enforce` mode and the allowed CSVs
 are restricted as specified below, then the `installPlanApproval` field on the Subscription will
 always be Manual, regardless of the setting here.
 
@@ -146,11 +149,11 @@ Compliant when the policy is in `inform` mode, and which InstallPlans can be app
 NonCompliant. Only exact matches are considered. If the list is unset or empty, then any version on
 the cluster will be considered a match.
 
-The `spec.removalBehavior` field allows configuration of what may be removed by the controller. It
-has no effect when the policy is in "inform" mode. When the policy is in "musthave" mode, and the
-policy is deleted, then controller will remove the types marked for deletion here. In "mustnothave"
-mode, the specified types will be removed if they appear, in order to drive the cluster towards
-compliance. Each kind that might be deleted should support `Keep` and `Delete`, and can potentially
+The `spec.removalBehavior` field allows configuration of what might be removed by the controller
+when the policy is in "mustnothave" mode. It has no effect when the policy is in "musthave" mode.
+Resources that would not be removed in `enforce` mode will not cause NonCompliance when the policy
+is in `inform` mode. Status messages should reflect that those resources were kept because of the
+configuration of the policy. Each kind here will support `Keep` and `Delete`, and can potentially
 have additional values specific to the resources in question. For example, the OperatorGroup should
 likely only be removed if it isn't being used by another subscription. 
 
@@ -167,64 +170,92 @@ could be added in the future.
 status:
   compliant: Compliant
   conditions:
-    - lastTransitionTime: "2023-07-14T07:34:28Z"
-      message: All operator Deployments have their minimum availability.
-      reason: DeploymentsAvailable
-      status: "True"
-      type: Compliant
-    - lastTransitionTime: "2023-07-11T14:58:54Z"
-      message: all available catalogsources are healthy
-      reason: AllCatalogSourcesHealthy
-      status: "False"
+    - lastTransitionTime: '2024-04-09T14:41:44Z'
+      message: CatalogSource was found
+      reason: CatalogSourcesFound
+      status: 'False'
       type: CatalogSourcesUnhealthy
-    - lastTransitionTime: "2023-07-11T14:59:06Z"
-      reason: RequiresApproval
-      status: "True"
-      type: InstallPlanPending
-    - lastTransitionTime: "2023-07-14T07:34:28Z"
-      message: All operator Deployments have their minimum availability.
-      reason: MinimumReplicasAvailable
-      status: "True"
-      type: DeploymentsAvailable
+    - lastTransitionTime: '2024-04-09T14:42:11Z'
+      message: ClusterServiceVersion - install strategy completed with no errors
+      reason: InstallSucceeded
+      status: 'True'
+      type: ClusterServiceVersionCompliant
+    - lastTransitionTime: '2024-04-09T14:42:11Z'
+      message: >-
+        Compliant; the policy spec is valid, the policy does not specify an
+        OperatorGroup but one already exists in the namespace - assuming that
+        OperatorGroup is correct, the Subscription matches what is required by
+        the policy, no InstallPlans requiring approval were found,
+        ClusterServiceVersion - install strategy completed with no errors, All
+        operator Deployments have their minimum availability, CatalogSource was
+        found
+      reason: Compliant
+      status: 'True'
+      type: Compliant
+    - lastTransitionTime: '2024-04-09T14:42:10Z'
+      message: All operator Deployments have their minimum availability
+      reason: DeploymentsAvailable
+      status: 'True'
+      type: DeploymentCompliant
+    ...
   relatedObjects:
     - compliant: Compliant
       object:
         apiVersion: operators.coreos.com/v1alpha1
-        kind: Subscription
+        kind: CatalogSource
         metadata:
-          name: my-operator
-          namespace: own-namespace
-      reason: Resource created
-    - compliant: NonCompliant
+          name: redhat-operators
+          namespace: openshift-marketplace
+      reason: Resource found as expected
+      cluster: local-cluster
+    - compliant: Compliant
       object:
         apiVersion: operators.coreos.com/v1alpha1
-        kind: InstallPlan
+        kind: ClusterServiceVersion
         metadata:
-          name: install-ww7c2
-          namespace: own-namespace
-      reason: InstallPlan not approved
+          name: quay-operator.v3.10.4
+          namespace: openshift-operators
+      properties:
+        uid: 0fdb6c2d-f37a-4bf8-be0a-a6ffbd6a397d
+      reason: InstallSucceeded
+      cluster: local-cluster
     - compliant: Compliant
       object:
         apiVersion: apps/v1
         kind: Deployment
         metadata:
-          name: my-operator
-          namespace: own-namespace
+          name: quay-operator.v3.10.4
+          namespace: openshift-operators
+      properties:
+        uid: 5f390b4b-4576-4f59-a89c-46c35a6d64d8
       reason: Deployment Available
+      cluster: local-cluster
+    - compliant: Compliant
+      object:
+        apiVersion: operators.coreos.com/v1alpha1
+        kind: Subscription
+        metadata:
+          name: quay-operator
+          namespace: openshift-operators
+      properties:
+        createdByPolicy: true
+        uid: 8f8d438b-f62a-4966-ad1e-67edf1181c58
+      reason: Resource found as expected
+      cluster: local-cluster
     ...
 ```
 
 As required for all policies, there is a `status.compliant` field for the overall status. The status
 will also have a `conditions` section, which includes the conditions from the Subscription, such as
-"InstallPlanPending", as well a condition "DeploymentsAvailable" which will reflect whether all of
-the related Deployments are available. It will also include a condition of type "Compliant", which
+"CatalogSourcesUnhealthy", as well a condition "DeploymentCompliant" which will reflect whether all 
+of the related Deployments are available. It also includes a condition of type "Compliant", which
 has a status of "True" when the policy is Compliant. The reason and message will reflect the cause
 of the most recent compliance event that was emitted.
 
 There is also a `status.relatedObjects` for the OLM objects (CatalogSource, Subscription,
-InstallPlan, etc) related to this operator installation, and the Deployments and ServiceAccounts
-listed in the OperatorCondition. Each of those related objects has a `compliant` field, but a
-NonCompliant object will not necessarily cause the policy to become NonCompliant: for example if the
+InstallPlan, etc) related to this operator installation, and the Deployment(s) for the operator. 
+Each of those related objects has a `compliant` field, but it should be noted that a NonCompliant
+object will not necessarily cause the policy to become NonCompliant: for example if the
 CatalogSource is unhealthy, `spec.statusConfig.catalogSourceUnhealthy` must be considered. The
 `reason` associated with each object is a brief human-readable explanation for the value of the
 `compliant` field. This matches the conventions of ConfigurationPolicy.
@@ -241,32 +272,39 @@ action: ComplianceStateUpdate
 apiVersion: v1
 count: 1
 eventTime: null
-firstTimestamp: "2023-07-14T07:34:28Z"
+firstTimestamp: "2024-04-09T14:42:11Z"
 involvedObject:
   apiVersion: policy.open-cluster-management.io/v1
   kind: Policy
-  name: policies.my-operator
+  name: open-cluster-management-global-set.quay-op-oppolicy
   namespace: local-cluster
+  uid: 900ea3bd-7efd-4272-9031-482c566fb99a
 kind: Event
-lastTimestamp: "2023-07-14T07:34:28Z"
-message: >-
-  Compliant; all operator deployments have their minimum availability, all available catalogsources 
-  are healthy, an installplan is pending but not causing noncompliance.
+lastTimestamp: "2024-04-09T14:42:11Z"
+message: Compliant; the policy spec is valid, the policy does not specify an OperatorGroup
+  but one already exists in the namespace - assuming that OperatorGroup is correct,
+  the Subscription matches what is required by the policy, no InstallPlans requiring
+  approval were found, ClusterServiceVersion - install strategy completed with no
+  errors, All operator Deployments have their minimum availability, CatalogSource
+  was found
 metadata:
-  creationTimestamp: "2023-07-14T07:34:28Z"
-  name: policies.my-operator.1771b8bf88adf1ec
+  creationTimestamp: "2024-04-09T14:42:11Z"
+  name: open-cluster-management-global-set.quay-op-oppolicy.17c4a3af2d7bd804
   namespace: local-cluster
-reason: 'policy: local-cluster/my-operator'
+  resourceVersion: "155720"
+  uid: 122b274e-a364-4d40-b45a-c1f3b00ade9c
+reason: 'policy: local-cluster/quay-operator'
 related:
   apiVersion: policy.open-cluster-management.io/v1beta1
   kind: OperatorPolicy
-  name: my-operator
+  name: quay-operator
   namespace: local-cluster
-reportingComponent: operator-policy-controller
-reportingInstance: config-policy-controller-7488748b9d-kkvvw
+  uid: 74eb02ff-2d23-41fa-a3c6-447be0712564
+reportingComponent: configuration-policy-controller
+reportingInstance: config-policy-controller-6b7f78b87-q697c
 source:
-  component: operator-policy-controller
-  host: config-policy-controller-7488748b9d-kkvvw
+  component: configuration-policy-controller
+  host: config-policy-controller-6b7f78b87-q697c
 type: Normal
 ```
 
@@ -447,9 +485,8 @@ spec:
 
 #### Story 6
 
-As a policy user, I want an operator that I installed via a policy to be cleaned up when I remove
-the policy from the cluster. The types that I specify in the policy should not be present when the
-policy deletion is finalized.
+As a policy user, I want to ensure a certain operator is not on the cluster. When enforced, objects
+should be deleted based on what I specify in `spec.removalBehavior`.
 
 ```yaml
 apiVersion: policy.open-cluster-management.io/v1beta1
@@ -459,7 +496,7 @@ metadata:
 spec:
   remediationAction: enforce
   severity: medium
-  complianceType: musthave
+  complianceType: mustnothave
   subscription:
     channel: stable
     name: strimzi-kafka-operator
@@ -473,7 +510,6 @@ spec:
     clusterServiceVersions: Delete
     installPlans: Keep
     customResourceDefinitions: Keep
-    apiServiceDefinitions: Keep
 ```
 
 It should be noted that the `removalBehavior` specified here is just the default setting made
@@ -508,17 +544,22 @@ spec:
     clusterServiceVersions: Delete
     installPlans: Keep
     customResourceDefinitions: Keep
-    apiServiceDefinitions: Keep
 ```
 
 ### Implementation Details/Notes/Constraints [optional]
 
 #### Implementation of Pruning
 
-In order to prune objects when the policy is deleted, the policy will need finalizers on the managed
-cluster. Care should be taken to ensure that the finalizers will be cleaned up properly when the
-controller is uninstalled. Deleting CRDs will be limited to the objects listed as "owned" in the
-bundle.
+Originally, we planned to use finalizers to remove the operator when the policy is deleted. But,
+with some more experience with that feature in ConfigurationPolicy, we believe it is not the most
+reliable method. It is not obvious that removing a policy should remove those resources; it requires
+some policy expertise. Additionally, because policies are distributed through Placements, there are
+many potential ways the policy could be removed from a cluster unexpectedly.
+
+We are currently only planning a "mustnothave" mode, simliar to what was originally released for
+ConfigurationPolicy. If a user wants to remove the operator, they can switch the policy to that
+mode, and wait for it to become compliant. This also allows for a better reporting of this status:
+when a policy is deleted, how can it report if a resource it is trying to delete gets stuck?
 
 #### Status and Compliance Event
 
@@ -536,38 +577,15 @@ specified by any or all of those operators. It should also be noted that if *any
 the namespace have `installPlanApproval: Manual`, then *no* InstallPlans in the namespace will be
 automatically approved by OLM.
 
-Therefore, approving an InstallPlan will not be as simple as looking up one relevant OperatorPolicy
-and checking its rules for approval. *Every* OperatorPolicy that works on that namespace on the
-cluster must be checked, and the planned resources must be matched to the relevant policies in order
-to determine whether it should be approved. If any planned resources are not specifically approved
-by an OperatorPolicy (for example, if they are the result of a Subscription created by another
-process), then the InstallPlan should not be approved.
-
-A potential way to track resources to OperatorPolicies is to use the `status.bundleLookups` list in
-the InstallPlan. In each of these, there is an `identifier` field which matches a CSV name, and a
-`properties` field which is an embedded JSON that includes information identifying the package's
-name. Here's an elided example:
-```yaml
-status:
-  bundleLookups:
-  - catalogSourceRef:
-      name: community-operators
-      namespace: openshift-marketplace
-    identifier: etcdoperator.v0.9.4
-    properties: '{"properties":[...,{"type":"olm.package","value":{"packageName":"etcd","version":"0.9.4"}}]}'
-    replaces: etcdoperator.v0.9.2
-```
-
-That `packageName` should match a Subscription's `spec.name` (which conventionally is the same as
-its `metadata.name`, and *will* always be the same when created by an OperatorPolicy).
+Initially, we plan to only approve InstallPlans dealing with one operator: if an OperatorPolicy
+exists for that operator, and the version to be installed is allowed by that policy's `versions`
+setting, then that InstallPlan will be approved. If an InstallPlan is created for multiple operator
+installations, it will not be approved by this controller, and it might cause an OperatorPolicy to
+become NonCompliant.
 
 ### Risks and Mitigation
 
 ### Open Questions [optional]
-
-1. Is making `spec.operatorGroup` optional, and defaulting to an AllNamespaces OperatorGroup, the
-   best option?
-2. Could/should there be default catalogs, so that users only need to specify the operator name?
 
 ### Test Plan
 
