@@ -92,13 +92,13 @@ spec:
     channel: stable
     name: my-operator
     namespace: own-namespace
-    installPlanApproval: Automatic # may be overridden to Manual by other settings
     source: my-catalog
     sourceNamespace: my-catalog-namespace
     startingCSV: my-operator.v0.1.0 # optional
   versions:
     - my-operator.v0.1.1
     - my-operator.v0.2.0
+  upgradeApproval: Automatic # or Never
   removalBehavior:
     operatorGroups: DeleteIfUnused
     subscriptions: Delete
@@ -139,18 +139,32 @@ https://github.com/operator-framework/api/blob/v0.17.3/pkg/operators/v1alpha1/su
 We plan to make many of these fields optional, the controller can fill in required Subscription
 fields based on specified defaults in the operator's PackageManifest. For example, this allows the
 default channel to possibly be different on different clusters, reflecting the default channel in
-each cluster's catalog. Note: if the policy is in `enforce` mode and the allowed CSVs
-are restricted as specified below, then the `installPlanApproval` field on the Subscription will
-always be Manual, regardless of the setting here.
+each cluster's catalog. It is not allowed to set `spec.subscription.installPlanApproval`; the policy
+will determine and set a value for that field based on the policy's `spec.versions` and
+`spec.updgradeApproval` settings.
 
 In "musthave" mode, the `spec.versions` list specifies what installed versions are considered
 Compliant when the policy is in `inform` mode, and which InstallPlans can be approved when in
 `enforce` mode. Conversely, in "mustnothave" mode, this list specifies which versions are considered
 NonCompliant. Only exact matches are considered. If the list is unset or empty, then any version on
-the cluster will be considered a match.
+the cluster will be considered a match. If `spec.subscription.startingCSV` is set, that version can
+be approved, even if it is not in this list.
+
+The `spec.upgradeApproval` field specifies whether an enforced "musthave" policy will approve any
+upgrade InstallPlans for the operator. *It has no effect when the policy is in "mustnothave" mode*.
+This only affects InstallPlans for operators that are already installed on the cluster,
+which upgrade or replace the operator; initial InstallPlans for an operator can be approved
+regardless of this flag. Allowed values here include `Automatic` and `None`. If not set, the
+controller will behave as if it were set to `Automatic`.
+
+Only when the policy is operating as if `spec.upgradeApproval` was set to `Automatic`, and the
+`spec.versions` field is empty (allowing all versions of the operator) will the subscription
+managed by this policy have its `installPlanApproval` field set to `Automatic`. Otherwise, the field
+will be set to `Manual`, but it should be noted that this controller will approve InstallPlans
+matching the desired versions automatically.
 
 The `spec.removalBehavior` field allows configuration of what might be removed by the controller
-when the policy is in "mustnothave" mode. It has no effect when the policy is in "musthave" mode.
+when the policy is in "mustnothave" mode. *It has no effect when the policy is in "musthave" mode.*
 Resources that would not be removed in `enforce` mode will not cause NonCompliance when the policy
 is in `inform` mode. Status messages should reflect that those resources were kept because of the
 configuration of the policy. Each kind here will support `Keep` and `Delete`, and can potentially
