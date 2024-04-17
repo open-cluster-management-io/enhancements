@@ -67,8 +67,10 @@ difficult with current solutions.
 
 ### OperatorPolicy Syntax
 
+Note: See Implementation Details for the previous `v1beta1` version.
+
 ```yaml
-apiVersion: policy.open-cluster-management.io/v1beta1
+apiVersion: policy.open-cluster-management.io/v1beta2
 kind: OperatorPolicy
 metadata:
   name: my-operator
@@ -141,7 +143,7 @@ fields based on specified defaults in the operator's PackageManifest. For exampl
 default channel to possibly be different on different clusters, reflecting the default channel in
 each cluster's catalog. It is not allowed to set `spec.subscription.installPlanApproval`; the policy
 will determine and set a value for that field based on the policy's `spec.versions` and
-`spec.updgradeApproval` settings.
+`spec.upgradeApproval` settings.
 
 In "musthave" mode, the `spec.versions` list specifies what installed versions are considered
 Compliant when the policy is in `inform` mode, and which InstallPlans can be approved when in
@@ -154,14 +156,13 @@ The `spec.upgradeApproval` field specifies whether an enforced "musthave" policy
 upgrade InstallPlans for the operator. *It has no effect when the policy is in "mustnothave" mode*.
 This only affects InstallPlans for operators that are already installed on the cluster,
 which upgrade or replace the operator; initial InstallPlans for an operator can be approved
-regardless of this flag. Allowed values here include `Automatic` and `None`. If not set, the
-controller will behave as if it were set to `Automatic`.
+regardless of this flag. Allowed values here include `Automatic` and `None`.
 
-Only when the policy is operating as if `spec.upgradeApproval` was set to `Automatic`, and the
-`spec.versions` field is empty (allowing all versions of the operator) will the subscription
-managed by this policy have its `installPlanApproval` field set to `Automatic`. Otherwise, the field
-will be set to `Manual`, but it should be noted that this controller will approve InstallPlans
-matching the desired versions automatically.
+Only when the policy's `spec.upgradeApproval` is set to `Automatic`, and the `spec.versions` field
+is empty (allowing all versions of the operator) will the subscription managed by this policy have
+its `installPlanApproval` field set to `Automatic`. Otherwise, the field will be set to `Manual`,
+but it should be noted that this controller will approve InstallPlans matching the desired versions
+automatically.
 
 The `spec.removalBehavior` field allows configuration of what might be removed by the controller
 when the policy is in "mustnothave" mode. *It has no effect when the policy is in "musthave" mode.*
@@ -332,7 +333,7 @@ complete and all of Deployments listed in the operator's CSV are healthy.
 
 Example yaml to apply (not including the Placement):
 ```yaml
-apiVersion: policy.open-cluster-management.io/v1beta1
+apiVersion: policy.open-cluster-management.io/v1beta2
 kind: OperatorPolicy
 metadata:
   name: strimzi-policy
@@ -344,10 +345,10 @@ spec:
     channel: stable
     name: strimzi-kafka-operator
     namespace: openshift-operators
-    installPlanApproval: Manual
     source: community-operators
     sourceNamespace: openshift-marketplace
     startingCSV: strimzi-cluster-operator.v0.35.0
+  upgradeApproval: None
   versions:
     - strimzi-cluster-operator.v0.35.0
 ```
@@ -361,7 +362,7 @@ progress to that version.
 
 For example, to upgrade the operator, the policy from story 1 could be updated to match this:
 ```yaml
-apiVersion: policy.open-cluster-management.io/v1beta1
+apiVersion: policy.open-cluster-management.io/v1beta2
 kind: OperatorPolicy
 metadata:
   name: strimzi-policy
@@ -373,10 +374,10 @@ spec:
     channel: stable
     name: strimzi-kafka-operator
     namespace: openshift-operators
-    installPlanApproval: Manual
     source: community-operators
     sourceNamespace: openshift-marketplace
     startingCSV: strimzi-cluster-operator.v0.35.0
+  upgradeApproval: Automatic
   versions:
     - strimzi-cluster-operator.v0.35.0
     - strimzi-cluster-operator.v0.35.1
@@ -389,7 +390,7 @@ available. The policy status should clearly indicate what new version is availab
 
 The policy yaml would look like this, including some relevant fields from the status:
 ```yaml
-apiVersion: policy.open-cluster-management.io/v1beta1
+apiVersion: policy.open-cluster-management.io/v1beta2
 kind: OperatorPolicy
 metadata:
   name: strimzi-policy
@@ -401,10 +402,10 @@ spec:
     channel: stable
     name: strimzi-kafka-operator
     namespace: openshift-operators
-    installPlanApproval: Manual
     source: community-operators
     sourceNamespace: openshift-marketplace
     startingCSV: strimzi-cluster-operator.v0.35.0
+  upgradeApproval: None
   versions:
     - strimzi-cluster-operator.v0.35.0
   statusConfig:
@@ -442,7 +443,7 @@ the operator is in the process of being upgraded (basically, whenever something 
 the performance of the operator).
 
 ```yaml
-apiVersion: policy.open-cluster-management.io/v1beta1
+apiVersion: policy.open-cluster-management.io/v1beta2
 kind: OperatorPolicy
 metadata:
   name: strimzi-policy
@@ -454,9 +455,9 @@ spec:
     channel: stable
     name: strimzi-kafka-operator
     namespace: openshift-operators
-    installPlanApproval: Automatic
     source: community-operators
     sourceNamespace: openshift-marketplace
+  upgradeApproval: Automatic
   statusConfig:
     catalogSourceUnhealthy: NonCompliant
     deploymentsUnavailable: NonCompliant
@@ -474,7 +475,7 @@ As a policy user, I want to install an operator to a specific namespace via a po
 should become Compliant when the operator Deployments are fully available.
 
 ```yaml
-apiVersion: policy.open-cluster-management.io/v1beta1
+apiVersion: policy.open-cluster-management.io/v1beta2
 kind: OperatorPolicy
 metadata:
   name: strimzi-policy
@@ -492,9 +493,9 @@ spec:
     channel: stable
     name: strimzi-kafka-operator
     namespace: strimzi-app-one
-    installPlanApproval: Automatic
     source: community-operators
     sourceNamespace: openshift-marketplace
+  upgradeApproval: Automatic
 ```
 
 #### Story 6
@@ -503,7 +504,7 @@ As a policy user, I want to ensure a certain operator is not on the cluster. Whe
 should be deleted based on what I specify in `spec.removalBehavior`.
 
 ```yaml
-apiVersion: policy.open-cluster-management.io/v1beta1
+apiVersion: policy.open-cluster-management.io/v1beta2
 kind: OperatorPolicy
 metadata:
   name: strimzi-policy
@@ -515,9 +516,9 @@ spec:
     channel: stable
     name: strimzi-kafka-operator
     namespace: strimzi-app-one
-    installPlanApproval: Automatic
     source: community-operators
     sourceNamespace: openshift-marketplace
+  upgradeApproval: Automatic
   removalBehavior:
     operatorGroups: DeleteIfUnused
     subscriptions: Delete
@@ -547,9 +548,9 @@ spec:
     channel: stable
     name: strimzi-kafka-operator
     namespace: strimzi-app-one
-    installPlanApproval: Automatic
     source: community-operators
     sourceNamespace: openshift-marketplace
+  upgradeApproval: Automatic
   versions:
     - "strimzi-cluster-operator.v0.35.0"
   removalBehavior:
@@ -596,6 +597,67 @@ exists for that operator, and the version to be installed is allowed by that pol
 setting, then that InstallPlan will be approved. If an InstallPlan is created for multiple operator
 installations, it will not be approved by this controller, and it might cause an OperatorPolicy to
 become NonCompliant.
+
+#### v1beta1 and v1beta2 Differences and Conversions
+
+For reference, the `v1beta1` implementation used:
+```yaml
+apiVersion: policy.open-cluster-management.io/v1beta1
+kind: OperatorPolicy
+metadata:
+  name: my-operator
+spec:
+  remediationAction: enforce # or inform
+  severity: medium
+  complianceType: musthave
+  operatorGroup: # optional
+    name: my-operator-group
+    namespace: own-namespace
+    target:
+      namespaces:
+        - foo
+        - bar
+    # selector: # One of selector or namespaces is allowed.
+    #   matchLabels: # or matchExpressions
+    #     mydomain.io/prod: "true"
+    serviceAccountName: my-og-account # optional
+  subscription:
+    config: {} # optional
+    channel: stable
+    name: my-operator
+    namespace: own-namespace
+    installPlanApproval: Automatic # or Manual, may be overridden by other settings.
+    source: my-catalog
+    sourceNamespace: my-catalog-namespace
+    startingCSV: my-operator.v0.1.0 # optional
+  versions:
+    - my-operator.v0.1.1
+    - my-operator.v0.2.0
+```
+
+An initial implementation of this kind used `v1beta1` and focused on installation and upgrade
+scenarios. It *required* `spec.subscription.installPlanApproval` to be set to either `Automatic` or
+`Manual`, but that setting was believed to be confusing. When set to `Automatic`, the contoller
+needed to override that setting in the Subscription in order to restrict the possible upgrades, and
+approve any upgrades matching the `versions` specified in the policy. And when set to `Manual`, the
+controller would still approve those upgrades without user input, ie "automatically".
+
+The breaking change in the `v1beta2` design is to *forbid* the user from setting the 
+`spec.subscription.installPlanApproval` field in the subscription, while providing a similar setting 
+via `spec.upgradeApproval`. The revised design provides more details on the interactions of this
+setting and the other fields.
+
+The controller will expose a conversion webhook so that either version of the resource can be used.
+It will convert `installPlanApproval: Automatic` to `upgradeApproval: Automatic` and vice-versa, and
+`installPlanApproval: Manual` to `upgradeApproval: None` and vice-versa. This is effectively a
+change in behavior: as stated earlier, originally policies using `installPlanApproval: Manual` would
+approve some upgrades, but now those policies will *not approve any upgrades*. Since the original
+behavior was unclear in the design, and the new behavior results in fewer actions by the controller
+(and therefore, fewer possible surprises for the user), we believe this change is acceptable.
+
+The policy framework does not need to "know" about this change. Thanks to the conversion webhook,
+it can apply whatever version is defined in the Policy: if that version is not registered on the
+managed cluster, it would have a `template-error` caused by the API call failing.
 
 ### Risks and Mitigation
 
