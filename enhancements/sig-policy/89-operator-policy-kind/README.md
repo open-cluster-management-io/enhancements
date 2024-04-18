@@ -141,7 +141,7 @@ fields based on specified defaults in the operator's PackageManifest. For exampl
 default channel to possibly be different on different clusters, reflecting the default channel in
 each cluster's catalog. It is not allowed to set `spec.subscription.installPlanApproval`; the policy
 will determine and set a value for that field based on the policy's `spec.versions` and
-`spec.updgradeApproval` settings.
+`spec.upgradeApproval` settings.
 
 In "musthave" mode, the `spec.versions` list specifies what installed versions are considered
 Compliant when the policy is in `inform` mode, and which InstallPlans can be approved when in
@@ -154,14 +154,13 @@ The `spec.upgradeApproval` field specifies whether an enforced "musthave" policy
 upgrade InstallPlans for the operator. *It has no effect when the policy is in "mustnothave" mode*.
 This only affects InstallPlans for operators that are already installed on the cluster,
 which upgrade or replace the operator; initial InstallPlans for an operator can be approved
-regardless of this flag. Allowed values here include `Automatic` and `None`. If not set, the
-controller will behave as if it were set to `Automatic`.
+regardless of this flag. Allowed values here include `Automatic` and `None`.
 
-Only when the policy is operating as if `spec.upgradeApproval` was set to `Automatic`, and the
-`spec.versions` field is empty (allowing all versions of the operator) will the subscription
-managed by this policy have its `installPlanApproval` field set to `Automatic`. Otherwise, the field
-will be set to `Manual`, but it should be noted that this controller will approve InstallPlans
-matching the desired versions automatically.
+Only when the policy's `spec.upgradeApproval` is set to `Automatic`, and the `spec.versions` field
+is empty (allowing all versions of the operator) will the subscription managed by this policy have
+its `installPlanApproval` field set to `Automatic`. Otherwise, the field will be set to `Manual`,
+but it should be noted that this controller will approve InstallPlans matching the desired versions
+automatically.
 
 The `spec.removalBehavior` field allows configuration of what might be removed by the controller
 when the policy is in "mustnothave" mode. *It has no effect when the policy is in "musthave" mode.*
@@ -344,10 +343,10 @@ spec:
     channel: stable
     name: strimzi-kafka-operator
     namespace: openshift-operators
-    installPlanApproval: Manual
     source: community-operators
     sourceNamespace: openshift-marketplace
     startingCSV: strimzi-cluster-operator.v0.35.0
+  upgradeApproval: None
   versions:
     - strimzi-cluster-operator.v0.35.0
 ```
@@ -373,10 +372,10 @@ spec:
     channel: stable
     name: strimzi-kafka-operator
     namespace: openshift-operators
-    installPlanApproval: Manual
     source: community-operators
     sourceNamespace: openshift-marketplace
     startingCSV: strimzi-cluster-operator.v0.35.0
+  upgradeApproval: Automatic
   versions:
     - strimzi-cluster-operator.v0.35.0
     - strimzi-cluster-operator.v0.35.1
@@ -401,10 +400,10 @@ spec:
     channel: stable
     name: strimzi-kafka-operator
     namespace: openshift-operators
-    installPlanApproval: Manual
     source: community-operators
     sourceNamespace: openshift-marketplace
     startingCSV: strimzi-cluster-operator.v0.35.0
+  upgradeApproval: None
   versions:
     - strimzi-cluster-operator.v0.35.0
   statusConfig:
@@ -454,9 +453,9 @@ spec:
     channel: stable
     name: strimzi-kafka-operator
     namespace: openshift-operators
-    installPlanApproval: Automatic
     source: community-operators
     sourceNamespace: openshift-marketplace
+  upgradeApproval: Automatic
   statusConfig:
     catalogSourceUnhealthy: NonCompliant
     deploymentsUnavailable: NonCompliant
@@ -492,9 +491,9 @@ spec:
     channel: stable
     name: strimzi-kafka-operator
     namespace: strimzi-app-one
-    installPlanApproval: Automatic
     source: community-operators
     sourceNamespace: openshift-marketplace
+  upgradeApproval: Automatic
 ```
 
 #### Story 6
@@ -515,9 +514,9 @@ spec:
     channel: stable
     name: strimzi-kafka-operator
     namespace: strimzi-app-one
-    installPlanApproval: Automatic
     source: community-operators
     sourceNamespace: openshift-marketplace
+  upgradeApproval: Automatic
   removalBehavior:
     operatorGroups: DeleteIfUnused
     subscriptions: Delete
@@ -547,9 +546,9 @@ spec:
     channel: stable
     name: strimzi-kafka-operator
     namespace: strimzi-app-one
-    installPlanApproval: Automatic
     source: community-operators
     sourceNamespace: openshift-marketplace
+  upgradeApproval: Automatic
   versions:
     - "strimzi-cluster-operator.v0.35.0"
   removalBehavior:
@@ -596,6 +595,25 @@ exists for that operator, and the version to be installed is allowed by that pol
 setting, then that InstallPlan will be approved. If an InstallPlan is created for multiple operator
 installations, it will not be approved by this controller, and it might cause an OperatorPolicy to
 become NonCompliant.
+
+#### Addition of the upgradesApproval field
+
+An initial implementation *required* `spec.subscription.installPlanApproval` to be set to either
+`Automatic` or `Manual`, but that setting was believed to be confusing. When set to `Automatic`, the
+contoller needed to override that setting in the Subscription in order to restrict the possible
+upgrades, and approve any upgrades matching the `versions` specified in the policy. And when set to
+`Manual`, the controller would still approve those upgrades without user input, ie "automatically".
+
+This potential confusion is resolved by *forbidding* the user from setting the 
+`spec.subscription.installPlanApproval` field in the subscription, while providing a similar setting
+via `spec.upgradeApproval`. The revised design provides more details on the interactions of this
+setting and the other fields. This provides more control to the user, since they can then separate
+the initial install approval from any future upgrades.
+
+In general, adding a required field could be considered a breaking change, but here we will *not*
+increment the API version. Instead, the controller will validate that the new field is set properly,
+and that `spec.subscription.installPlanApproval` is not set. "Old" instances of an OperatorPolicy
+which do not follow the new requirements will be NonCompliant, and explain the required change.
 
 ### Risks and Mitigation
 
