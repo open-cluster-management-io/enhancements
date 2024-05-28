@@ -105,11 +105,10 @@ spec:
     clusterServiceVersions: Delete
     installPlans: Keep
     customResourceDefinitions: Keep
-  statusConfig:
-    catalogSourceUnhealthy: StatusMessageOnly
+  complianceConfig:
+    catalogSourceUnhealthy: Compliant
     deploymentsUnavailable: NonCompliant
-    upgradesAvailable: StatusMessageOnly
-    upgradesProgressing: NonCompliant
+    upgradesAvailable: Compliant
 ```
 
 When `remediationAction` is set to `inform`, no actions (creates, deletes, updates) will be taken on
@@ -170,12 +169,19 @@ configuration of the policy. Each kind here will support `Keep` and `Delete`, an
 have additional values specific to the resources in question. For example, the OperatorGroup should
 likely only be removed if it isn't being used by another subscription. 
 
-The `spec.statusConfig` field allows the author to specify what effect specific resource statuses
-will have on the OperatorPolicy status and compliance events. The currently planned values are:
-`Condition`, which will record the status in `status.conditions` and in the compliance event; and
-`NonCompliant`, which additionally updates the `status.compliant` field to NonCompliant which can
-cause the root policy on the hub to become NonCompliant and may throw an alert. Additional values
-could be added in the future.
+The `spec.complianceConfig` field allows the author to specify what effect specific resource 
+statuses will have on the OperatorPolicy status and compliance events. The currently planned values
+are `Compliant` and `NonCompliant`, but additional values could be added in the future. For example,
+when an upgrade is available for the operator, but is not in the `versions` list, the value of
+`spec.complianceConfig.upgradesAvailable` is considered. When set to `Compliant`, the InstallPlan
+for that upgrade would be considered Compliant in `status.relatedResources` and the policy would
+have the condition `InstallPlanCompliant` be true. When set to `NonCompliant` the relatedResource
+would be NonCompliant, the condition would be false, and `status.compliant` would be NonCompliant.
+
+The default values for `spec.complianceConfig` fields should cause the policy to report as Compliant 
+as long as the current instance of the operator matches a desired state specified in the policy, and
+is currently healthy. In particular, it should not become NonCompliant by default when an upgrade
+is available, since that does not necessarily impact the current health of the operator.
 
 ### OperatorPolicy Status and Compliance Event Messages
 
@@ -269,7 +275,7 @@ There is also a `status.relatedObjects` for the OLM objects (CatalogSource, Subs
 InstallPlan, etc) related to this operator installation, and the Deployment(s) for the operator. 
 Each of those related objects has a `compliant` field, but it should be noted that a NonCompliant
 object will not necessarily cause the policy to become NonCompliant: for example if the
-CatalogSource is unhealthy, `spec.statusConfig.catalogSourceUnhealthy` must be considered. The
+CatalogSource is unhealthy, `spec.complianceConfig.catalogSourceUnhealthy` must be considered. The
 `reason` associated with each object is a brief human-readable explanation for the value of the
 `compliant` field. This matches the conventions of ConfigurationPolicy.
 
@@ -406,20 +412,17 @@ spec:
   upgradeApproval: None
   versions:
     - strimzi-cluster-operator.v0.35.0
-  statusConfig:
+  complianceConfig:
     upgradesAvailable: NonCompliant
 status:
   compliant: NonCompliant
   conditions:
-    - lastTransitionTime: "2023-07-14T07:34:28Z"
-      message: An upgrade to strimzi-cluster-operator.v0.35.1 is available on the stable channel.
-      reason: UpgradeAvailable
+    - message: ... An upgrade to strimzi-cluster-operator.v0.35.1 is available on the stable channel ...
       status: "False"
       type: Compliant
-    - lastTransitionTime: "2023-07-11T14:59:06Z"
-      reason: RequiresApproval
-      status: "True"
-      type: InstallPlanPending
+    - reason: RequiresApproval
+      status: "False"
+      type: InstallPlanCompliant
     ...
   relatedObjects:
     - compliant: NonCompliant
@@ -436,9 +439,8 @@ status:
 #### Story 4
 
 As a policy user, I want to monitor the health of an operator installation and related objects, with
-just one policy. I want the policy to be NonCompliant whenever any of those are unhealthy, and when
-the operator is in the process of being upgraded (basically, whenever something might be impacting
-the performance of the operator).
+just one policy. I want the policy to be NonCompliant when the operator is not running correctly,
+but I don't want to be alerted when an upgrade is available or the catalog source is unhealthy.
 
 ```yaml
 apiVersion: policy.open-cluster-management.io/v1beta1
@@ -456,11 +458,10 @@ spec:
     source: community-operators
     sourceNamespace: openshift-marketplace
   upgradeApproval: Automatic
-  statusConfig:
-    catalogSourceUnhealthy: NonCompliant
+  complianceConfig:
+    catalogSourceUnhealthy: Compliant
     deploymentsUnavailable: NonCompliant
-    upgradesAvailable: Condition
-    upgradesProgressing: NonCompliant
+    upgradesAvailable: Compliant
 ```
 
 The `status` of this policy will be populated with details about the OperatorGroup, Subscription,
@@ -614,6 +615,17 @@ In general, adding a required field could be considered a breaking change, but h
 increment the API version. Instead, the controller will validate that the new field is set properly,
 and that `spec.subscription.installPlanApproval` is not set. "Old" instances of an OperatorPolicy
 which do not follow the new requirements will be NonCompliant, and explain the required change.
+
+#### Change to default compliance regarding available upgrades
+
+In an initial implementation, the policy would become NonCompliant if an upgrade was available, or
+if the CatalogSource was unhealthy. While `complianceConfig` was being implemented, that default
+behavior was examined more closely, and was changed to what is now reflected in this document.
+
+The original design also referred to this field as `statusConfig` and was inconsistent in the
+possible allowed values. `Compliant` and `NonCompliant` are believed to be the most clear options,
+with `StatusMessageOnly` and `Condition` removed for not being particularly obvious. As a possible
+future enhancement, a `Warning` option could be added, with exact behavior yet to be determined.
 
 ### Risks and Mitigation
 
