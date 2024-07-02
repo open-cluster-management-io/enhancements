@@ -37,8 +37,8 @@ straightforward addon development way.
 - The addon agent image is still required.
 - The hosted mode addon is not supported.
 - For complicated addon which has special RBAC requirement etc would still need to use addon-framework.
-- For the agent runtime, only `Deployment` is fully supported, for `Daemonset`, `Statefulset`, and other runtime
-  resources can be deployed to the managed cluster, but will no volumes be injected, and can not be used to check the
+- For the agent runtime, only `Deployment` and `DaemonSet` are fully supported, for `Statefulset`, and other runtime
+  resources can be deployed to the managed cluster, but no volumes will be injected, and can not be used to check the
   health of the addon.
 
 ## Proposal
@@ -53,7 +53,7 @@ only need to define some configurations to deploy and register my addon agent.
 #### Story 2
 
 As an addon developer, when the installation and registration of the addon agent changes, I hope that the change can
-take effect by only modifying some configurations without changing the code
+take effect by only modifying some configurations without changing the code.
 
 ## Design Details
 
@@ -68,7 +68,7 @@ cluster to process the CRD in order to deploy and register the addon.
 ### API changes
 
 Introduce a new cluster-scoped API `AddonTemplate` which is used to describe how to deploy the addon agent and how to
-register the addon to the hub cluster. And it is needed to reference the `AddonTemplate` by the "spec.supportedConfigs"
+register the addon to the hub cluster. And it is needed to reference the `AddonTemplate` by the `spec.supportedConfigs`
 field of `ClusterManagementAddon` to indicate that this addon is using a template.
 
 ```golang
@@ -262,8 +262,8 @@ Environments, so developers can use them in their agent code.
 
 The volumes are generated based on the `addonTemplate.spec.registration` field.
 
-1. If there is a `KubeClient` type registration, the hub kubeconfig will be injected to the deployments defined in the
-addon template
+1. If there is a `KubeClient` type registration, the hub kubeconfig will be injected to the deployments and daemonsets
+defined in the addon template
 
 ```yaml
 ...
@@ -283,7 +283,7 @@ spec:
 ```
 
 2. If there is a `CustomSigner` type registration, the secret signed via the custom signer defined in the
-`CustomSignerRegistrationConfig` will be injected to the deployments defined in the addon template
+`CustomSignerRegistrationConfig` will be injected to the deployments and daemonsets defined in the addon template
 
 ```yaml
 ...
@@ -327,6 +327,9 @@ roles the agent will be bound.
 `CustomSignerRegistrationConfig` to configure how to issue the client certificate. For authorization of CustomSigner,
 users need to implement it themselves.
 
+With the registration configured, the credentials info used to access the hub cluster will be injected into all
+deployments and daemonsets as volumes. See [inject volumes](#inject-volumes) for more details.
+
 ### Example
 
 Here holds an [example](./examples), it contains:
@@ -339,9 +342,9 @@ The rendering output of the agent deployment will be like [this](./examples/agen
 
 ### Probe the health of addons
 
-Since we only support the Deployment resource as the agent runtime workload, we can inject a feedback rule to the
-agent deployment resource, the feedback rule will check if the deployment is available, if not, the addon will be
-considered as unhealthy.
+Since we only support the Deployment and DaemonSet resources as the agent runtime workload, we can inject a feedback
+rule to the agent deployment resource, the feedback rule will check if the deployment and daemonset are available, if
+not, the addon will be considered as unhealthy.
 
 ### Upgrade an addon template
 

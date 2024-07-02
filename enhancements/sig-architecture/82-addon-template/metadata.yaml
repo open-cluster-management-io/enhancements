@@ -4,12 +4,10 @@ authors:
 reviewers:
   - "@qiujian16"
   - "haoqing0110"
-  - TBD
 approvers:
   - "@qiujian16"
-  - TBD
 creation-date: 2023-2-13
-last-updated: 2023-2-13
+last-updated: 2024-7-2
 status: provisional
 see-also:
   - "/enhancements/sig-architecture/58-addon-configuration"
