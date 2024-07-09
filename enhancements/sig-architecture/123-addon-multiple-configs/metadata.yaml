@@ -7,7 +7,7 @@ reviewers:
 approvers:
   - "@qiujian16"
 creation-date: 2024-07-08
-last-updated: 2024-07-08
+last-updated: 2024-07-30
 status: provisional
 see-also:
   - "/enhancements/sig-architecture/58-addon-configuration"
