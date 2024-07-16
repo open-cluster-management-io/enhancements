@@ -222,9 +222,14 @@ func (r *ReplicatedPolicyReconciler) getToken(ctx context.Context, namespace str
 	expirationTimestamp := returnedTokenReq.Status.ExpirationTimestamp
 
 	go func() {
+		log.V(2).Info("Got a token", "serviceAccount", saName, "namespace", namespace, "expiration", expirationTimestamp.UTC().Format(time.RFC3339))
+
 		defer func() {
-			err := os.Remove(tokenFilePath)
-			if err != nil {
+			if err := tokenFile.Close(); err != nil {
+				log.Error(err, "Failed to close the service account token file", "serviceAccount", saName, "namespace", namespace, "path", tokenFilePath)
+			}
+
+			if err := os.Remove(tokenFilePath); err != nil {
 				log.Error(err, "Failed to clean up the service account token file", "serviceAccount", saName, "namespace", namespace, "path", tokenFilePath)
 			}
 		}()
@@ -240,11 +245,24 @@ func (r *ReplicatedPolicyReconciler) getToken(ctx context.Context, namespace str
 				return
 			}
 
+			log.V(1).Info("Refreshing the token", "serviceAccount", saName, "namespace", namespace)
+
 			returnedTokenReq, err := r.HubClient.CoreV1().ServiceAccounts(namespace).CreateToken(
 				ctx, saName, req, metav1.CreateOptions{},
 			)
 			if err != nil {
 				log.Error(err, "Failed to renew the token. Will retry in 5 seconds.", "serviceAccount", saName, "namespace", namespace)
+
+				time.Sleep(5 * time.Second)
+
+				continue
+			}
+
+			truncateErr := tokenFile.Truncate(0)
+			_, seekErr := tokenFile.Seek(0, 0)
+
+			if truncateErr != nil || seekErr != nil {
+				log.Error(errors.Join(truncateErr, seekErr), "Failed to overwrite the token file. Will retry in 5 seconds.")
 
 				time.Sleep(5 * time.Second)
 
@@ -271,7 +289,24 @@ func (r *ReplicatedPolicyReconciler) getToken(ctx context.Context, namespace str
 }
 ```
 
+#### Permission Changes to the Service Account
+
+When permissions change after a watch has started, authorization is not reassessed until there is a new request, even
+when the token expires. The [kubernetes-dependency-watches](https://github.com/stolostron/kubernetes-dependency-watches)
+library leverages the client-go [RetryWatcher](https://pkg.go.dev/k8s.io/client-go/tools/watch#RetryWatcher) and it does
+not currently return an error if the user does not have `watch` permissions. For when the watch is first started,
+[PR #24](https://github.com/stolostron/kubernetes-dependency-watches/pull/24) works around this and will return an error
+to the user indicating the user does not have `watch` permissions. If the `RetryWatcher` gets disconnected from the
+Kubernetes API server and retries, it won't error out if the user no longer has `watch` permissions. This is being
+addressed in [kubernetes PR #126038](https://github.com/kubernetes/kubernetes/pull/126038). This will be a gap until the
+upstream contribution is accepted and released. A restart of the Governance Policy Propagator would cause the error to
+surface up to the user.
+
 ### Risks and Mitigation
+
+- Existing policies would be able to leverage service accounts in the namespace and could take advantage of the
+  permissions associated with the service account. The best practice of not mixing policies and workloads in the same
+  namespace mitigates this.
 
 ### Open Questions [optional]
 
@@ -298,6 +333,8 @@ N/A
 ## Drawbacks
 
 - Complex implementation
+- The user must manage an additional service account with makes the user experience more complex in some sense but
+  avoids the need for separate policies that copy content to the policy namespace.
 
 ## Alternatives
 
