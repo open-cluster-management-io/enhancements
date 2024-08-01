@@ -1,0 +1,20 @@
+title: aws-iam-registration
+authors:
+  - "@jaswalkiranavtar"
+  - "@suvaanshkumar"
+reviewers:
+  - "@qiujian16"
+  - "@deads2k"
+  - "@mikeshng"
+approvers:
+  - "@qiujian16"
+  - "@deads2k"
+  - "@mikeshng"
+creation-date: 2024-06-19
+last-updated: 2024-06-19
+status: provisional
+see-also:
+  - "https://github.com/dangorst1066/enhancements/tree/main/enhancements/sig-architecture/68-token-registration"
+  - "/enhancements/sig-architecture/19-projected-serviceaccount-token"
+replaces: []
+superseded-by: []
