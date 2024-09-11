@@ -98,7 +98,7 @@ spec:
   versions:
     - my-operator.v0.1.1
     - my-operator.v0.2.0
-  upgradeApproval: Automatic # or Never
+  upgradeApproval: Automatic # or None
   removalBehavior:
     operatorGroups: DeleteIfUnused
     subscriptions: Delete
