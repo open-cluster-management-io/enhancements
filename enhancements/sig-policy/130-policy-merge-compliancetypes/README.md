@@ -270,6 +270,40 @@ confusing:
 - `--type=strategic` is kubernetes-specific. It can use additional API information on built-in types
   in order to make more intelligent merge decisions. Patches look like a snippet of the resource.
 
+#### Server-side apply
+
+Kubernetes also supports [server-side apply](https://kubernetes.io/docs/reference/using-api/server-side-apply/).
+This makes heavy use of the `metadata.managedFields` field in the object being managed, and utilizes
+a [structured merge](https://github.com/kubernetes-sigs/structured-merge-diff), which is closest to
+the strategic merge above. One major advantage is that this technique can use the OpenAPI info from
+custom resources for more intelligent merges. A disadvantage is that the `managedFields` section
+must be carefully maintained.
+
+Some of the server-side apply functionality might not be of benefit to ConfigurationPolicy: after
+applying a partial object, the API server configures the `managedFields` to reflect that the fields
+in that request are now owned by the specific field-manager of that request. Applying another
+partial object with fewer fields later (for example if the policy changes) will result in the
+missing fields being **removed** from the object on the cluster. In other words, server-side apply
+is not always idempotent. In order to ensure idempotency and proper management of fields, the
+controller would need to first patch the `managedFields`, relinquishing control of the previous
+fields, and then submit the server-side apply request.
+
+Another function enabled by server-side apply which ConfigurationPolicy would need to consider is
+conflict detection and resolution. [The reference doc](https://kubernetes.io/docs/reference/using-api/server-side-apply/#using-server-side-apply-in-a-controller)
+specifically recommends that controllers always "force" conflicts, always taking control of the
+fields that they specify and overriding any other existing configuration. That is most similar to
+what ConfigurationPolicy currently does when it is enforcing. It might be interesting to allow
+policy authors to stop enforcement if a conflict is detected, and just have the policy become
+NonCompliant, but that might deserve an entirely separate discussion.
+
+One more potential advantage with server-side apply is that the requests trigger validating and 
+mutating webhooks, even if there aren't any actual "changes" that a client-side merge would notice.
+In order for ConfigurationPolicy to utilize this, it might need to always do a dry-run request to
+check for changes in this mode (assuming a server-side apply dry-run triggers the webhooks). In
+contrast, the current implementation only runs dry-run updates if it already believes a change is
+necessary, the dry-run only preventing marking the policy as non-compliant when the update would
+have no actual effect. 
+
 ### Risks and Mitigation
 
 Adding new options makes the API more complex. Documentation with examples will help clarify what
@@ -282,7 +316,7 @@ fewer additional fields in general than `mustonlyhave`.
 
 We do not forsee any increased use of resources (cpu, memory, API calls) by using these types. In
 fact, using `musthavemerge` instead of `mustonlyhave` may reduce the total number of API calls by
-preventing some cases of "thrashing".
+preventing some cases of "thrashing". (Server-side apply could require additional API calls)
 
 ## Design Details
 
@@ -292,6 +326,7 @@ preventing some cases of "thrashing".
    possible, for example on types in the OpenShift API which might support it. It may be more clear
    to simply require the policy author to choose. There might not be a case where the strategy
    should dynamically be chosen per-cluster, where this option would be helpful.
+2. Is server-side apply another possibly useful option?
 
 ### Test Plan
 
