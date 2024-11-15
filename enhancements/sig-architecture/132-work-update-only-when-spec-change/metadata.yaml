@@ -1,0 +1,14 @@
+title: return-resource-status-in-manifestwork
+authors:
+  - "@qiujian16"
+reviewers:
+  - "@deads2k"
+  - "@elgnay"
+  - "@zhujian7"
+approvers:
+  - "@elgnay"
+creation-date: 2024-11-12
+last-updated: 2021-11-12
+status: provisional
+see-also:
+  - "/enhancements/sig-architecture/47-manifestwork-updatestrategy"
