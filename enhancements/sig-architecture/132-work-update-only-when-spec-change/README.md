@@ -56,7 +56,7 @@ The change will be added into the `updateStratey` field. For `Update` strategy, 
 
 ```go
 type UpdateConfig struct {
-    // OnSpokeChange defines whether the resource should be overriden by the manifestwork it is changed
+    // OnSpokeChange defines whether the resource should be overridden by the manifestwork it is changed
     // on the spoke by another actor.
     // +kubebuilder:default=Override
     // +kubebuilder:validation:Enum=Override;NoOverride
@@ -86,7 +86,7 @@ type ServerSideApplyConfig struct {
 
 #### agent implemntation
 
-When work-agent identity that the `OnSpokeChange` is set `NoOverride` for a certain resource in the `ManifestWork`, the agent
+When work-agent identify that the `OnSpokeChange` is set `NoOverride` for a certain resource in the `ManifestWork`, the agent
 when apply the resource to the spoke cluster will add an annotation with the key `open-cluster-management.io/object-hash`.
 The value of the annotation is the computed hash of the resource spec in the `ManifestWork`. Later when another actor
 updates the resource, the work-agent will at first check if the object-hash mismatches with the current resource spec
@@ -94,11 +94,20 @@ in the `ManifestWork`. If it is the same, the resource will not be updated so th
 the resource in the manifestwork is updated, the annotation will not match which then trigger the work-agent to update.
 
 To handle the `IgnoreFields` for `ServerSideApply`, we will remove the fields defined in the `IgnoreFields` and then
-generates the apply patch. The objec-hash will also be computed considering the `IgnoreFields`. 
+generates the apply patch. The objec-hash will also be computed considering the `IgnoreFields`.
+
+When the resource is deleted by another actor, the resource will be deleted with the annotation. So when work-agent
+recreates the resource using the latest spec. The `NoOverride` and `IgnoreFields` setting applies only when after 
+the resource is created or present already on the spoke cluster.
+
+When the `ManifestWork` is deleted, and the `DeleteOption` is `Orphan`, the resource will be kept on the spoke cluster
+together with the object-hash. It means if the user creates another `ManifestWork` with the same resource manifest and
+set `NoOverride` in the strategy, the resource will not be updated on the spoke cluster. 
 
 #### examples
 
-To resolve issue 642, user can set the manifestwork with `OnSpokeChange` set to `NoOverride`
+To resolve [issue 631](https://github.com/open-cluster-management-io/ocm/issues/631), user can set the manifestwork 
+with `OnSpokeChange` set to `NoOverride`
 
 ```yaml
 apiVersion: work.open-cluster-management.io/v1
@@ -119,7 +128,8 @@ spec:
           onSpokeChange: NoOverride
 ```
 
-To resolve issue 670, user also can do the same for argocd application.
+To resolve [issue 670](https://github.com/open-cluster-management-io/ocm/issues/670), user also can do the same for
+argocd application.
 
 ```yaml
 apiVersion: work.open-cluster-management.io/v1
@@ -141,7 +151,7 @@ spec:
           onSpokeChange: NoOverride
 ```
 
-To resolve issue 690, user can set like:
+To resolve [issue 690](https://github.com/open-cluster-management-io/ocm/issues/690), user can set like:
 
 ```yaml
 apiVersion: work.open-cluster-management.io/v1
