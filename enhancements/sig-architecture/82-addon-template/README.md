@@ -224,11 +224,10 @@ type CustomSignerRegistrationConfig struct {
 	Subject *Subject `json:"subject,omitempty"`
 
 	// SigningCA represents the reference of the secret on the hub cluster to sign the CSR
-	// the secret must be in the namespace where the addon-manager is located, and the secret
-	// type must be "kubernetes.io/tls"
+	// the secret type must be "kubernetes.io/tls"
 	// Note: The addon manager will not have permission to access the secret by default, so
-	// the user must grant the permission to the addon manager(by creating rolebinding for
-	// the addon-manager serviceaccount "addon-manager-controller-sa").
+	// the user must grant the permission to the addon manager(by creating rolebinding/clusterrolebinding
+	// for the addon-manager serviceaccount "addon-manager-controller-sa").
 	// +kubebuilder:validation:Required
 	SigningCA SigningCARef `json:"signingCA"`
 }
@@ -239,6 +238,9 @@ type SigningCARef struct {
 	// Name of the signing CA secret
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
+	// Namespace of the signing CA secret, the namespace of the addon-manager will be used if it is not set.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
 }
 ```
 
@@ -316,10 +318,12 @@ Variables defines in `addonDeploymentConfig.customizedVariables` can be used.
 ### Registration
 
 When we talk about registration, there are 2 parts of work:
+
 1. issue a client certificate according to the CSR to the addon agent to access the hub(authentication)
 2. define the permissions for the certificate which resources the addon agent can access(authorization)
 
 The `AddonTemplate` API provides two ways to register the addon, "KubeClient" and "CustomSigner".
+
 1. For "KubeClient", the addon agent can only access to the hub kube api-server, kubernetes will issue a client
 certificate for the agent, and authorization can be done by configuring the `HubPermissionConfig` which describes what
 roles the agent will be bound.
@@ -333,6 +337,7 @@ deployments and daemonsets as volumes. See [inject volumes](#inject-volumes) for
 ### Example
 
 Here holds an [example](./examples), it contains:
+
 - an [addonTemplate](./examples/addon-template.yaml)
 - a [clusterManagementAddon](./examples/cluster-management-addon.yaml)
 - a [managedClusterAddon](./examples/cluster-management-addon.yaml)
@@ -415,7 +420,8 @@ graph LR
 
 #### Alpha
 
-At first, This proposal will be in the alpha stage and needs to meet
+At first, This proposal will be in the alpha stage and needs to meet:
+
 1. The new APIs are reviewed and accepted;
 2. Implementation is completed to support the functionalities;
 3. Develop test cases to demonstrate this proposal works correctly;
