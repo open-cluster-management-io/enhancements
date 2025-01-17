@@ -243,7 +243,9 @@ spec:
           celExpressions:
             - managedCluster.Status.version.kubernetes == "v1.30.0"
 ```
-2. The user can use CEL [Standard macros](https://github.com/google/cel-spec/blob/master/doc/langdef.md#macros) and [Standard functions](https://github.com/google/cel-spec/blob/master/doc/langdef.md#standard-definitions) on the `managedCluster` fields. For example, select clusters with version 1.30.* and 1.31.* by regex..
+2. The user can use CEL [Standard macros](https://github.com/google/cel-spec/blob/master/doc/langdef.md#macros) and [Standard functions](https://github.com/google/cel-spec/blob/master/doc/langdef.md#standard-definitions) on the `managedCluster` fields. 
+
+For example, select clusters with version 1.30.* and 1.31.* by regex.
 
 ```yaml
 apiVersion: cluster.open-cluster-management.io/v1beta1
@@ -261,6 +263,26 @@ spec:
           celExpressions:
             - managedCluster.metadata.labels["version"].matches('^1\\.(30|31)\\.\\d+$')
 ```
+
+If the version info is stored in `clusterClaims`, the user can use the following expression.
+
+```yaml
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Placement
+metadata:
+  name: placement1
+  namespace: default
+spec:
+  numberOfClusters: 3
+  clusterSets:
+    - prod
+  predicates:
+    - requiredClusterSelector:
+        celSelector:
+          celExpressions:
+            - managedCluster.status.clusterClaims.exists(c, c.name == "kubeversion.open-cluster-management.io" && c.value.matches('^1\\.(30|31)\\.\\d+$'))
+```
+
 
 3. The user can use CEL customized functions `versionIsGreaterThan` and `versionIsLessThan` to select clusters by version comparison. For example, select clusters whose kubernetes version > v1.13.0.
 
