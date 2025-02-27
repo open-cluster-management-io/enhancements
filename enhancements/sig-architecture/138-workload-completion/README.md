@@ -60,25 +60,20 @@ type ManifestConfigOption struct {
 
 type CompletionRule struct {
     // Type defines the option of how a manifest should be considered completed.
-    // It can be JSONPaths or WellKnownCompletions.
-    // If the type is JSONPaths, user should specify the jsonPaths field
+    // It can be CEL, or WellKnownCompletions.
+    // If the type is CEL, user should specify the celExpressions field
     // If the type is WellKnownCompletions, certain common types in k8s.io/api will be considered
     // completed as defined by hardcoded rules
     // +kubebuilder:validation:Required
     // +required
     Type CompletionType `json:"type"`
 
-    // JsonPaths defines the json path and expected value to be evaluated for completion
+    // CelExpressions defines the CEL expressions to be evaluated for completion
     // +optional
-    JsonPaths []JsonPathsCompletion `json:"jsonPaths,omitempty"`
-
-    // JsonPathsOperator defines the logical operator used to join the result of multiple paths.
-    // If left empty, this will default to "And"
-    // +optional
-    JsonPathsOperator JsonPathsOperator `json:"jsonPathsOperator,omitempty"`
+    CelExpressions []CelCompletionExpressions `json:"celExpressions"`
 }
 
-// +kubebuilder:validation:Enum=WellKnownCompletions;JSONPaths
+// +kubebuilder:validation:Enum=WellKnownCompletions;CEL
 type CompletionType string
 
 const (
@@ -86,37 +81,22 @@ const (
     // is reflected with a hardcoded rule only for types in k8s.io/api
     WellKnownCompletionsType CompletionType = "WellKnownCompletions"
 
-    // JsonPathsCompletionType represents that a manifest will be considered completed when the given json paths
-    // match specified values.
-    JsonPathsCompletionType CompletionType = "JSONPaths"
+    CelCompletionExpressionsType CompletionType = "CEL"
 )
 
-// +kubebuilder:validation:Enum=And;Or
-type JsonPathsOperator string
-
-const (
-  // JsonPathsLogicalAnd represents that the result of the JsonPaths rule will be the AND of all paths
-  JsonPathsLogicalAnd JsonPathsOperator = "And"
-  // JsonPathsLogicalOr represents that the result of the JsonPaths rule will be the OR of all paths
-  JsonPathsLogicalOr JsonPathsOperator = "Or"
-)
-
-type JsonPathsCompletion struct {
-    // Path represents the json path of the field to be checked for equality.
-    // The path must point to a field with single value in the type of integer, bool or string.
-    // If the path points to a non-existing field, the manifest will not be considered complete.
-    // If the path points to a structure, map or slice, the manifest will not be considered complete.
-    // Ref to https://kubernetes.io/docs/reference/kubectl/jsonpath/ on how to write a jsonPath.
+type CelCompletionExpressions struct {
+    // Expression represents the CEL expression to be evaluated on the manifest.
+    // The expression must evaluate to a single value  in the type of integer, bool or string.
+    // If the expression evaluates to a structure, map or slice, the manifest will not be considered complete.
+    // Ref to https://cel.dev/ on how to write CEL
     // +kubebuilder:validation:Required
     // +required
-    Path string `json:"path"`
-
-    // Value represents the expected value at the given path for the manifest to be considered complete.
+    Expression string `json:"expression"`
+    // Value represents the expected value of the expression to be considered complete.
     // The value will be parsed as an integer, bool, or string depending on the type of the field retrieved from path.
+    // If the value is empty and expression evaluates to bool, it will be compared to `true` by default
     // If parsing to the appropriate type fails, the manifest will not be considered complete.
-    // When the field and parsed value are strictly equivalent, the rule will be considered completed.
-    // +kubebuilder:validation:Required
-    // +required
+    // +optional
     Value string `json:"value"`
 }
 ```
@@ -179,31 +159,19 @@ status:
 WellKnownCompletions rules for Job and Pod
 ```go
 var jobCompletionRule = workapiv1.CompletionRule{
-  Type: workapiv1.JsonPathsCompletionType,
-  JsonPathsOperator: workapiv1.JsonPathsLogicalOr,
-  JsonPaths: []workapiv1.JsonPathsCompletion{
+  Type: workapiv1.CelCompletionExpressionsType,
+  CelExpressions: []workapiv1.CelCompletionExpressions{
     {
-      Path: ".status.conditions[?(@.type=='Complete')].status",
-      Value: "True",
-    },
-    {
-      Path: ".status.conditions[?(@.type=='Failed')].status",
-      Value: "True",
+      Expression: ".status.conditions.filter(c, c.type == 'Complete' || c.type == 'Failed').exists(c, c.status == 'True')",
     },
   }
 }
 
 var podCompletionRule = workapiv1.CompletionRule{
-  Type: workapiv1.JsonPathsCompletionType,
-  JsonPathsOperator: workapiv1.JsonPathsLogicalOr,
-  JsonPaths: []workapiv1.JsonPathsCompletion{
+  Type: workapiv1.CelCompletionExpressionsType,
+  CelExpressions: []workapiv1.CelCompletionExpressions{
     {
-      Path: ".status.phase",
-      Value: "Succeeded",
-    },
-    {
-      Path: ".status.phase",
-      Value: "Failed",
+      Expression: ".status.phase in ['Succeeded', 'Failed']",
     },
   }
 }
@@ -212,17 +180,11 @@ var podCompletionRule = workapiv1.CompletionRule{
 #### evaluating completion rules
 
 Completion for a particular manifest is considered true when the AND of all rules evaluates to true.
-By default, the completion of a JsonPaths slice will be the AND of all given sub-rules. By specifying
-the JsonPathsOperator the user may configure an OR rule instead. The WellKnownCompletions rule for Job
-will make use of the OR operator in order to identify job success or failure as the standard completion states.
+The completion of a CelExpressions slice will be the AND of all given expressions.
 
 Once all completion rules have been satisfied for a manifest, it will no longer be evaluated in future
 reconciliations, even if the values of the targeted object have changed such that it would no longer
 be considered complete.
-
-Due to the limitations of JsonPaths, there may be some complex rules desired by users that cannot
-be expressed. In future, this feature may be extended to allow for CEL rules once support for them
-has been added to OCM (see https://github.com/open-cluster-management-io/ocm/issues/843)
 
 #### agent implementation
 
@@ -312,19 +274,20 @@ spec:
         namespace: default
         name: some-custom-resource
       completionRules:
-        - type: JSONPaths
-          jsonPathsOperator: Or
-          jsonPaths:
-           - path: ".status.conditions[?(@.type=='Complete')].status"
-             value: "True"
-           - path: ".status.conditions[?(@.type=='Failed')].status"
-             value: "True"
+        - type: CEL
+          celExpressions:
+           - expression: |
+              .status.conditions.filter(
+                c, c.type == 'Complete' || c.type == 'Failed'
+              ).exists(
+                c, c.status == 'True'
+              )
 ```
 
 ### Test Plan
 - test that jobs and pods that are completed with WellKnownCompletions and no ttl are no longer updated
 - test that a workload that is completed with a ttl will be deleted after the time has ellapsed
-- test that a workload with custom JSONPaths completion rules are evaluated correctly
+- test that a workload with custom CelExpressions completion rules are evaluated correctly
 
 ### Graduation Criteria
 N/A
@@ -341,23 +304,13 @@ add `completionRules` to any of the manifests that are required to complete befo
 
 ## Alternatives
 
-- Instead of adding the `JsonPathsOperator` to support logical OR rules, we could wait for CEL support in order to handle these
-types of expressions. The downside is that WellKnownCompletions for Jobs would not be expressable as a standard rule until the CEL work is complete, but considering that feature is planned for v1.0.0 it could be worth it to keep JsonPaths simple and avoid cluterring the API.
-  - An equivalent Job completion rule expressed in CEL might look like this:
-    ```yaml
-    completionRules:
-    - type: CELSelectors
-      celSelectors:
-      - expression: `.status.conditions.filter(c, c.type == 'Complete' || c.type == 'Failed').exists(c, c.status == 'True')
-    ```
-  - CEL rules would compare against boolean `true` by default, but would also accept a value to compare against similar to JSONPaths
-  - This eliminates the need for JSON logical operators, and provides much greater flexibility to users in how they define rules
-
-- Treat JsonPathsCompletion more like metav1.LabelSelectorRequirement from LabelSelector.MatchExpression
+- Treat celCompletionExpressions more like metav1.LabelSelectorRequirement from LabelSelector.MatchExpression
   - Values would be a slice instead of a single value
   - Add an Operator field with options:
     - In
     - NotIn
     - Exists
     - DoesNotExist
-  - This would make the JsonPaths type more flexible, but if CEL support is added then it may not be necessary
+  - Probably not really needed for CEL, since you can express all of these operators in CEL itself and then compare to a final boolean result.
+    If it is decided to keep JSONPaths support in addition to CEL this this would make more sense, but otherwise it's not really necesssary
+    and increases complexity of the design.
