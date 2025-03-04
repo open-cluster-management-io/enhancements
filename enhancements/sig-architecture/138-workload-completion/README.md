@@ -10,92 +10,118 @@
 
 ## Summary
 
-This proposal introduces completion rules in manifestwork to identify that one or more of its workloads has completed
-and should not be updated or recreated. Automated garbage collection can optionally be enabled with a TTL to delete the entire manifestwork
-once all of its completion rules have been satisfied.
+This proposal introduces condition rules in manifestwork to extract status conditions from
+resources it controls and orchestrate higher level behaviors. The first condition to be managed
+in this way will be the `Complete` condition, which identifies that one or more of its workloads
+has completed and should not be updated or recreated. Automated garbage collection can optionally
+be enabled with a TTL to delete the entire manifestwork once all of its `Complete` condition rules
+have been satisfied.
 
 ## Motivation
 
-OCM currently does not have support for workloads that are expected to complete and be deleted from spoke clusters.
-Often a user wants to run a workload exactly once, and then have the resources they created be automatically garbage collected.
+OCM currently does not have support for workloads that are expected to complete and be deleted
+from spoke clusters. Often a user wants to run a workload exactly once, and then have the
+resources they created be automatically garbage collected.
 
 Examples:
-- Job with `ttlSecondsAfterFinished` set would get cleaned up by the spoke's job controller after completion
-- Pod with `restartPolicy` set to `Never` or `OnFailure` that eventually exits, and is deleted along with its node by the cluster-autoscaler
+- Job with `ttlSecondsAfterFinished` set would get cleaned up by the spoke's job controller after
+  completion
+- Pod with `restartPolicy` set to `Never` or `OnFailure` that eventually exits, and is deleted
+  along with its node by the cluster-autoscaler
 
-In both cases, OCM would recreate the deleted resources so long as the manifestwork still exists, while the intention
-is most likely to only run them once.
+In both cases, OCM would recreate the deleted resources so long as the manifestwork still exists,
+while the intention is most likely to only run them once.
+
+There may be additional conditions in future that the manifestwork controller, or others built
+on top of it, want to use as triggers for various behaviors. With that in mind, this feature is
+designed in a generic way such that any condition can be specified.
 
 ## Proposal
 
-Add new `CompletionRules` to `ManifestConfigs` to identify that a particular workload is completable,
-and how to determine when it is done. `ManifestCondition` would be updated with a new `StatusCompletions`
-containing the status of each completion rule for the manifest. A new field `TTLSecondsAfterFinished` will be
-added to `DeleteOption` which enables garbage collection for the entire manifestwork after all completion rules
-have been satisfied. If a TTL is set with no completion rules, then the manifestwork will never be considered
-finished and therefore never be garbage collected. Likewise if completion rules are set but not TTL, the manifestwork
-will complete but not be automatically deleted.
+Add new `ConditionRules` to `ManifestConfigs` to set certain conditions on the ManifestWork based
+on its resources. Certain conditions may control higher level behaviors of the ManifestWork.
+The first condition rule to be supported will be `Complete`, which identifies that a particular
+workload is completable, and how to determine when it is done. A new field `TTLSecondsAfterFinished`
+will be added to `DeleteOption` which enables garbage collection for the entire manifestwork after
+all `Complete` conditions have been satisfied. If a TTL is set with no `Complete` condition rules,
+then the manifestwork will never be considered finished and therefore never be garbage collected.
+Likewise if `Complete` condition rules are set but not TTL, the manifestwork will complete but
+not be automatically deleted.
 
-Once a particular manifest has been marked as completed, it is no longer elligible to be updated or recreated
-by the spoke controller, regardless of the completion status of other manifests in the manifestwork. When all
-manifests with completion rules have completed, the entire manifestwork is considered to be complete (including
-manifests that did NOT specify completion rules), and no more updates will be made.
+Once a particular manifest has been marked as completed, it is no longer elligible to be updated or
+recreated by the spoke controller, regardless of the completion status of other manifests in the
+manifestwork. When all manifests with `Complete` condition rules have completed, the entire manifestwork is
+considered to be complete (including manifests that did NOT specify `Complete` rules), and no more
+updates will be applied.
+
+If a user wishes to complete some of the manifests but not the entire manifestwork, all they would
+need to do is set a `Complete` condition rule with the CEL expression `false` for at least
+one other manifest to make the manifestwork incompletable.
 
 ### Design Details
 
 #### API change
 
-To configure completion of a manifestwork, `completionRules` will be added to `manifestConfigs`
+To configure conditions of a manifestwork, `conditionRules` will be added to `manifestConfigs`
 
 ```go
 type ManifestConfigOption struct {
     ...
 
-    // CompletionRules defines when a manifest should be considered completed. A completed manifest
-    // will no longer recieve updates or be recreated on deletion. If it is not set or empty,
-    // the manifest will not be considered completable.
+    // ConditionRules defines how to set manifestwork conditions for a specific manifest.
     // +optional
-    CompletionRules []CompletionRule `json:"completionRules,omitempty"`
+    ConditionRules []ConditionRule `json:"conditionRules,omitempty"`
 }
 
-type CompletionRule struct {
-    // Type defines the option of how a manifest should be considered completed.
+// +kubebuilder:validation:XValidation:rule="self.type != 'CEL' || self.condition != ''",message="Condition is required for CEL rules"
+type ConditionRule struct {
+    // Condition is the type of condition that is set based on this rule.
+    // Any condition is supported, but certain special conditions can be used to
+    // to control higher level behaviors of the manifestwork.
+    // If the condition is Complete, the manifest will no longer be updated once completed.
+    // Required for CEL rules, WellKnownCompletions will default to the "Complete" condition
+    // +optional
+    Condition string `json:"condition"`
+
+    // Type defines how a manifest should be evaluated for a condition.
     // It can be CEL, or WellKnownCompletions.
     // If the type is CEL, user should specify the celExpressions field
     // If the type is WellKnownCompletions, certain common types in k8s.io/api will be considered
-    // completed as defined by hardcoded rules
+    // completed as defined by hardcoded rules.
     // +kubebuilder:validation:Required
     // +required
-    Type CompletionType `json:"type"`
+    Type ConditionRuleType `json:"type"`
 
-    // CelExpressions defines the CEL expressions to be evaluated for completion
+    // CelExpressions defines the CEL expressions to be evaluated for the condition.
+    // Final result is the logical AND of all rules.
     // +optional
-    CelExpressions []CelCompletionExpressions `json:"celExpressions"`
+    CelExpressions []CelConditionExpressions `json:"celExpressions"`
 }
 
 // +kubebuilder:validation:Enum=WellKnownCompletions;CEL
-type CompletionType string
+type ConditionRuleType string
 
 const (
-    // WellKnownCompletionType represents standard completions for some common types, which
-    // is reflected with a hardcoded rule only for types in k8s.io/api
-    WellKnownCompletionsType CompletionType = "WellKnownCompletions"
+    // WellKnownCompletionsType represents a standard Complete condition for some common types, which
+    // is reflected with a hardcoded rule for types in k8s.io/api
+    WellKnownCompletionsType ConditionRuleType = "WellKnownCompletions"
 
-    CelCompletionExpressionsType CompletionType = "CEL"
+    // CelConditionExpressionsType enables user defined rules to set the status of the condition
+    CelConditionExpressionsType CompletionType = "CEL"
 )
 
-type CelCompletionExpressions struct {
+type CelConditionExpressions struct {
     // Expression represents the CEL expression to be evaluated on the manifest.
-    // The expression must evaluate to a single value  in the type of integer, bool or string.
-    // If the expression evaluates to a structure, map or slice, the manifest will not be considered complete.
+    // The expression must evaluate to a single value in the type of integer, bool or string.
+    // If the expression evaluates to a structure, map or slice, the condition's status will be False.
     // Ref to https://cel.dev/ on how to write CEL
     // +kubebuilder:validation:Required
     // +required
     Expression string `json:"expression"`
-    // Value represents the expected value of the expression to be considered complete.
+    // Value represents the expected value of the expression to set the condition's status to True.
     // The value will be parsed as an integer, bool, or string depending on the type of the field retrieved from path.
-    // If the value is empty and expression evaluates to bool, it will be compared to `true` by default
-    // If parsing to the appropriate type fails, the manifest will not be considered complete.
+    // If the value is empty and expression evaluates to bool, it will be compared to boolean `true` by default
+    // If parsing to the appropriate type fails, the condition's status will be False.
     // +optional
     Value string `json:"value"`
 }
@@ -107,8 +133,8 @@ To enable automated garbage collection after completion, `ttlSecondsAfterFinishe
 type DeleteOption struct {
   ...
 
-  // TTLSecondsAfterFinished limits the lifetime of a ManifestWork that has satisfied
-  // all completionRules configured for its manifests. If this field is set, and
+  // TTLSecondsAfterFinished limits the lifetime of a ManifestWork that has been marked Complete
+  // by one or more conditionRules set for its manifests. If this field is set, and
   // the manifestwork has completed, then it is elligible to be automatically deleted.
   // If this field is unset, the manifestwork won't be automatically deleted even afer completion.
   // If this field is set to zero, the manfiestwork becomes elligible to be deleted immediately
@@ -118,58 +144,33 @@ type DeleteOption struct {
 }
 ```
 
-To track completion of individual manifests, `statusCompletions` will be added to `status.manifests`
+Additional named condition type
 
 ```go
-type ManifestCondition struct {
-    ...
+const (
+  ...
 
-    // StatusCompletion represents the completion status of rules defined for the manifest
-    // +optional
-    StatusCompletions []StatusCompletionResult `json:"statusCompletion,omitempty"`
-}
-
-type StatusCompletionResult struct {
-    // CompletionTime represents that time at which a completion rule was first observed to be completed
-    CompletionTime *metav1.Time `json:"completionTime"`
-}
-```
-
-Additionally, once all `CompletionRules` for a manifest have been satisfied, a new `Condition` will be added to `status.manifests.conditions`,
-and to `status.conditions` once all completable manifests have been completed.
-
-```yaml
-status:
-  conditions:
-  - lastTransitionTime: "2025-02-20T18:53:40Z"
-    message: All manifests completed
-    reason: ManifestWorkCompleted
-    status: "True"
-    type: Complete
-  manifests:
-    - conditions:
-        - lastTransitionTime: "2025-02-20T18:53:40Z"
-          message: Manifest completion rules passed
-          reason: ManifestCompleted
-          status: "True"
-          type: Complete
-      ...
+	// ManifestComplete represents that the manifest has completed and should no longer be updated
+  ManifestComplete string = "Complete"
+)
 ```
 
 WellKnownCompletions rules for Job and Pod
 ```go
-var jobCompletionRule = workapiv1.CompletionRule{
-  Type: workapiv1.CelCompletionExpressionsType,
-  CelExpressions: []workapiv1.CelCompletionExpressions{
+var jobConditionRule = workapiv1.ConditionRule{
+  Condition: workapiv1.ManifestComplete,
+  Type: workapiv1.CelConditionExpressionsType,
+  CelExpressions: []workapiv1.CelConditionExpressions{
     {
       Expression: ".status.conditions.filter(c, c.type == 'Complete' || c.type == 'Failed').exists(c, c.status == 'True')",
     },
   }
 }
 
-var podCompletionRule = workapiv1.CompletionRule{
-  Type: workapiv1.CelCompletionExpressionsType,
-  CelExpressions: []workapiv1.CelCompletionExpressions{
+var podConditionRule = workapiv1.ConditionRule{
+  Condition: workapiv1.ManifestComplete,
+  Type: workapiv1.CelConditionExpressionsType,
+  CelExpressions: []workapiv1.CelConditionExpressions{
     {
       Expression: ".status.phase in ['Succeeded', 'Failed']",
     },
@@ -177,35 +178,43 @@ var podCompletionRule = workapiv1.CompletionRule{
 }
 ```
 
-#### evaluating completion rules
+#### evaluating condition rules
 
-Completion for a particular manifest is considered true when the AND of all rules evaluates to true.
-The completion of a CelExpressions slice will be the AND of all given expressions.
+A condition for a particular manifest is considered "True" when the AND of all matching rules evaluates to true.
+The status of a CelExpressions slice will be the AND of all given expressions.
 
-Once all completion rules have been satisfied for a manifest, it will no longer be evaluated in future
+Once all `Complete` condition rules have been satisfied for a manifest, it will no longer be evaluated in future
 reconciliations, even if the values of the targeted object have changed such that it would no longer
 be considered complete.
 
 #### agent implementation
 
-On each manifestwork reconciliation the agent will first check for the `Complete` condition. If set,
-it will check if `ttlSecondsAfterFinished` has ellapsed, and if so delete the manifestwork from the hub cluster.
+On each manifestwork reconciliation the agent will first check for the `Complete` condition.
+If set, it will check if `ttlSecondsAfterFinished` has ellapsed, and if so delete the manifestwork
+from the hub cluster.
 
-Next manifests that have been marked completed will be filtered out of the manifests slice before
-applying. Completion will be evaluated by Appliers in order to reduce API traffic on the spoke,
-since they already must get the existing resource in almost all cases. ServerSideApply currently
-only issues a GET if a hash comparison is required, and this change will add an additional case
-where it must first fetch the existing resource before applying.
+Manifests that have already been marked `Complete` will be filtered out before applying.
+Conditions will be evaluated after applying, however `Complete` is a special case
+that needs to be evaluated by any applier that updates existing manifests
+(currently ServerSideApply and UpdateApply). In these cases, the `Complete` condition will be
+evaluated prior to update on the existing resource, and if it passes then no update will be applied.
+This is required in order to provide guarantees that a manifest will not be updated once
+it has completed. ServerSideApply is the only case where there is a potential for a race condition
+on update, since it does not perform optimistic locking by resourceVersion like UpdateApply does.
+Because UpdateApply uses the openshift `resourceapply` package, it will use a wrapper on the ResourceCache
+interface that overrides `SafeToSkipApply(required runtime.Object, existing runtime.Object) bool`
+in order to evaluate the `Complete` condition before updating.
 
-If a resource is determined to be completed then it will not be updated or created, regardless of
-the update strategy, and the existing object will be returned along with an error of type
-`CompletedManifestError`. The `manifestworkReconciler` will check for this error type when creating
-status conditions for the manifest, and ignore it when creating the final list of errors.
+All condition rules will be evaluated by the `manifestworkReconciler` on the result of apply. The `Complete`
+condition may be evaluated twice during each reconciliation depending on the applier type (see above).
+Top level conditions for the ManifestWork will be aggregated as the logical AND of
+conditions speficied for all of its manifests.
 
-Finally if all manifests with completion rules are marked completed it will set the `Complete`
-condition on the top level `status.conditions` for the manifestwork. Garbage collection based
-on `ttlSecondsAfterFinished` will not be evaluated until the next reconciliation, but the reconciler
-will set requeue based on the TTL in order to schedule GC at the appropriate time.
+Finally if the `Complete` condition is true on the top level conditions, the ManifestWork becomes
+elligible for deletion. Garbage collection based on `ttlSecondsAfterFinished` will not be evaluated
+until the next reconciliation, but the reconciler can requeue based on the TTL in order to schedule
+GC at the appropriate time. If `ttlSecondsAfterFinished` is not set, then the ManifestWork will
+be ignored until it is deleted by an external action.
 
 #### examples
 
@@ -218,24 +227,15 @@ metadata:
   namespace: <target managed cluster>
   name: example-job
 spec:
-  workload: ...
   manifestConfigs:
     - resourceIdentifier:
         resource: jobs
         name: some-job
         namespace: default
-      completionRules:
+      conditionRules:
         - type: WellKnownCompletions
-status:
-  resourceStatus:
-    manifests:
-      - resourceMeta:
-          resource: jobs
-          name: some-job
-          namespace: default
-          ...
-        statusCompletions:
-          - completionTime: nil
+  workload: ...
+```
 
 Run a job once and delete all associated manifests on completion
 
@@ -253,12 +253,12 @@ spec:
         resource: jobs
         namespace: default
         name: some-job
-      completionRules:
+      conditionRules:
         - type: WellKnownCompletions
   workload: ...
 ```
 
-Identify custom completion states for any arbitrary resource
+CEL expression conditions for a custom resource
 
 ```yaml
 apiVersion: work.open-cluster-management.io/v1
@@ -273,8 +273,9 @@ spec:
         resource: mycustomresources
         namespace: default
         name: some-custom-resource
-      completionRules:
-        - type: CEL
+      conditionRules:
+        - condition: Complete
+          type: CEL
           celExpressions:
            - expression: |
               .status.conditions.filter(
@@ -282,12 +283,65 @@ spec:
               ).exists(
                 c, c.status == 'True'
               )
+        - condition: MyCondition
+          type: CEL
+          celExpressions:
+           - expression: |
+              .status.conditions.exists(
+                c, c.type == 'MyCondition' && c.status == 'True'
+              )
+```
+
+Status conditions
+
+```yaml
+apiVersion: work.open-cluster-management.io/v1
+kind: ManifestWork
+metadata:
+  namespace: <target managed cluster>
+  name: example-statuses
+spec:
+  ...
+status:
+  conditions:
+  - lastTransitionTime: "2025-02-20T18:53:40Z"
+    message: One or more manifests is not Complete
+    reason: ConditionRulesFailed
+    status: "False"
+    type: Complete
+  - lastTransitionTime: "2025-02-20T18:53:40Z"
+    message: One or more manifests is not Initialized
+    reason: ConditionRulesFailed
+    status: "False"
+    type: Initialized
+  manifests:
+    - conditions:
+        - lastTransitionTime: "2025-02-20T19:12:22Z"
+          message: Manifest is Complete
+          reason: ConditionRulesPassed
+          status: "True"
+          type: Complete
+      ...
+    - conditions:
+        - lastTransitionTime: "2025-02-20T18:53:40Z"
+          message: Manifest is not Complete
+          reason: ConditionRulesFailed
+          status: "False"
+          type: Complete
+        - lastTransitionTime: "2025-02-20T18:53:40Z"
+          // CEL error
+          message: "failed to evaluate: no such key: initialzed"
+          reason: ConditionRulesFailed
+          status: "False"
+          type: Initialized
+      ...
 ```
 
 ### Test Plan
 - test that jobs and pods that are completed with WellKnownCompletions and no ttl are no longer updated
 - test that a workload that is completed with a ttl will be deleted after the time has ellapsed
-- test that a workload with custom CelExpressions completion rules are evaluated correctly
+- test that a workload with custom CelExpressions condition rules are evaluated correctly
+- test that CEL evaluation errors are set in condition messages
 
 ### Graduation Criteria
 N/A
@@ -296,7 +350,8 @@ N/A
 It will need upgrade on CRD of ManifestWork on hub cluster, and upgrade of work agent on managed cluster.
 
 When a user needs to use this feature with an existing `ManifestWork`, the user needs to update the `ManifestWork` to
-add `completionRules` to any of the manifests that are required to complete before the `ManifestWork` should be considered complete.
+add `conditionRules` for the `Complete` condition to any of the manifests that are required to complete
+before the `ManifestWork` should be considered complete.
 
 ### Version Skew Strategy
 - The new fields are optional, and if not set, the manifestwork will be handled the same as by previous versions
@@ -304,7 +359,17 @@ add `completionRules` to any of the manifests that are required to complete befo
 
 ## Alternatives
 
-- Treat celCompletionExpressions more like metav1.LabelSelectorRequirement from LabelSelector.MatchExpression
+- Skip evaluating the `Complete` condition before apply, handle all conditions identically.
+  - Removes the need for double-evaluating these conditions before/after apply
+  - Relaxes the constraint on updating a completed manifest
+    - Manifests will be updated _at least_ once before `Complete` condition is read and persisted
+  - ServerSideApply already has a critical window where a manifest could complete after GET before UPDATE,
+    so this would make the behavior consistent across all update types. On the other hand, it could be desireable
+    to be able to provide strict guarantees as long as you use the `UpdateApply` type.
+  - There are already many cases where an update cannot be applied (immutable fields, like job's pod template)
+    which the users needs to be aware of, so it may not be worthwhile to attempt to prevent updates to completed resources.
+
+- Treat celConditionExpressions more like metav1.LabelSelectorRequirement from LabelSelector.MatchExpression
   - Values would be a slice instead of a single value
   - Add an Operator field with options:
     - In
@@ -314,3 +379,51 @@ add `completionRules` to any of the manifests that are required to complete befo
   - Probably not really needed for CEL, since you can express all of these operators in CEL itself and then compare to a final boolean result.
     If it is decided to keep JSONPaths support in addition to CEL this this would make more sense, but otherwise it's not really necesssary
     and increases complexity of the design.
+
+## Optional Enhancement
+
+- Support map schema returned from CEL
+  - In addition to primitive types, allow CEL expression to return a map with certain fields used
+    by metav1.Condition in order to set custom message/reason
+  - Example:
+    ```go
+    type ConditionRuleResult struct {
+      // Supported metav1.Condition fields
+      Message string
+      Reason string
+      // Compared against expected value from condition rule
+      Value any
+    }
+    ```
+    ```yaml
+    spec:
+      workload: ...
+      manifestConfigs:
+        - resourceIdentifier:
+            resource: mycustomresources
+            namespace: default
+            name: some-custom-resource
+          conditionRules:
+            - condition: ExpectedCount
+              type: CEL
+              celExpressions:
+                - expression: |
+                    .status.count >= .status.expectedCount
+                      ? {
+                        "message": "Count matches expected",
+                        "reason": "CountReached",
+                        "value": true
+                      }
+                      : {
+                        "message": "Count is only " + string(.status.count) + " expected " + string(.status.expectedCount),
+                        "reason": "CountNotReached",
+                        "value": false,
+                      }
+    status:
+      manifests:
+      - conditions:
+          - type: ExpectedCount
+            message: Count is only 3, expected 4
+            reason: CountNotReached
+            status: "False"
+    ```
