@@ -112,20 +112,14 @@ const (
 
 type CelConditionExpressions struct {
     // Expression represents the CEL expression to be evaluated on the manifest.
-    // The expression must evaluate to a single value in the type of integer, bool or string.
-    // If the expression evaluates to a structure, map or slice, the condition's status will be False.
+    // The expression must evaluate to a bool.
+    // If the expression evaluates to any other type, the condition's status will be False.
     // Ref to https://cel.dev/ on how to write CEL
     // Variables:
     // - object: The current instance of the manifest
     // +kubebuilder:validation:Required
     // +required
     Expression string `json:"expression"`
-    // Value represents the expected value of the expression to set the condition's status to True.
-    // The value will be parsed as an integer, bool, or string depending on the type of the field retrieved from path.
-    // If the value is empty and expression evaluates to bool, it will be compared to boolean `true` by default
-    // If parsing to the appropriate type fails, the condition's status will be False.
-    // +optional
-    Value string `json:"value"`
 }
 ```
 
@@ -371,17 +365,6 @@ before the `ManifestWork` should be considered complete.
   - There are already many cases where an update cannot be applied (immutable fields, like job's pod template)
     which the users needs to be aware of, so it may not be worthwhile to attempt to prevent updates to completed resources.
 
-- Treat celConditionExpressions more like metav1.LabelSelectorRequirement from LabelSelector.MatchExpression
-  - Values would be a slice instead of a single value
-  - Add an Operator field with options:
-    - In
-    - NotIn
-    - Exists
-    - DoesNotExist
-  - Probably not really needed for CEL, since you can express all of these operators in CEL itself and then compare to a final boolean result.
-    If it is decided to keep JSONPaths support in addition to CEL this this would make more sense, but otherwise it's not really necesssary
-    and increases complexity of the design.
-
 ## Optional Enhancement
 
 - Support map schema returned from CEL
@@ -393,8 +376,6 @@ before the `ManifestWork` should be considered complete.
       // Supported metav1.Condition fields
       Message string
       Reason string
-      // Compared against expected value from condition rule
-      Value any
     }
     ```
     ```yaml
@@ -414,12 +395,10 @@ before the `ManifestWork` should be considered complete.
                       ? {
                         "message": "Count matches expected",
                         "reason": "CountReached",
-                        "value": true
                       }
                       : {
                         "message": "Count is only " + string(object.status.count) + " expected " + string(object.status.expectedCount),
                         "reason": "CountNotReached",
-                        "value": false,
                       }
     status:
       manifests:
