@@ -115,6 +115,8 @@ type CelConditionExpressions struct {
     // The expression must evaluate to a single value in the type of integer, bool or string.
     // If the expression evaluates to a structure, map or slice, the condition's status will be False.
     // Ref to https://cel.dev/ on how to write CEL
+    // Variables:
+    // - object: The current instance of the manifest
     // +kubebuilder:validation:Required
     // +required
     Expression string `json:"expression"`
@@ -162,7 +164,7 @@ var jobConditionRule = workapiv1.ConditionRule{
   Type: workapiv1.CelConditionExpressionsType,
   CelExpressions: []workapiv1.CelConditionExpressions{
     {
-      Expression: ".status.conditions.filter(c, c.type == 'Complete' || c.type == 'Failed').exists(c, c.status == 'True')",
+      Expression: "object.status.conditions.filter(c, c.type == 'Complete' || c.type == 'Failed').exists(c, c.status == 'True')",
     },
   }
 }
@@ -172,7 +174,7 @@ var podConditionRule = workapiv1.ConditionRule{
   Type: workapiv1.CelConditionExpressionsType,
   CelExpressions: []workapiv1.CelConditionExpressions{
     {
-      Expression: ".status.phase in ['Succeeded', 'Failed']",
+      Expression: "object.status.phase in ['Succeeded', 'Failed']",
     },
   }
 }
@@ -278,7 +280,7 @@ spec:
           type: CEL
           celExpressions:
            - expression: |
-              .status.conditions.filter(
+              object.status.conditions.filter(
                 c, c.type == 'Complete' || c.type == 'Failed'
               ).exists(
                 c, c.status == 'True'
@@ -287,7 +289,7 @@ spec:
           type: CEL
           celExpressions:
            - expression: |
-              .status.conditions.exists(
+              object.status.conditions.exists(
                 c, c.type == 'MyCondition' && c.status == 'True'
               )
 ```
@@ -408,14 +410,14 @@ before the `ManifestWork` should be considered complete.
               type: CEL
               celExpressions:
                 - expression: |
-                    .status.count >= .status.expectedCount
+                    object.status.count >= object.status.expectedCount
                       ? {
                         "message": "Count matches expected",
                         "reason": "CountReached",
                         "value": true
                       }
                       : {
-                        "message": "Count is only " + string(.status.count) + " expected " + string(.status.expectedCount),
+                        "message": "Count is only " + string(object.status.count) + " expected " + string(object.status.expectedCount),
                         "reason": "CountNotReached",
                         "value": false,
                       }
