@@ -70,8 +70,9 @@ type ClusterCelSelector struct {
 A ManagedClusterLib will be added.
 - Variable `managedCluster` will be added.
 - Function `scores` will be added. 
-- Function `versionIsGreaterThan`, `versionIsLessThan` will be added. 
-- Function `quantityIsGreaterThan`, `quantityIsLessThan` will be added. 
+- Function `parseJSON` will be added. 
+- Kubernetes semver library is included.
+- Kubernetes quantity library is included.
 
 ```go
 // ManagedClusterLib defines the CEL library for ManagedCluster evaluation.
@@ -96,72 +97,59 @@ A ManagedClusterLib will be added.
 //   - name: string - The name of the score
 //   - value: int - The numeric score value
 //   - quantity: number|string - The quantity value, represented as:
-//     * number: for pure decimal values (e.g., 3)
-//     * string: for values with units or decimal places (e.g., "300Mi", "1.5Gi")
+//   - number: for pure decimal values (e.g., 3)
+//   - string: for values with units or decimal places (e.g., "300Mi", "1.5Gi")
 //
 // Examples:
 //
-//	managedCluster.scores("cpu-memory") // returns [{name: "cpu", value: 3, quantity: 3}, {name: "memory", value: 4, quantity: "300Mi"}]
+//	managedCluster.scores("cpu-memory") // returns [{name: "cpu", value: 3, quantity: 3"}, {name: "memory", value: 4, quantity: "300Mi"}]
 //
-// Version Comparisons:
+// parseJSON
 //
-// versionIsGreaterThan
+// Parses a JSON string into a CEL-compatible map or list.
 //
-// Returns true if the first version string is greater than the second version string.
-// The version must follow Semantic Versioning specification (http://semver.org/).
-// It can be with or without 'v' prefix (eg, "1.14.3" or "v1.14.3").
+//	parseJSON(<string>) <dyn>
 //
-//	versionIsGreaterThan(<string>, <string>) <bool>
-//
-// Examples:
-//
-//	versionIsGreaterThan("1.25.0", "1.24.0") // returns true
-//	versionIsGreaterThan("1.24.0", "1.25.0") // returns false
-//
-// versionIsLessThan
-//
-// Returns true if the first version string is less than the second version string.
-// The version must follow Semantic Versioning specification (http://semver.org/).
-// It can be with or without 'v' prefix (eg, "1.14.3" or "v1.14.3").
-//
-//	versionIsLessThan(<string>, <string>) <bool>
+// Takes a single string argument, attempts to parse it as JSON, and returns the resulting
+// data structure as a CEL-compatible value. If the input is not a valid JSON string, it returns an error.
 //
 // Examples:
 //
-//	versionIsLessThan("1.24.0", "1.25.0") // returns true
-//	versionIsLessThan("1.25.0", "1.24.0") // returns false
+//	parseJSON("{\"key\": \"value\"}") // returns a map with key-value pairs
 //
-// Quantity Comparisons:
+// Semver Library:
 //
-// quantityIsGreaterThan
-//
-// Returns true if the first quantity string is greater than the second quantity string.
-//
-//	quantityIsGreaterThan(<string>, <string>) <bool>
+// Semver provides a CEL function library extension for [semver.Version].
+// Upstream enhancement to support v is a prefix https://github.com/kubernetes/kubernetes/pull/130648.
 //
 // Examples:
 //
-//	quantityIsGreaterThan("2Gi", "1Gi") // returns true
-//	quantityIsGreaterThan("1Gi", "2Gi") // returns false
-//	quantityIsGreaterThan("1000Mi", "1Gi") // returns false
+//	semver("1.2.3").isLessThan(semver("1.2.4")) // returns true
+//	semver("1.2.3").isGreaterThan(semver("1.2.4")) // returns false
 //
-// quantityIsLessThan
+// Quantity Library:
 //
-// Returns true if the first quantity string is less than the second quantity string.
-//
-//	quantityIsLessThan(<string>, <string>) <bool>
+// Quantity provides a CEL function library extension of Kubernetes resource.
 //
 // Examples:
 //
-//	quantityIsLessThan("1Gi", "2Gi") // returns true
-//	quantityIsLessThan("2Gi", "1Gi") // returns false
-//	quantityIsLessThan("1000Mi", "1Gi") // returns true
+//	 quantity("100Mi").isLessThan(quantity("200Mi")) // returns true
+//	 quantity("100Mi").isGreaterThan(quantity("200Mi")) // returns false
 
 type ManagedClusterLib struct{}
 
 // CompileOptions implements cel.Library interface to provide compile-time options.
 func (ManagedClusterLib) CompileOptions() []cel.EnvOption {
 	return []cel.EnvOption{
+		// Add the extended strings library
+		ext.Strings(),
+
+		// Add the kubernetes semver library
+		library.SemverLib(),
+
+		// Add the kubernetes quantity library
+		library.Quantity(),
+
 		// The input types may either be instances of `proto.Message` or `ref.Type`.
 		// Here we use func ConvertManagedCluster() to convert ManagedCluster to a Map.
 		cel.Variable("managedCluster", cel.MapType(cel.StringType, cel.DynType)),
@@ -174,36 +162,12 @@ func (ManagedClusterLib) CompileOptions() []cel.EnvOption {
 				cel.FunctionBinding(clusterScores)),
 		),
 
-		cel.Function("versionIsGreaterThan",
-			cel.MemberOverload(
-				"version_is_greater_than",
-				[]*cel.Type{cel.StringType, cel.StringType},
-				cel.BoolType,
-				cel.FunctionBinding(versionIsGreaterThan)),
-		),
-
-		cel.Function("versionIsLessThan",
-			cel.MemberOverload(
-				"version_is_less_than",
-				[]*cel.Type{cel.StringType, cel.StringType},
-				cel.BoolType,
-				cel.FunctionBinding(versionIsLessThan)),
-		),
-
-		cel.Function("quantityIsGreaterThan",
-			cel.MemberOverload(
-				"quantity_is_greater_than",
-				[]*cel.Type{cel.StringType, cel.StringType},
-				cel.BoolType,
-				cel.FunctionBinding(quantityIsGreaterThan)),
-		),
-
-		cel.Function("quantityIsLessThan",
-			cel.MemberOverload(
-				"quantity_is_less_than",
-				[]*cel.Type{cel.StringType, cel.StringType},
-				cel.BoolType,
-				cel.FunctionBinding(quantityIsLessThan)),
+		cel.Function("parseJSON",
+			cel.MemberOverload("parse_json_string",
+				[]*cel.Type{cel.StringType},
+				cel.DynType,
+				cel.FunctionBinding(l.parseJSON),
+			),
 		),
 	}
 }
@@ -223,6 +187,15 @@ func NewEvaluator() (*Evaluator, error) {
 }
 ```
 
+### Metrics for time spent evaluating CEL at runtime.
+- TBD
+
+### Cost budget
+- TBD
+
+### CEL validation error message
+- TBD
+
 ### Examples
 
 1. The user can select clusters by Kubernetes version listed in `managedCluster.Status.version.kubernetes`.
@@ -234,14 +207,11 @@ metadata:
   name: placement1
   namespace: default
 spec:
-  numberOfClusters: 3
-  clusterSets:
-    - prod
   predicates:
     - requiredClusterSelector:
         celSelector:
           celExpressions:
-            - managedCluster.Status.version.kubernetes == "v1.30.0"
+            - managedCluster.status.version.kubernetes == "v1.30.0"
 ```
 2. The user can use CEL [Standard macros](https://github.com/google/cel-spec/blob/master/doc/langdef.md#macros) and [Standard functions](https://github.com/google/cel-spec/blob/master/doc/langdef.md#standard-definitions) on the `managedCluster` fields. 
 
@@ -254,9 +224,6 @@ metadata:
   name: placement1
   namespace: default
 spec:
-  numberOfClusters: 3
-  clusterSets:
-    - prod
   predicates:
     - requiredClusterSelector:
         celSelector:
@@ -273,9 +240,6 @@ metadata:
   name: placement1
   namespace: default
 spec:
-  numberOfClusters: 3
-  clusterSets:
-    - prod
   predicates:
     - requiredClusterSelector:
         celSelector:
@@ -284,7 +248,7 @@ spec:
 ```
 
 
-3. The user can use CEL customized functions `versionIsGreaterThan` and `versionIsLessThan` to select clusters by version comparison. For example, select clusters whose kubernetes version > v1.13.0.
+3. The user can use Kubernetes semver library functions `isLessThan` and `isGreaterThan` to select clusters by version comparison. For example, select clusters whose kubernetes version > v1.13.0.
 
 
 ```yaml
@@ -294,18 +258,17 @@ metadata:
   name: placement1
   namespace: default
 spec:
-  numberOfClusters: 3
-  clusterSets:
-    - prod
   predicates:
     - requiredClusterSelector:
         celSelector:
           celExpressions:
-            - managedCluster.Status.version.kubernetes.versionIsGreaterThan("v1.30.0")
+            # Upstream enhancement to support v is a prefix https://github.com/kubernetes/kubernetes/pull/130648.
+			- semver(managedCluster.status.version.kubernetes, true).isGreaterThan(semver("v1.30.0", true))
 ```
 
 
-4. The user can use CEL customized function `score` to select clusters by `AddonPlacementScore`. For example, select clusters whose cpuAvailable score < 2.
+4. The user can use CEL customized function `scores` to select clusters by `AddonPlacementScore`. And use Kubernetes quantity library function `isLessThan` and `isGreaterThan` to compare quantities.
+For example, select clusters whose cpuAvailable quantity > 4 and memAvailable quantity > 100Mi.
 
 
 ```yaml
@@ -315,17 +278,62 @@ metadata:
   name: placement1
   namespace: default
 spec:
-  numberOfClusters: 3
-  clusterSets:
-    - prod
   predicates:
     - requiredClusterSelector:
         celSelector:
           celExpressions:
             - managedCluster.scores("default").filter(s, s.name == 'cpuAvailable').all(e, e.quantity > 4)
-            - managedCluster.scores("default").filter(s, s.name == 'memAvailable').all(e, e.quantity.quantityIsGreaterThan("100Mi"))
+            - managedCluster.scores("default").filter(s, s.name == 'memAvailable').all(e, quantity(e.quantity).isGreaterThan(quantity("100Mi")))
 ```
 
+5. The user can use CEL to prase properties with format like, a comma separated string or a json format string.
+
+```yaml
+apiVersion: multicluster.x-k8s.io/v1alpha1
+kind: ClusterProfile
+metadata:
+ name: bravelion
+ namespace: ...
+...
+status:
+   properties:
+   - name: sku.node.k8s.io
+     value: g6.xlarge,Standard_NC48ads_H100,m3-ultramem-32
+   - name: sku.gpu.kubernetes-fleet.io
+     value: |
+		{
+		    "H100": [
+		        {
+		            "Standard_NC48ads_H100_v4": 10
+		        }
+		        {
+		            "Standard_NC96ads_H100_v4": 2
+		        }
+		    ]
+		  "A100": [
+		        {
+		            "Standard_NC48ads_A100_v4": 50
+		        }
+		        {
+		            "Standard_NC96ads_A100_v4": 20
+		        }
+		    ]
+		}
+...
+```
+
+```yaml
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Placement
+…
+spec:
+  predicates:
+    - requiredClusterSelector:
+        celSelector:
+          celExpressions:
+            - managedCluster.status.properties.exists(c, c.name == "sku.node.k8s.io" && c.value.split(",").exists(e, e == "g6.xlarge"))
+            - managedCluster.status.properties.exists(c, c.name == "sku.gpu.kubernetes-fleet.io" && c.value.parseJSON().H100.exists(e, e.Standard_NC96ads_H100_v4 == 2))
+```
 
 ### Test Plan
 
