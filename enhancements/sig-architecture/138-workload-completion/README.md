@@ -208,19 +208,11 @@ If set, it will check if `ttlSecondsAfterFinished` has ellapsed, and if so delet
 from the hub cluster.
 
 Manifests that have already been marked `Complete` will be filtered out before applying.
-Conditions will be evaluated after applying, however `Complete` is a special case
-that needs to be evaluated by any applier that updates existing manifests
-(currently ServerSideApply and UpdateApply). In these cases, the `Complete` condition will be
-evaluated prior to update on the existing resource, and if it passes then no update will be applied.
-This is required in order to provide guarantees that a manifest will not be updated once
-it has completed. ServerSideApply is the only case where there is a potential for a race condition
-on update, since it does not perform optimistic locking by resourceVersion like UpdateApply does.
-Because UpdateApply uses the openshift `resourceapply` package, it will use a wrapper on the ResourceCache
-interface that overrides `SafeToSkipApply(required runtime.Object, existing runtime.Object) bool`
-in order to evaluate the `Complete` condition before updating.
+Conditions will be evaluated on the result of apply. This means an update that would change the state of a
+resource from complete to incomplete (based on CEL rules) will be applied before the condition is evaluated,
+resulting in the condition being "False". Likewise an update that would change a resource from incomplete to
+complete will result in the condition being evalutated to "True" after apply.
 
-All condition rules will be evaluated by the `manifestworkReconciler` on the result of apply. The `Complete`
-condition may be evaluated twice during each reconciliation depending on the applier type (see above).
 Top level conditions for the ManifestWork will be aggregated as the logical AND of
 conditions speficied for all of its manifests.
 
@@ -376,59 +368,3 @@ before the `ManifestWork` should be considered complete.
 ### Version Skew Strategy
 - The new fields are optional, and if not set, the manifestwork will be handled the same as by previous versions
 - Older versions of the work agent will ignore the newly added fields
-
-## Alternatives
-
-- Skip evaluating the `Complete` condition before apply, handle all conditions identically.
-  - Removes the need for double-evaluating these conditions before/after apply
-  - Relaxes the constraint on updating a completed manifest
-    - Manifests will be updated _at least_ once before `Complete` condition is read and persisted
-  - ServerSideApply already has a critical window where a manifest could complete after GET before UPDATE,
-    so this would make the behavior consistent across all update types. On the other hand, it could be desireable
-    to be able to provide strict guarantees as long as you use the `UpdateApply` type.
-  - There are already many cases where an update cannot be applied (immutable fields, like job's pod template)
-    which the users needs to be aware of, so it may not be worthwhile to attempt to prevent updates to completed resources.
-
-## Optional Enhancement
-
-- Support map schema returned from CEL
-  - In addition to primitive types, allow CEL expression to return a map with certain fields used
-    by metav1.Condition in order to set custom message/reason
-  - Example:
-    ```go
-    type ConditionRuleResult struct {
-      // Supported metav1.Condition fields
-      Message string
-      Reason string
-    }
-    ```
-    ```yaml
-    spec:
-      workload: ...
-      manifestConfigs:
-        - resourceIdentifier:
-            resource: mycustomresources
-            namespace: default
-            name: some-custom-resource
-          conditionRules:
-            - condition: ExpectedCount
-              type: CEL
-              celExpressions:
-                - expression: |
-                    object.status.count >= object.status.expectedCount
-                      ? {
-                        "message": "Count matches expected",
-                        "reason": "CountReached",
-                      }
-                      : {
-                        "message": "Count is only " + string(object.status.count) + " expected " + string(object.status.expectedCount),
-                        "reason": "CountNotReached",
-                      }
-    status:
-      manifests:
-      - conditions:
-          - type: ExpectedCount
-            message: Count is only 3, expected 4
-            reason: CountNotReached
-            status: "False"
-    ```
