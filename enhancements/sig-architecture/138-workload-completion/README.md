@@ -58,6 +58,12 @@ If a user wishes to complete some of the manifests but not the entire manifestwo
 need to do is set a `Complete` condition rule with the CEL expression `false` for at least
 one other manifest to make the manifestwork incompletable.
 
+Custom condition messages may be provided on condition rules as a static string or as a CEL expression
+that evaluates to a string. If MessageExpression is set on a rule, in addition to the primary `object`
+variable it will also be given a `result` boolean variable with the computed value of the CEL expressions
+on the rule. If both Message and MessageExpression are set, the expression will take precedence as long
+as it returns a non-empty string.
+
 ### Design Details
 
 #### API change
@@ -93,9 +99,19 @@ type ConditionRule struct {
     Type ConditionRuleType `json:"type"`
 
     // CelExpressions defines the CEL expressions to be evaluated for the condition.
-    // Final result is the logical AND of all rules.
+    // Final result is the logical AND of all expressions.
     // +optional
     CelExpressions []CelConditionExpressions `json:"celExpressions"`
+    // Message is set on the condition created for this rule
+    // +optional
+    Message string `json:"message"`
+    // MessageExpression uses a CEL expression to generate a message for the condition
+    // Will override message if both are set and messageExpression returns a non-empty string.
+    // Variables:
+    // - object: The current instance of the manifest
+    // - result: Boolean result of the CEL expressions
+    // +optional
+    MessageExpression string `json:"messageExpression"`
 }
 
 // +kubebuilder:validation:Enum=WellKnownCompletions;CEL
@@ -160,7 +176,8 @@ var jobConditionRule = workapiv1.ConditionRule{
     {
       Expression: "object.status.conditions.filter(c, c.type == 'Complete' || c.type == 'Failed').exists(c, c.status == 'True')",
     },
-  }
+  },
+  MessageExpression: `result ? "Job is finished" : "Job is not finished`
 }
 
 var podConditionRule = workapiv1.ConditionRule{
@@ -170,7 +187,8 @@ var podConditionRule = workapiv1.ConditionRule{
     {
       Expression: "object.status.phase in ['Succeeded', 'Failed']",
     },
-  }
+  },
+  MessageExpression: `result ? ("Pod " + object.status.phase) : "Pod is not finished`
 }
 ```
 
@@ -279,6 +297,8 @@ spec:
               ).exists(
                 c, c.status == 'True'
               )
+          messageExpression: |
+            result ? "Object is complete" : "Object is not complete"
         - condition: MyCondition
           type: CEL
           celExpressions:
@@ -286,6 +306,10 @@ spec:
               object.status.conditions.exists(
                 c, c.type == 'MyCondition' && c.status == 'True'
               )
+          messageExpression: |
+            result
+              ? object.status.conditions.filter(c, c.type == 'MyCondition')[0].message
+              : "Object does not have MyCondition"
 ```
 
 Status conditions
