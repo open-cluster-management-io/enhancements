@@ -130,7 +130,7 @@ type CelConditionExpressions struct {
     // Expression represents the CEL expression to be evaluated on the manifest.
     // The expression must evaluate to a bool.
     // If the expression evaluates to any other type, the condition's status will be False.
-    // Ref to https://cel.dev/ on how to write CEL
+    // Ref to https://kubernetes.io/docs/reference/using-api/cel/ on how to write CEL
     // Variables:
     // - object: The current instance of the manifest
     // +kubebuilder:validation:Required
