@@ -16,10 +16,11 @@ The proposed work provides an API to represent the score of the managed cluster,
 
 When implementing placement resource based scheduling, we find in some cases, the prioritizer needs extra data (more than the default value provided by `ManagedCluster`) to calculate the score of the managed cluster. For example, there is a requirement to schedule based on resource monitoring data from the cluster.
 
-So we want a more extensible way to support scheduling based on customized scores.
+So we want a more extensible way to support scheduling based on customized resource scores and value.
 
 ### Goals
-- Design a new API(CRD) to contain the customized scores for each managed cluster.
+- Design a new API(CRD) to contain the customized resource scores and value for each managed cluster.
+- Let placement predicate support filtering clusters with the resource original value provided by the new API(CRD).
 - Let placement prioritizer support rating clusters with the customized scores provided by the new API(CRD).
 
 ### Non-Goals
@@ -33,11 +34,11 @@ So we want a more extensible way to support scheduling based on customized score
 ### User Stories
 
 #### Story 1: Users could use the data pushed from each managed cluster to select clusters.
-  - On each managed cluster, there is a customized agent monitoring the resource usage (eg. CPU ratio) of the cluster. It will calculate a score and push the result to the hub.
+  - On each managed cluster, there is a customized agent monitoring the resource usage (eg. CPU ratio) of the cluster. It will calculate a score and push the result to the hub. The agent can also push the original value of the resource to the hub.
   - As an end user, I can configure placement yaml to use this score to select clusters.
   
 #### Story 2: Users could use the metrics collected on the hub to select clusters.
-  - On the hub, there is a customized agent to get metrics (eg. cluster allocatable memory) from Thanos. It will generate a score for each cluster.
+  - On the hub, there is a customized agent to get metrics (eg. cluster allocatable memory) from Thanos. It will generate a score for each cluster. The agent can also push the original value of the resource to the hub.
   - As an end user, I can configure placement yaml to use this score to select clusters.
 
 #### Story 3: Disaster recovery workload could be automatically switched to an available cluster.
@@ -89,7 +90,8 @@ type AddOnPlacementScoreStatus struct {
 	Scores []AddOnPlacementScoreItem `json:"scores,omitempty"`
 
 	// ValidUntil defines the valid time of the scores.
-	// After this time, the scores are considered to be invalid by placement. nil means never expire.
+	// After this time, the scores (including value and quantity) are considered to be invalid by placement.
+	// nil means never expire.
 	// The controller owning this resource should keep the scores up-to-date.
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Format=date-time
@@ -110,6 +112,11 @@ type AddOnPlacementScoreItem struct {
 	// +kubebuilder:validation:Maximum:=100
 	// +required
 	Value int32 `json:"value"`
+
+	// Quantity defines the original value of the score.
+	// It should be updated together with the value of the score to keep consistency.
+	// +optional
+	Quantity resource.Quantity `json:"quantity"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -307,6 +314,9 @@ The scores inside `AddOnPlacementScore` are supposed to be updated frequently. R
 
 For the invalid score cases, for example, the AddOnPlacementScore CR is not created for some managed clusters, the score is missing in some CR, or the score is expired. The prioritizer will give those clusters with score 0, and the final placement decision is still made by the total score of each prioritizers.
 
+### Let placement support filtering clusters with the original value of the CR.
+Refer to [select clusters with CEL expressions](/enhancements/sig-architecture/136-placement-cel-selector/README.md).
+
 ### How to maintain the lifecycle of the AddOnPlacementScore CRs? 
 The details of how to maintain the AddOnPlacementScore CRs lifecycle is out of scope, however, this proposal would like to give some suggestions about how to implement a 3rd party controller for it.
 - Where should the 3rd party controller run? 
@@ -319,9 +329,10 @@ The details of how to maintain the AddOnPlacementScore CRs lifecycle is out of s
 
 - When should the score be updated?
 
-  We recommend that you set `ValidUntil` when updating the score, so that the placement controller can know if the score is still valid in case it failed to update for a long time. An expired score will be treated as score 0 in placement controller.
+  We recommend that you set `ValidUntil` when updating the score, so that the placement controller can know if the score is still valid in case it failed to update for a long time. An expired score will be treated as value 0 and quantity 0 in placement controller.
 
   The score could be updated when your monitoring data changes, or at least you need to update it before it expires.
+  For the resources that are updated frequently, to prevent frequent updates that may lead to performance issues, we recommend updating the score at a reasonable interval, eg, 60s.
 
 - How to calculate the score.
 
