@@ -60,6 +60,11 @@ type ClusterSelector struct {
 
 // ClusterCelSelector is a list of CEL expressions. The expressions are ANDed.
 type ClusterCelSelector struct {
+	// CelExpressions describes a list of validation rules written in the CEL expression language.
+	// ref: https://github.com/google/cel-spec
+	// The CelExpressions is scoped to the Managed Cluster, the `managedCluster` variable in the CEL expression is bound to the scoped value.
+	// For example, select clusters with label version < v1.31.0:
+	//     semver(managedCluster.metadata.labels["version"], true).isLessThan(semver("v1.31.0", true))
 	// +optional
 	CelExpressions []string `json:"celExpressions,omitempty"`
 }
@@ -71,8 +76,6 @@ A ManagedClusterLib will be added.
 - Variable `managedCluster` will be added.
 - Function `scores` will be added. 
 - Function `parseJSON` will be added. 
-- Kubernetes semver library is included.
-- Kubernetes quantity library is included.
 
 ```go
 // ManagedClusterLib defines the CEL library for ManagedCluster evaluation.
@@ -116,40 +119,11 @@ A ManagedClusterLib will be added.
 // Examples:
 //
 //	parseJSON("{\"key\": \"value\"}") // returns a map with key-value pairs
-//
-// Semver Library:
-//
-// Semver provides a CEL function library extension for [semver.Version].
-// Upstream enhancement to support v is a prefix https://github.com/kubernetes/kubernetes/pull/130648.
-//
-// Examples:
-//
-//	semver("1.2.3").isLessThan(semver("1.2.4")) // returns true
-//	semver("1.2.3").isGreaterThan(semver("1.2.4")) // returns false
-//
-// Quantity Library:
-//
-// Quantity provides a CEL function library extension of Kubernetes resource.
-//
-// Examples:
-//
-//	 quantity("100Mi").isLessThan(quantity("200Mi")) // returns true
-//	 quantity("100Mi").isGreaterThan(quantity("200Mi")) // returns false
-
 type ManagedClusterLib struct{}
 
 // CompileOptions implements cel.Library interface to provide compile-time options.
 func (ManagedClusterLib) CompileOptions() []cel.EnvOption {
 	return []cel.EnvOption{
-		// Add the extended strings library
-		ext.Strings(),
-
-		// Add the kubernetes semver library
-		library.SemverLib(),
-
-		// Add the kubernetes quantity library
-		library.Quantity(),
-
 		// The input types may either be instances of `proto.Message` or `ref.Type`.
 		// Here we use func ConvertManagedCluster() to convert ManagedCluster to a Map.
 		cel.Variable("managedCluster", cel.MapType(cel.StringType, cel.DynType)),
@@ -173,12 +147,26 @@ func (ManagedClusterLib) CompileOptions() []cel.EnvOption {
 }
 ```
 
-This `ManagedClusterLib` will be added when `cel.NewEnv()`.
+The below library will be added when creating the CEL program environment.
+- ManagedClusterLib library 
+- Extend strings library
+- Kubernetes known libraries: list, regex, url, quantity, IP, cidr, format, semver.
 
 ```go
 func NewEvaluator() (*Evaluator, error) {
+	// Add the ManagedClusterLib and Kubernetes libs to the CEL environment
 	env, err := cel.NewEnv(
-		cel.Lib(ManagedClusterLib{}), // Add the ManagedClusterLib to the CEL environment
+		ManagedClusterLib(scoreLister),
+		cel.OptionalTypes(),
+		ext.Strings(),
+		library.Lists(),
+		library.Regex(),
+		library.URLs(),
+		library.Quantity(),
+		library.IP(),
+		library.CIDR(),
+		library.Format(),
+		library.SemverLib(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create CEL environment: %w", err)
@@ -188,13 +176,42 @@ func NewEvaluator() (*Evaluator, error) {
 ```
 
 ### Metrics for time spent evaluating CEL at runtime.
-- TBD
+Add histograms metrics for time spent evaluating CEL at runtime.
 
-### Cost budget
-- TBD
+```
+# HELP scheduling_cel_duration_seconds [ALPHA] How long in seconds it takes to schedule a placement.
+# TYPE scheduling_cel_duration_seconds histogram
+scheduling_cel_duration_seconds_bucket{name="placement_scheduling",le="1e-06"} 0
+scheduling_cel_duration_seconds_bucket{name="placement_scheduling",le="9.999999999999999e-06"} 0
+scheduling_cel_duration_seconds_bucket{name="placement_scheduling",le="9.999999999999999e-05"} 13
+scheduling_cel_duration_seconds_bucket{name="placement_scheduling",le="0.001"} 100
+scheduling_cel_duration_seconds_bucket{name="placement_scheduling",le="0.01"} 100
+scheduling_cel_duration_seconds_bucket{name="placement_scheduling",le="0.1"} 100
+scheduling_cel_duration_seconds_bucket{name="placement_scheduling",le="1"} 100
+scheduling_cel_duration_seconds_bucket{name="placement_scheduling",le="10"} 100
+scheduling_cel_duration_seconds_bucket{name="placement_scheduling",le="100"} 100
+scheduling_cel_duration_seconds_bucket{name="placement_scheduling",le="1000"} 100
+scheduling_cel_duration_seconds_bucket{name="placement_scheduling",le="+Inf"} 100
+scheduling_cel_duration_seconds_sum{name="placement_scheduling"} 0.013472362999999998
+scheduling_cel_duration_seconds_count{name="placement_scheduling"} 100
+```
+
+### Runtime Constraints
+Estimated Cost Limit
+- Don't allow Placement to contain CEL expressions that would, in the worst case, take too long to run.
+
+Runtime Cost Limit
+- Halt CEL expressions that take too long to run.
 
 ### CEL validation error message
-- TBD
+When the CEL expressions faield to run due to meet cost limit or expressions error, the error message will return and shown in the Placement status.
+```
+    - lastTransitionTime: "2025-03-20T15:33:00Z"
+      message: failed to compile CEL expression 'managedCluster.metadata.labels["version"].matchess('^1\\.(14|15)\\.\\d+$')': ERROR: <input>:1:51: undeclared reference to 'matchess' (in container '')
+      reason: Misconfigured
+      status: "True"
+      type: PlacementMisconfigured
+```
 
 ### Examples
 
@@ -337,7 +354,11 @@ spec:
 
 ### Test Plan
 
-- TBD
+- testing selecting clusters with different ManagedCluster fields.
+- testing selecting clusters with scores, parseJSON function.
+- testing selecting clusters with kubernetes library.
+- testing selecting clusters with cost limit.
+- check scheduling_cel_duration_seconds metrics.
 
 ### Graduation Criteria
 N/A
