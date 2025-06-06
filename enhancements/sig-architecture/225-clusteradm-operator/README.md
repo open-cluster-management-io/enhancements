@@ -10,7 +10,7 @@
 
 ## Summary
 
-This proposal introduces the clusteradm operator, which will provide a declarative interface for managing multi-cluster environments. It wraps the imperative `clusteradm` CLI in a Kubernetes-native way, introducing the `MultiCluster` CRD to enable automated bootstrapping of Kubernetes clusters into a multicluster topology. Ongoing maintenance of the multi-cluster in the form of configuration patches and OCM version upgrades is also supported.
+This proposal introduces the fleet config operator, which will provide a declarative interface for managing multi-cluster environments. It wraps the imperative `clusteradm` CLI in a Kubernetes-native way, introducing the `FleetConfig` CRD to enable automated bootstrapping of Kubernetes clusters into a multicluster topology. Ongoing maintenance of the multi-cluster in the form of configuration patches and OCM version upgrades is also supported.
 
 ## Motivation
 
@@ -31,7 +31,7 @@ OCM's current installation procedure is imperative-only, requiring multiple manu
 
 ## Proposal
 
-Add a new component to the OCM ecosystem: the clusteradm operator. It will reconcile a new OCM `MultiCluster` CRD, which encapsulates all information required to bootstrap and maintain an OCM multi-cluster. The spec of a `MultiCluster` will contain all the same information traditionally provided to `clusteradm init` and `clusteradm join`. The `MultiCluster` API surface will feature 1:1 parity with the `clusteradm` CLI, including all optional flags. In some cases, e.g., kubeconfigs, the spec will contain references to secrets containing auxiliary data to avoid exposing sensitive information.
+Add a new component to the OCM ecosystem: the fleet config operator. It will reconcile a new OCM `FleetConfig` CRD, which encapsulates all information required to bootstrap and maintain an OCM multi-cluster. The spec of a `FleetConfig` will contain all the same information traditionally provided to `clusteradm init` and `clusteradm join`. The `FleetConfig` API surface will feature 1:1 parity with the `clusteradm` CLI, including all optional flags. In some cases, e.g., kubeconfigs, the spec will contain references to secrets containing auxiliary data to avoid exposing sensitive information.
 
 ### User Stories
 
@@ -47,7 +47,7 @@ As an infrastructure or platform engineer, I want to commit the definition of my
 
 1. People may not want to store kubeconfigs for their spoke clusters on the hub cluster. Especially in a non-EKS scenario where the kubeconfigs contain long lived tokens. This can be mitigated by continuing to expand OCM's workload identify capabilities to support native integration with Azure and GCP in alignment with security best practices. Spoke kubeconfigs _could_ also be deleted from the hub cluster following the initial bootstrapping of the multi-cluster, but that introduces many challeges regarding upgrades, reconfiguration, etc.
 
-1. In certain environments, network connectivity from hub to spoke cannot be assumed. The clusteradm operator will **not** be able to bootstrap such spoke clusters automatically. However, additional metadata can be provided when these clusters are joined via `clusteradm join ... --klusterlet-annotation foo=bar`. The clusteradm operator on the hub can subsequently identify spoke clusters that were bootstrapped out-of-band and incorporate the health status of their corresponding `ManagedCluster` objects into the health of the overall `MultiCluster`.
+1. In certain environments, network connectivity from hub to spoke cannot be assumed. The fleet config operator will **not** be able to bootstrap such spoke clusters automatically. However, additional metadata can be provided when these clusters are joined via `clusteradm join ... --klusterlet-annotation foo=bar`. The fleet config operator on the hub can subsequently identify spoke clusters that were bootstrapped out-of-band and incorporate the health status of their corresponding `ManagedCluster` objects into the health of the overall `FleetConfig`.
 
 ## Design Details
 
@@ -55,9 +55,9 @@ As an infrastructure or platform engineer, I want to commit the definition of my
 
 No changes to the core OCM APIs are required.
 
-### MultiCluster API
+### FleetConfig API
 
-Current state of the v1alpha1 `MultiCluster` API, which is fully functional and meets all the capabilities outlined elsewhere in this enhancement proposal.
+Current state of the v1alpha1 `FleetConfig` API, which is fully functional and meets all the capabilities outlined elsewhere in this enhancement proposal.
 
 ```go
 package v1alpha1
@@ -70,22 +70,22 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// MultiClusterSpec defines the desired state of MultiCluster.
-type MultiClusterSpec struct {
+// FleetConfigSpec defines the desired state of FleetConfig.
+type FleetConfigSpec struct {
 	Hub              Hub               `json:"hub"`
 	Spokes           []Spoke           `json:"spokes"`
 	RegistrationAuth *RegistrationAuth `json:"registrationAuth,omitempty"`
 }
 
-// MultiClusterStatus defines the observed state of MultiCluster.
-type MultiClusterStatus struct {
+// FleetConfigStatus defines the observed state of FleetConfig.
+type FleetConfigStatus struct {
 	Phase        string        `json:"phase,omitempty"`
 	Conditions   []Condition   `json:"conditions,omitempty"`
 	JoinedSpokes []JoinedSpoke `json:"joinedSpokes,omitempty"`
 }
 
-// ToComparable returns a deep copy of the MultiClusterStatus that's suitable for semantic comparison.
-func (s *MultiClusterStatus) ToComparable(_ ...Condition) *MultiClusterStatus {
+// ToComparable returns a deep copy of the FleetConfigStatus that's suitable for semantic comparison.
+func (s *FleetConfigStatus) ToComparable(_ ...Condition) *FleetConfigStatus {
 	comparable := s.DeepCopy()
 	for i := range comparable.Conditions {
 		comparable.Conditions[i].LastTransitionTime = metav1.Time{}
@@ -94,7 +94,7 @@ func (s *MultiClusterStatus) ToComparable(_ ...Condition) *MultiClusterStatus {
 }
 
 // GetCondition returns the condition with the supplied type, if it exists.
-func (s *MultiClusterStatus) GetCondition(cType string) *Condition {
+func (s *FleetConfigStatus) GetCondition(cType string) *Condition {
 	for _, c := range s.Conditions {
 		if c.Type == cType {
 			return &c
@@ -107,7 +107,7 @@ func (s *MultiClusterStatus) GetCondition(cType string) *Condition {
 // replacing any existing conditions of the same type. This is a no-op if all
 // supplied conditions are identical (ignoring the last transition time) to
 // those already set. If cover is false, existing conditions are not replaced.
-func (s *MultiClusterStatus) SetConditions(cover bool, c ...Condition) {
+func (s *FleetConfigStatus) SetConditions(cover bool, c ...Condition) {
 	for _, new := range c {
 		exists := false
 		for i, existing := range s.Conditions {
@@ -131,7 +131,7 @@ func (s *MultiClusterStatus) SetConditions(cover bool, c ...Condition) {
 
 // Equal returns true if the status is identical to the supplied status,
 // ignoring the LastTransitionTimes and order of statuses.
-func (s *MultiClusterStatus) Equal(other *MultiClusterStatus) bool {
+func (s *FleetConfigStatus) Equal(other *FleetConfigStatus) bool {
 	if s == nil || other == nil {
 		return s == nil && other == nil
 	}
@@ -159,7 +159,7 @@ func (s *MultiClusterStatus) Equal(other *MultiClusterStatus) bool {
 	return true
 }
 
-// Condition describes the state of a MultiCluster.
+// Condition describes the state of a FleetConfig.
 type Condition struct {
 	metav1.Condition `json:",inline"`
 	WantStatus       metav1.ConditionStatus `json:"wantStatus"`
@@ -245,7 +245,7 @@ type ClusterManager struct {
 	FeatureGates string `json:"featureGates,omitempty"`
 
 	// If set, the cluster manager operator will be purged and the open-cluster-management namespace deleted
-	// when the MultiCluster CR is deleted.
+	// when the FleetConfig CR is deleted.
 	// +kubebuilder:default:=true
 	PurgeOperator bool `json:"purgeOperator,omitempty"`
 
@@ -487,13 +487,13 @@ type RegistrationAuth struct {
 // +kubebuilder:printcolumn:name="PHASE",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="AGE",type=date,JSONPath=".metadata.creationTimestamp"
 
-// MultiCluster is the Schema for the multiclusters API.
-type MultiCluster struct {
+// FleetConfig is the Schema for the multiclusters API.
+type FleetConfig struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   MultiClusterSpec   `json:"spec,omitempty"`
-	Status MultiClusterStatus `json:"status,omitempty"`
+	Spec   FleetConfigSpec   `json:"spec,omitempty"`
+	Status FleetConfigStatus `json:"status,omitempty"`
 }
 
 // GetDriver returns the registration auth type, defaults to csr.
@@ -506,26 +506,26 @@ func (ra *RegistrationAuth) GetDriver() string {
 }
 
 // GetCondition gets the condition with the supplied type, if it exists.
-func (m *MultiCluster) GetCondition(cType string) *Condition {
+func (m *FleetConfig) GetCondition(cType string) *Condition {
 	return m.Status.GetCondition(cType)
 }
 
-// SetConditions sets the supplied conditions on a MultiCluster, replacing any existing conditions.
-func (m *MultiCluster) SetConditions(cover bool, c ...Condition) {
+// SetConditions sets the supplied conditions on a FleetConfig, replacing any existing conditions.
+func (m *FleetConfig) SetConditions(cover bool, c ...Condition) {
 	m.Status.SetConditions(cover, c...)
 }
 
 // +kubebuilder:object:root=true
 
-// MultiClusterList contains a list of MultiCluster.
-type MultiClusterList struct {
+// FleetConfigList contains a list of FleetConfig.
+type FleetConfigList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []MultiCluster `json:"items"`
+	Items           []FleetConfig `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&MultiCluster{}, &MultiClusterList{})
+	SchemeBuilder.Register(&FleetConfig{}, &FleetConfigList{})
 }
 ```
 
@@ -549,9 +549,9 @@ TBD
 
 ### Upgrade Strategy
 
-Upgrades for the clusteradm operator itself can be conducted using Helm. The `MultiCluster` CRD on hub cluster and the operator image will be upgraded, along with any additional configuration options added or modified between releases.
+Upgrades for the fleet config operator itself can be conducted using Helm. The `FleetConfig` CRD on hub cluster and the operator image will be upgraded, along with any additional configuration options added or modified between releases.
 
 ### Version Skew Strategy
 
-- As the operator matures, the [webhook conversion](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definition-versioning/#webhook-conversion) strategy will be utilized to handle transformations between stored and served versions of the `MultiCluster` CRD.
+- As the operator matures, the [webhook conversion](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definition-versioning/#webhook-conversion) strategy will be utilized to handle transformations between stored and served versions of the `FleetConfig` CRD.
 - Not applicable for core OCM APIs. Any version skew will be inherited from OCM bundle versions.
