@@ -241,3 +241,11 @@ roles and access policies for managed clusters will not be deleted, and any futu
 ### Version Skew Strategy
 - The new fields are optional, and if not set, the manifestwork will be handled the same as by previous versions
 - Older versions of the registration controller and agent will ignore the newly added fields
+
+## Alternatives
+
+An argument could be made that since a Hub with `DisableManagedIam` and Spoke(s) with `IamConfigSecret` and empty `ManagedClusterArn`
+are not using IRSA, this should not be part of the "awsirsa" registration driver. The initial POC and design were built with the minimal
+changes possible to make AWS registration more flexible, which is why it piggybacks off of the existing driver. However, it may be desireable
+to leave these as two distinct registration drivers. In which case, the design can be updated to be a more generic "aws" driver that does not
+impose any restrictions on IAM management, and the existing "awsirsa" driver would be left as it is.
