@@ -1,0 +1,17 @@
+title: event-based-manifestwork
+authors:
+  - "@qiujian16"
+  - "@skeeey"
+  - "@morvencao"
+reviewers:
+  - "@qiujian16"
+  - "@clyang82"
+approvers:
+  - "@jnpacker"
+  - "@zhujian7"
+  - "@elgnay"
+creation-date: 2025-04-09
+last-updated: 2025-04-09
+status: provisionable
+see-also:
+  - "/enhancements/sig-architecture/224-event-based-manifestwork"
