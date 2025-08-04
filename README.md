@@ -1,62 +1,57 @@
+# Open Cluster Management Enhancement Proposals
 
-## Overview
+This repository contains enhancement proposals for [Open Cluster Management](https://open-cluster-management.io/), a community-driven project focused on multicluster and multicloud scenarios for Kubernetes.
 
-The `enhancements` repo is made available to discuss specific new features or architectural improvements for the community around `open-cluster-management`.
+## What This Repository Is For
 
-Inspired by the [Kubernetes enhancement](https://github.com/kubernetes/enhancements) process.
+This repository serves as the central location for proposing, discussing, and tracking significant new features and improvements to Open Cluster Management. Enhancement proposals provide a structured way for the community to collaborate on the evolution of the project.
 
-This repository provides a rally point to discuss, debate, and reach consensus for how Open Cluster Management enhancements are introduced.
+## Enhancement Process
 
-Enhancements may take multiple releases to ultimately complete and thus provide the basis of a community roadmap. Enhancements may be filed from anyone in the community, but require consensus from domain specific project maintainers in order to implement and accept into the release.
+Enhancement proposals follow a process inspired by the [Kubernetes enhancement](https://github.com/kubernetes/enhancements) process. This repository provides a place for the community to discuss, debate, and reach consensus on how new features are introduced to Open Cluster Management.
 
-For template references, see the [template](guidelines/README.md).
+Enhancements may take multiple releases to complete and form the basis of the community roadmap. Anyone in the community may propose enhancements, but they require consensus from the relevant project maintainers to be implemented.
+
+For template references and guidelines, see the [enhancement template](guidelines/README.md).
 
 ## Is My Thing an Enhancement?
 
-A rough heuristic for an enhancement is anything that:
+Consider creating an enhancement proposal if your idea:
 
-- a blog post would be written about after its release
-- needs significant effort or changes in a significant way (ex. something that would take 10 person-weeks to implement, introduce or redesign a system component, or introduces API changes)
-- impacts upgrade/downgrade 
-- requires consensus/code across multiple domains/repositories
-- will be graduating from one stage to another (ex. alpha to beta, beta to GA)
-- users will notice and come to rely on
+- Would be worth writing a blog post about after release
+- Requires significant effort or introduces substantial changes
+- Impacts upgrade or downgrade processes  
+- Requires coordination across multiple repositories or domains
+- Introduces API changes or graduates between stability levels
+- Will be noticed by users and become something they rely on
 
-It is unlikely to require an enhancement if it:
+You probably don't need an enhancement proposal if your work:
 
-- fixes a bug
-- adds more testing
-- internally refactors a code or component only visible to that components
-  domain
-- minimal impact to distribution as a whole
+- Fixes a bug
+- Adds more testing
+- Refactors code that only affects internal implementation
+- Has minimal impact on the project as a whole
 
-If you are not sure if the proposed work requires an enhancement, file an issue
-and ask!
+If you're unsure whether your proposed work requires an enhancement, file an issue and ask the community.
 
 ## When to Create a New Enhancement
 
-Create an enhancement here once you:
+Create an enhancement proposal after you have:
 
-- have circulated your idea to see if there is interest
-- (optionally) have done a prototype in your own fork
-- have identified people who agree to work on and maintain the enhancement
-  - many enhancements will take several releases to complete  
+- Shared your idea with the community to gauge interest
+- Optionally created a prototype to validate the concept
+- Identified people willing to work on and maintain the enhancement
+- Recognized that the work may span multiple releases
 
-## Why are Enhancements Tracked
+## Why Track Enhancements
 
-As the project evolves, its important that the open-cluster-management community understands how we
-build, test, and document our work.  Individually it is hard to understand how
-all parts of the system interact, but as a community we can lean on each other
-to build the right design and approach before getting too deep into an
-implementation.
+As Open Cluster Management evolves, it's important for the community to understand how we build, test, and document new capabilities. Enhancement proposals help ensure the community can collaborate effectively on design and implementation before significant development work begins.
 
-## When to Comment on an Enhancement Issue
+## Participating in Enhancement Discussions
 
-Please comment on the enhancement issue to:
-- request a review or clarification on the process
-- update status of the enhancement effort
-- link to relevant issues in other repos
+Please comment on enhancement issues to:
+- Request clarification on the process
+- Update the status of enhancement efforts  
+- Link to related issues in other repositories
 
-Please do not comment on the enhancement issue to:
-- discuss a detail of the design, code or docs. Use a linked-to-issue or design PR
-  for that
+For detailed design discussions, use linked issues or design pull requests rather than the main enhancement issue.
