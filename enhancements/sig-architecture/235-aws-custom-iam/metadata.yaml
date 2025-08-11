@@ -1,0 +1,14 @@
+title: aws-custom-iam
+authors:
+  - "@bhperry"
+reviewers:
+  - "@deads2k"
+  - "@elgnay"
+  - "@zhujian7"
+approvers:
+  - "@elgnay"
+creation-date: 2025-02-24
+last-updated: 2025-02-24
+status: provisional
+see-also:
+- enhancements/105-aws-iam-registration
