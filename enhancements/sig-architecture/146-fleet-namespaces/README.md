@@ -8,18 +8,28 @@
 
 ## Summary
 
-Introduces a global mechanism for defining and managing namespaces on Managed Clusters directly from the hub. Namespaces can now be associated with a ManagedClusterSet, enabling centralized application of Kubernetes access controls through ClusterPermissions. Both the namespaces and their access controls are bound and managed by the ManagedClusterSet, and applied equally to all Managed Clusters in the ManagedClusterSet, granting multi-cluster governance and improving security consistency across fleets.
+This enhancement introduces a global mechanism for defining and managing namespaces on Managed Clusters directly from the hub. Namespaces can be associated with a ManagedClusterSet, enabling centralized application of Kubernetes access controls through ClusterPermissions. Both the namespaces and their access controls are bound and managed by the ManagedClusterSet, and applied consistently to all Managed Clusters in the ManagedClusterSet. This provides multi-cluster governance and improves security consistency across fleets.
+
+The solution extends the existing ManagedClusterSet API to include namespace configuration and leverages the registration agent on each managed cluster to ensure namespace consistency. Each managed namespace is labeled and annotated to track its management state and support multiple hub scenarios.
 
 ## Motivation
- 
-A new global mechanism now enables the centralized definition and management of namespaces and their associated permissions across all clusters within a ManagedClusterSet. Previously, ManifestWork and ClusterPermission resources were required separately and operated independently. With this enhancement, namespaces and access controls are automatically and consistently applied to every managed cluster in the set, simplifying security management at scale, ensuring namespace consistency, and supporting seamless migration and improved visibility for workloads such as Virtual Machines.
 
-This is not meant to manage all namespaces on the Managed Cluster, just to create uniform namespace management across Managed Clusters in a Managed Cluster Set
+Currently, creating consistent namespaces across multiple clusters in a ManagedClusterSet requires manual coordination using ManifestWork and ClusterPermission resources. This approach is error-prone, lacks automation, and makes it difficult to maintain consistency as the fleet scales.
+
+This enhancement addresses these challenges by introducing a declarative approach to namespace management at the ManagedClusterSet level. The global mechanism enables:
+
+- **Centralized Configuration**: Define namespaces once at the ManagedClusterSet level rather than per cluster
+- **Automatic Propagation**: Namespaces are automatically created and maintained across all clusters in the set
+- **Consistent Security**: ClusterPermissions can be applied uniformly across the managed namespaces
+- **Simplified Operations**: Reduce operational overhead for managing namespaces across large fleets
+- **Multi-tenancy Support**: Enable better isolation and resource organization for workloads like Virtual Machines
+
+This enhancement focuses specifically on creating uniform namespace management across Managed Clusters in a ManagedClusterSet, not managing all namespaces on the Managed Cluster.
 
 ### Goals
 
-1. Create a new CRD API for a namespace that spans all clusters in a Managed Cluster Set (Global Namespace?!?)
-2. Associate Cluster Permissions to the Managed Cluster Set in terms of the Global Namespace
+1. Update `ManagedClusterSet` API to support namespaces that span all clusters in a ManagedClusterSet (Global Namespaces)
+2. Associate ClusterPermissions to the ManagedClusterSet in terms of the Global Namespace
 3. Work with the existing RBAC tooling
 
 ### Non-Goals
@@ -28,56 +38,179 @@ This is not meant to manage all namespaces on the Managed Cluster, just to creat
 
 ## Proposal
 
-This is where we get down to the nitty gritty of what the proposal actually is.
+This section provides detailed implementation specifics for the namespace management enhancement.
 
 ### User Stories
 
 #### Story 1
-Create a Global Namespace, this namespace will be created on all Managed Clusters in a Managed Cluster Set, and 
-the appropriate Cluster Permissions will be applied.
+Create a Global Namespace. This namespace will be created on all Managed Clusters in a ManagedClusterSet, and the appropriate ClusterPermissions will be applied.
 
 #### Story 2
-Delete a Global Namespace, this will either remove the namespace on all Managed Clusters, or leave it in place, 
-but stop managing it from the hub.
+Delete a Global Namespace. This will either remove the namespace on all Managed Clusters or leave it in place but stop managing it from the hub.
 
 ### Implementation Details/Notes/Constraints [optional]
 
-Does having Global Namespaces answer a need, for resources like virtual machines, it makes sense as it helps guarantee
-consistency in the architecture and will help when moving VM's but also when displaying VM's. This could be accomplished
-using Cluster Permissions and Manifest Work, but it would not be automatic and the convergence with Managed Cluster Set
-would be less clear.
+Global Namespaces address a clear need, particularly for resources like virtual machines. They help guarantee consistency in the architecture and assist when moving VMs and displaying VMs. While this could be accomplished using ClusterPermissions and ManifestWork, it would not be automatic and the integration with ManagedClusterSet would be less clear.
+
+#### Controller Implementation
+
+The implementation involves two main components:
+
+1. **Hub Controller**: Monitors ManagedClusterSet resources for namespace configuration changes and propagates these changes to the status field of ManagedCluster resources that belong to the clusterset.
+
+2. **Registration Agent**: Runs on each managed cluster and monitors the ManagedCluster status for namespace configuration updates. When changes are detected, the agent creates, updates, or removes namespaces according to the specified configuration.
+
+#### Namespace Lifecycle Management
+
+The namespace lifecycle follows these stages:
+
+1. **Creation**: When a namespace is added to a ManagedClusterSet configuration, the hub controller updates all associated ManagedCluster statuses. The registration agent on each cluster detects this change and creates the namespace with appropriate labels and annotations.
+
+2. **Update**: Changes to namespace configuration (such as deletion strategy) are propagated through the same mechanism.
+
+3. **Removal**: When a namespace is removed from the ManagedClusterSet or when a cluster is removed from the set, the registration agent follows the configured deletion strategy (Keep or Delete).
+
+#### Label and Annotation Strategy
+
+Each managed namespace includes:
+- **Labels**: `clusterset.open-cluster-management.io/<hub-hash>: "true"` for quick filtering
+- **Annotations**: Detailed JSON configuration including clusterset name and deletion strategy for proper cleanup coordination
+
+This approach ensures that multiple hubs can manage different namespaces on the same cluster without conflicts.
 
 ### Risks and Mitigation
 
-1. Deleting a Global Namespace and how that is handled
-2. How to adopt a namespace when it already exists on some or all of the clusters
-3. Avoid system namespaces for now.
+1. **Deleting a Global Namespace**: Mitigated by implementing a configurable deletion strategy (Keep/Delete) that allows administrators to choose whether namespaces should be preserved or removed when no longer managed. The annotation-based tracking ensures proper cleanup coordination.
+
+2. **Adopting existing namespaces**: When a namespace already exists on a cluster, the registration agent will adopt it by adding the appropriate labels and annotations without disrupting existing resources. A validation webhook can prevent conflicts with system namespaces.
+
+3. **System namespace protection**: Implementation includes safeguards to prevent management of critical system namespaces (kube-system, kube-public, etc.) through validation at both the API level and agent level.
+
+4. **Multi-hub conflicts**: The hub-hash based labeling system prevents conflicts when multiple OCM hubs attempt to manage the same cluster, ensuring each hub only manages its own namespace configurations.
+
+5. **Agent failures**: If the registration agent fails or becomes unavailable, namespace configurations remain in place. When the agent recovers, it reconciles the current state with the desired configuration, ensuring eventual consistency.
 
 
 ## Design Details
 
+### API Changes
+
+#### ManagedClusterSet API Enhancement
+
+The `ManagedClusterSet` API is extended with a new field to specify namespaces that should be managed across all clusters in the set:
+
+```go
+// ManagedNamespaceConfig describes the configuration to manage namespaces on the clusters
+type ManagedNamespaceConfig struct {
+    // namespaces is a list of namespaces that will be managed across the clusterset.
+    // Each namespace will be created on all clusters belonging to this ManagedClusterSet.
+    // +optional
+    Namespaces []string `json:"namespaces,omitempty"`
+	
+	// deletionStrategy defines the strategy when a namespace is removed from management,
+	// the cluster is removed from the clusterset, or the clusterset is removed.
+	// Valid values are:
+	// - "Keep": Preserve the namespace and its contents on the managed cluster
+	// - "Delete": Remove the namespace and all its contents from the managed cluster
+	// +kubebuilder:validation:Enum=Keep;Delete
+	// +optional
+	DeletionStrategy string `json:"deletionStrategy,omitempty"`
+}
+```
+
+#### ManagedCluster API Status Enhancement
+
+The `ManagedCluster` status is enhanced to reflect the namespace configuration inherited from associated clustersets:
+
+```go
+type ClusterSet struct {
+	// name is the name of the clusterset
+	Name string `json:"name,omitempty"`
+
+    // namespaces is a list of namespaces that will be managed by the cluster,
+	// inherited from the related clusterset. These namespaces will be created
+	// and maintained by the registration agent on the managed cluster.
+	Namespaces []string `json:"namespaces,omitempty"`
+
+    // deletionStrategy defines the strategy when a namespace is removed from management,
+    // the cluster is removed from the clusterset, or the clusterset is removed.
+    // Valid values are "Keep" or "Delete".
+    DeletionStrategy string `json:"deletionStrategy,omitempty"`
+}
+```
+
+Since a `ManagedCluster` might belong to multiple clustersets, this will be a list in the status of the `ManagedCluster`.
+
+#### Controller Workflow
+
+1. **Hub Controller**: When a user updates the namespace configuration on a `ManagedClusterSet`, the hub controller identifies all `ManagedCluster` resources that belong to this clusterset and updates their status to reflect the new namespace configuration.
+
+2. **Registration Agent**: The registration agent on each managed cluster watches for changes in the `ManagedCluster` status and reconciles the actual namespace state with the desired configuration.
+
+3. **Conflict Resolution**: When a cluster belongs to multiple clustersets with overlapping namespace configurations, the registration agent merges the configurations and tracks the source of each namespace through annotations. 
+
+Each namespace will have a label with key "clusterset.open-cluster-management.io/<hub hash>", indicating that the namespace is currently managed by an OCM hub.
+
+Each namespace will also have a set of annotations.
+
+An example of the namespace will be like:
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: some-namespace
+  annotations:
+    clusterset.open-cluster-management.io/hub1: "[{clustesetName: global, deletionStrategy: keep}, {clustesetName: set1, deletionStrategy: delete}]"
+    clusterset.open-cluster-management.io/hub2: "[{clustesetName: global, deletionStrategy: keep}]"
+  labels:
+    clusterset.open-cluster-management.io/hub1: true
+    clusterset.open-cluster-management.io/hub2: true
+```
+
+This ensures that information is correctly recorded when there are multiple agents from different hubs and the cluster belongs to multiple clustersets. Labels help to quickly filter namespaces that are currently being managed by the hub, while annotations contain more detailed information to handle removal.
+
+### Management Removal
+
+The management of the namespace is removed when:
+1. The cluster is removed from the clusterset.
+2. The clusterset is deleted.
+3. The cluster is deleted.
+4. The namespace is explicitly removed from the ManagedClusterSet configuration.
+
+The registration agent needs to check if the related labels or annotations should be removed or updated when the above cases occur.
+
+#### Detailed Removal Process
+
+1. **Configuration Change Detection**: The registration agent continuously monitors the ManagedCluster status for changes in namespace configuration.
+
+2. **Cleanup Decision**: When a namespace is no longer managed, the agent checks the deletion strategy:
+   - **Keep**: Removes OCM-specific labels and annotations but preserves the namespace and its contents
+   - **Delete**: Removes the entire namespace and all its contents
+
+3. **Multi-hub Coordination**: If multiple hubs manage the same cluster, the agent only removes labels and annotations specific to the hub that is no longer managing the namespace, preserving management by other hubs.
+
+4. **Graceful Degradation**: If the hub becomes unavailable, the agent continues to maintain existing namespaces until connectivity is restored and new instructions are received.
+
 ### Open Questions [optional]
 
-1. Deleting a Global Namespace and how that is handled
-2. How to adopt a namespace when it already exists on some or all of the clusters
-3. Avoid system namespaces for now.
+1. **Cross-cluster resource dependencies**: How should the system handle cases where resources in managed namespaces have dependencies across clusters in the same ManagedClusterSet?
+
+2. **Namespace quotas and limits**: Should the global namespace management include propagation of ResourceQuotas and LimitRanges to ensure consistent resource constraints across all clusters?
+
+3. **Integration with GitOps workflows**: How should this feature integrate with existing GitOps deployments that may already manage some of these namespaces?
+
+4. **Monitoring and observability**: What metrics and events should be exposed to help administrators monitor the health and status of global namespace management across their fleet?
 
 ### Test Plan
 
-**Note:** *Section not required until targeted at a release.*
-
 Consider the following in developing a test plan for this enhancement:
-- Will there be e2e and integration tests, in addition to unit tests?
-- How will it be tested in isolation vs with other components?
-
-No need to outline all of the test cases, just the general strategy. Anything
-that would count as tricky in the implementation and anything particularly
-challenging to test should be called out.
-
-All code is expected to have adequate tests (eventually with coverage
-expectations). 
-
-All code is expected to have sufficient e2e tests.
+- integration tests should cover the case:
+  - add multiple namespace into clustersets
+  - remove namespace from clustersets
+  - add/remove cluster from clusterset
+  - delete clusterset
+  - cluster is added to multiple clusterset
 
 ### Graduation Criteria
 
@@ -105,58 +238,11 @@ In general, we try to use the same stages (alpha, beta, stable), regardless how 
 
 ### Upgrade / Downgrade Strategy
 
-If applicable, how will the component be upgraded and downgraded? Make sure this
-is in the test plan.
-
-Consider the following in developing an upgrade/downgrade strategy for this
-enhancement:
-- What changes (in invocations, configurations, API use, etc.) is an existing
-  cluster required to make on upgrade in order to keep previous behavior?
-- What changes (in invocations, configurations, API use, etc.) is an existing
-  cluster required to make on upgrade in order to make use of the enhancement?
-
-Upgrade expectations:
-- Each component should remain available for user requests and
-  workloads during upgrades. Any exception to this should be
-  identified and discussed here.
-- Micro version upgrades - users should be able to skip forward versions within a
-  minor release stream without being required to pass through intermediate
-  versions - i.e. `x.y.N->x.y.N+2` should work without requiring `x.y.N->x.y.N+1`
-  as an intermediate step.
-- Minor version upgrades - you only need to support `x.N->x.N+1` upgrade
-  steps. So, for example, it is acceptable to require a user running 0.1.0 to
-  upgrade to 0.3.0 with a `0.1.0->0.2.0` step followed by a `0.2.0->0.3.0` step.
-- While an upgrade is in progress, new component versions should
-  continue to operate correctly in concert with older component
-  versions (aka "version skew"). For example, if an agent operator on a managed cluster 
-  is rolling out a new agent, the old and new agent in different managed clusters
-  must continue to work correctly with old or new version of the hub while hub and agents
-  remain in this partially upgraded state for some time.
-
-Downgrade expectations:
-- If an `N->N+1` upgrade fails mid-way through, or if the `N+1` agent is
-  misbehaving, it should be possible for the user to rollback to `N`. It is
-  acceptable to require some documented manual steps in order to fully restore
-  the downgraded agent to its previous state. Examples of acceptable steps
-  include:
-  - Deleting any resources added by the new version of the agent operator in the
-    managed cluster. The agent operator does not currently delete resources that 
-    no longer exist in the target version.
+Upgrade/Downgrade will not be impacted.
 
 ### Version Skew Strategy
 
-How will the component handle version skew with other components?
-What are the guarantees? Make sure this is in the test plan.
-
-Consider the following in developing a version skew strategy for this
-enhancement:
-- During an upgrade, we will always have skew among components, how will this impact your work?
-- Does this enhancement involve coordinating behavior in the hub and
-  in the klusterlet? How does an n-2 klusterlet without this feature available behave
-  when this feature is used?
-- Will any other components on the managed cluster change? For example, changes to infrastructure
-  configuration of the managed cluster may be needed before the updating klusterlet or other
-  agent components.
+The agent with old version will ignore the field, which should be fine
 
 ## Implementation History
 
@@ -169,9 +255,13 @@ The idea is to find the best form of an argument why this enhancement should _no
 
 ## Alternatives
 
-Similar to the `Drawbacks` section the `Alternatives` section is used to
-highlight and record other possible approaches to delivering the value proposed
-by an enhancement.
+### Using ManifestWork
+
+We could build a hub controller to create a manifestwork to apply namespaces to the managed cluster
+based on configurations in the clusterset. It has benefit that we do not need to implemente
+label/annotation management for the namespace. The issue with this approach is:
+1. it introduces depedency that a feature in registration component depends on work component
+2. it introduces an additional manifestwork for each cluster.
 
 ## Infrastructure Needed [optional]
 
