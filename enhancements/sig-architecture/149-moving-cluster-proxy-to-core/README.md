@@ -22,8 +22,8 @@ Open Cluster Management. Use cases include:
 - `MultiKueue` integrates with `cluster-proxy` to submit jobs to `ManagedClusters`
 - `MulticlusterGateway` in `KubeVela` uses `cluster-proxy` to push requests to targeted clusters
 
-Currently, `cluster-proxy` is implemented based on the ANP (APIServer Network Proxy) server and deployed as an addon.
-However, we have identified several limitations when using `cluster-proxy`:
+Currently, `cluster-proxy` is implemented based on the [ANP (APIServer Network Proxy)](https://github.com/kubernetes-sigs/apiserver-network-proxy)
+server and deployed as an addon. However, we have identified several limitations when using `cluster-proxy`:
 
 1. `cluster-proxy` provides a `kconnectivity` interface which is gRPC-based. It is difficult to call directly
    with Kubernetes clients, requiring an HTTP proxy frontend to handle requests.
@@ -32,6 +32,7 @@ However, we have identified several limitations when using `cluster-proxy`:
    to mutate and proxy HTTP requests.
 3. End users must always enable the cluster-proxy addon, introducing additional operational overhead when
    cluster-proxy functionality is commonly needed.
+4. ANP runs as a binary runtime, offering low flexibility, and users face a "black box" problem.
 
 We are introducing gRPC as a registration mechanism in OCM, which makes it easier to move cluster-proxy
 capabilities into the klusterlet.
@@ -48,6 +49,7 @@ capabilities into the klusterlet.
 
 - How to deprecate the `cluster-proxy addon` is not in the scope of this proposal, given that `cluster-proxy`
   is still consumed by `MulticlusterGateway` and other consumers.
+- Enhance `clusteradm` to configure kubeconfig file with proxy's endpoint.
 
 ## Proposal
 
@@ -87,10 +89,6 @@ cluster. The API path follows the format: `https://<server address>:<server port
 
 Consumers can configure their kubeconfig using this API endpoint and the related CA bundle to access the API server
 of the targeted cluster.
-
-`clusteradm` will be enhanced with a subcommand `clusteradm proxy --cluster <cluster name>`, which will configure
-the kubeconfig with the proxy endpoint in a cluster-specific context and switch the kubeconfig context to the target
-cluster. Users can then use kubectl to connect to the target cluster.
 
 #### Integration with ClusterProfile API
 
@@ -141,9 +139,9 @@ Consider the following in developing a test plan for this enhancement:
 - End-to-end tests ensure all use cases of existing cluster-proxy addon are covered
 
 **GA (Graduate):**
-- All consumers have migrated from cluster-proxy addon to this feature
-- Metrics are defined and exposed for the proxy server
-- Scalability testing is completed
+- All consumers have migrated from cluster-proxy addon to this feature.
+- Metrics are defined and exposed for the proxy server.
+- Scalability testing and performance analysis on throughput, resource consumption, and concurrent requests are completed.
 
 ### Upgrade / Downgrade Strategy
 
