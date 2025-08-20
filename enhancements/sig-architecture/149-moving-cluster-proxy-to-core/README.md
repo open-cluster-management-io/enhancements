@@ -92,30 +92,133 @@ of the targeted cluster.
 
 #### Integration with ClusterProfile API
 
+When this feature enabled, we should be able to provide a tool to build kubeconfig and connect to the targeted cluster
+based on clusterInventory API using https://github.com/kubernetes-sigs/cluster-inventory-api/blob/main/pkg/credentials/config.go:
+
+- Build a binary or script that could provide credential for the cluster via ManagedServiceAccount or impersonation
+- Update clusterProfile status in the registration controller using proxy endpoint.
+
 #### Installation
 
 To enable the feature, the user needs to enable the feature gate in `ClusterManager` and `Klusterlet` API.
-In addition, A new proxyConfig field should be added in `ClusterManager` API:
+In addition, A new `GRPCConfiguration` field should be added in `ClusterManager` API:
 
 ```go
-type ProxyConfig struct {
-    // EndpointExposure represents the configuration for endpoint exposure.
-    // +optional
-    EndpointExposure *GRPCEndpointExposure `json:"endpointExposure,omitempty"`
+type GRPCConfiguration struct {
+	// ImagePullSpec is the image for grpc server
+    ImagePullSpec string `json:"imagePullSpec,omitempty"`
+	
+	// featureGates represents the features enabled for grpc server
+	FeatureGates []FeatureGate `json:"featureGates,omitempty"`
+
+	// endpointsExposure represents the configuration for grpc endpoint exposure.
+	// +optional
+	EndpointsExposure []EndpointExposure `json:"endpointsExposure"`
 }
+
+type EndpointExposure struct {
+	// type is the type of the endpoint, could be agentToServer or user.
+	Type string `json:"type"`
+	
+	// protocol is the protocol used for the endpoint, could be http or grpc.
+	Protocol string `json:"protocol"`
+	
+	GRPC *EndpointExposure `json:"grpcEndpointExposure"`
+	
+	HTTP *EndpointExposure `json:"httpEndpointExposure"`
+}
+
+type EndpointExposure struct {
+    Endpoint string `json:"endpoint,omitempty"`
+    CABundle []byte `json:"caBundle,omitempty"`
+}
+```
+
+The following are examples of `ClusterManager` on how to install grpc proxy.
+Example of using proxy with csr registration and proxy would look like:
+
+```yaml
+spec:
+  grpcConfiguration:
+    imagePullSpec: <grpc image>
+    featureGates:
+    - feature: ClusterProxy
+      mode: Enabled
+    endpointsExposure:
+    - type: user
+      potocol: HTTP
+      httpEndpointExposure:
+        endpoint: https://<external http server>
+    - type: agentToServer
+      protocol: GRPC
+      grpcEndpointExposure:
+        endpoint: grpc://<external grpc address>
+```
+
+Example of grpc registration with proxy enabled:
+
+```yaml
+spec:
+  registrationConfiguration:
+    registrationDrivers:
+    - authType: csr
+    - authType: grpc
+  grpcConfiguration:
+    imagePullSpec: <grpc image>
+    featureGates:
+      - feature: ClusterProxy
+        mode: Enabled
+    endpointsExposure:
+      - type: user
+        potocol: HTTP
+        httpEndpointExposure:
+          endpoint: https://<external http server>
+      - type: agentToServer
+        protocol: GRPC
+        grpcEndpointExposure:
+          endpoint: grpc://<external grpc address>
+```
+
+Example of grpc registraion with proxy disabled:
+
+```yaml
+spec:
+  registrationConfiguration:
+    registrationDrivers:
+    - authType: csr
+    - authType: grpc
+  grpcConfiguration:
+    imagePullSpec: <grpc image>
+    endpointsExposure:
+    - type: agentToServer
+      protocol: GRPC
+      grpcEndpointExposure:
+        endpoint: grpc://<external grpc address>
 ```
 
 The proxyConfig field will also be added onto `Klusterlet` API:
 
 ```go
 type ProxyConfig struct {
-    Endpoint string `json:"endpoint,omitempty"`
-    CABundle []byte `json:"caBundle,omitempty"`
+     GRPC *EndpointExposure `json:"grpcEndpoint"`
     
     // Authentications defines how the agent authenticates with the cluster.
     // By default it is userToken, but it could also be impersonation or both.
     Authentications []string `json:"authentications,omitempty"`
 }
+```
+
+An example of enabling proxy on klusterlet will be:
+
+```yaml
+spec:
+  proxyConfig:
+    grpcEndpoint:
+      endpoint: <grpc://server address>
+      caBundle: <base64 encoded ca>
+    authentications:
+      - userToken
+      - impersonation
 ```
 
 ### Test Plan
@@ -136,6 +239,7 @@ Consider the following in developing a test plan for this enhancement:
 **Beta:**
 - At least two consumers are using or migrating from cluster-proxy addon to this feature
 - clusteradm is updated to adopt this feature
+- Integrate with cluster-inventory API.
 - End-to-end tests ensure all use cases of existing cluster-proxy addon are covered
 
 **GA (Graduate):**
