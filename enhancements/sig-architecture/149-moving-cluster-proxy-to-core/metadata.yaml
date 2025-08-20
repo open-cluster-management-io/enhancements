@@ -1,0 +1,16 @@
+title: workoad-completion
+authors:
+  - "@qiujian16"
+reviewers:
+  - "@skeeey"
+  - "@zhujian7"
+  - "@tamal"
+  - "@xuezhaojun"
+approvers:
+  - "@jnpacker"
+creation-date: 2025-02-24
+last-updated: 2025-02-24
+status: provisional
+see-also:
+  - "/enhancements/sig-architecture/14-addon-cluster-proxy"
+  - "/enhancements/sig-architecture/141-grpc-based-registration"
