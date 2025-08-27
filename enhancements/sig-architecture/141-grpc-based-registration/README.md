@@ -163,6 +163,132 @@ The following security principles should be considered between the broker and so
 - The sources should be authorized by broker to avoid one source can consume event messages from other sources
 - The agent should be authorized by broker to avoid one agent can consume event messages from other clusters 
 
+### Metrics
+
+The gRPC server exposes Prometheus metrics to monitor the health and performance. They are grouped into two categories:
+
+1. **General gRPC server metrics**
+2. **CloudEvents-specific gRPC server metrics**
+
+#### General gRPC server metrics
+
+Common metrics for gRPC server health and performance, started with `grpc_server` as Prometheus subsystem name.
+
+- **`grpc_server_active_connections`** (Gauge) - Current number of active connections.
+  For example:
+  ```
+  grpc_server_active_connections{local_addr="10.244.0.18:8090",remote_addr="10.244.0.16:45128"} 1
+  ```
+
+- **`grpc_server_started_total`** (Counter) - Total number of RPCs started on the server.
+  For example:
+  ```
+  grpc_server_started_total{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary"} 3
+  grpc_server_started_total{grpc_method="Subscribe",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="server_stream"} 4
+  ```
+
+- **`grpc_server_msg_received_total`** (Counter) - Total number of RPC messages received on the server.
+  For example:
+  ```
+  grpc_server_msg_received_total{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary"} 3
+  grpc_server_msg_received_total{grpc_method="Subscribe",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="server_stream"} 4
+  ```
+
+- **`grpc_server_msg_sent_total`** (Counter) - Total number of gRPC messages sent by the server.
+  For example:
+  ```
+  grpc_server_msg_sent_total{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary"} 3
+  grpc_server_msg_sent_total{grpc_method="Subscribe",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="server_stream"} 1
+  ```
+
+- **`grpc_server_msg_received_bytes_total`** (Counter) - Total number of message bytes received on the gRPC server.
+  For example:
+  ```
+  grpc_server_msg_received_bytes_total{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary"} 1729
+  grpc_server_msg_received_bytes_total{grpc_method="Subscribe",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="server_stream"} 245
+  ```
+
+- **`grpc_server_msg_sent_bytes_total`** (Counter) - Total number of message bytes sent by the gRPC server.
+  For example:
+  ```
+  grpc_server_msg_sent_bytes_total{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary"} 0
+  grpc_server_msg_sent_bytes_total{grpc_method="Subscribe",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="server_stream"} 1147
+  ```
+
+- **`grpc_server_handled_total`** (Counter) - Total number of RPCs completed on the server, regardless of success or failure.
+  For example:
+  ```
+  grpc_server_handled_total{grpc_code="OK",grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary"} 3
+  ```
+
+- **`grpc_server_handling_seconds`** (Histogram) - Histogram of the duration of RPC handling by the gRPC server.
+  For example:
+  ```
+  grpc_server_handling_seconds_bucket{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary",le="0.005"} 3
+  grpc_server_handling_seconds_bucket{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary",le="0.01"} 3
+  grpc_server_handling_seconds_bucket{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary",le="0.025"} 3
+  grpc_server_handling_seconds_bucket{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary",le="0.05"} 3
+  grpc_server_handling_seconds_bucket{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary",le="0.1"} 3
+  grpc_server_handling_seconds_bucket{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary",le="0.25"} 3
+  grpc_server_handling_seconds_bucket{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary",le="0.5"} 3
+  grpc_server_handling_seconds_bucket{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary",le="1"} 3
+  grpc_server_handling_seconds_bucket{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary",le="2.5"} 3
+  grpc_server_handling_seconds_bucket{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary",le="5"} 3
+  grpc_server_handling_seconds_bucket{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary",le="10"} 3
+  grpc_server_handling_seconds_bucket{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary",le="+Inf"} 3
+  grpc_server_handling_seconds_sum{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary"} 0.0055182140000000005
+  grpc_server_handling_seconds_count{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary"} 3
+  ```
+
+#### CloudEvents-specific gRPC server metrics
+
+Metrics specific to CloudEvents RPC calls, started with `grpc_server_ce` as Prometheus subsystem name.
+
+- **`grpc_server_ce_called_total`** (Counter) - Total number of RPC requests called on the server.
+  For example:
+  ```
+  grpc_server_ce_called_total{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",method="Publish"} 1
+  grpc_server_ce_called_total{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",method="Subscribe"} 1
+  ```
+
+- **`grpc_server_ce_msg_received_total`** (Counter) - Total number of messages received on the gRPC server.
+  For example:
+  ```
+  grpc_server_ce_msg_received_total{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",method="Publish"} 1
+  grpc_server_ce_msg_received_total{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",method="Subscribe"} 1
+  ```
+
+- **`grpc_server_ce_msg_sent_total`** (Counter) - Total number of messages sent by the gRPC server.
+  For example:
+  ```
+  grpc_server_ce_msg_sent_total{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",method="Publish"} 1
+  ```
+
+- **`grpc_server_ce_processed_total`** (Counter) - Total number of messages sent by the gRPC server.
+  For example:
+  ```
+  grpc_server_ce_processed_total{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish"} 1
+  ```
+
+- **`grpc_server_ce_processed_duration_seconds_bucket`** (Histogram) - Histogram of the duration of RPC requests for cloudevents processed on the server.
+  For example:
+  ```
+  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.005"} 0
+  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.01"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.025"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.05"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.1"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.25"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.5"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="1"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="2.5"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="5"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="10"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="+Inf"} 1
+  grpc_server_ce_processed_duration_seconds_sum{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish"} 0.001053519
+  grpc_server_ce_processed_duration_seconds_count{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish"} 1
+  ```
+
 ### Test Plan
 
 **Note:** *Section not required until targeted at a release.*
