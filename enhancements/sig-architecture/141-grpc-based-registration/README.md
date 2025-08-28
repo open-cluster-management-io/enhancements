@@ -163,6 +163,197 @@ The following security principles should be considered between the broker and so
 - The sources should be authorized by broker to avoid one source can consume event messages from other sources
 - The agent should be authorized by broker to avoid one agent can consume event messages from other clusters 
 
+### Metrics
+
+The gRPC server exposes Prometheus metrics to monitor the health and performance. They are grouped into two categories:
+
+1. **General gRPC server metrics**
+2. **CloudEvents-specific gRPC server metrics**
+
+#### General gRPC server metrics
+
+Common metrics for gRPC server health and performance, started with `grpc_server` as Prometheus subsystem name. Each metric comes with a operator guide on healthy vs. degraded values.
+
+- **`grpc_server_active_connections`**
+
+  **Type**: Gauge \
+  **Description**: Current number of active connections. \
+  **Healthy**: A stable or predictable number of grpc connections, based on expected client load. \
+  **Degraded**: A sudden drop to zero (all clients disconnected) or a sharp surge above the baseline may indicate connection leaks, restarts, or faulty clients. \
+  **Metrics sample**:
+  ```
+  grpc_server_active_connections{local_addr="10.244.0.18:8090",remote_addr="10.244.0.16:45128"} 1
+  ```
+
+- **`grpc_server_started_total`**
+
+  **Type**: Counter \
+  **Description**: Total number of RPCs started on the server. \
+  **Healthy**: The number of started RPCs closely matches the number of handled RPCs (`grpc_server_handled_total`). \
+  **Degraded**: A growing gap between started and handled RPCs (`grpc_server_handled_total`) suggests requests are failing before completion. \
+  **Metrics sample**:
+  ```
+  grpc_server_started_total{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary"} 3
+  grpc_server_started_total{grpc_method="Subscribe",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="server_stream"} 4
+  ```
+
+- **`grpc_server_msg_received_total`**
+
+  **Type**: Counter \
+  **Description**: Total number of RPC messages received on the server. \
+  **Healthy**: Steady growth aligned with expected traffic. \
+  **Degraded**: Abnormal spikes may indicate flooding or misbehaving clients. If `grpc_server_msg_received_total/grpc_server_msg_sent_total` also rises, the server or downstream may not be processing requests as fast as they are received. \
+  **Metrics sample**:
+  ```
+  grpc_server_msg_received_total{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary"} 3
+  grpc_server_msg_received_total{grpc_method="Subscribe",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="server_stream"} 4
+  ```
+
+- **`grpc_server_msg_sent_total`**
+
+  **Type**: Counter \
+  **Description**: Total number of gRPC messages sent by the server. \
+  **Healthy**: Consistent growth that matches the gRPC server and downstream processing rate. \
+  **Degraded**: A sudden drop may mean the server and downstream aren’t processing requests, If `grpc_server_msg_received_total/grpc_server_msg_sent_total` also rises, the server or downstream may be falling behind. \
+  **Metrics sample**:
+  ```
+  grpc_server_msg_sent_total{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary"} 3
+  grpc_server_msg_sent_total{grpc_method="Subscribe",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="server_stream"} 1
+  ```
+
+- **`grpc_server_msg_received_bytes_total`**
+
+  **Type**: Counter \
+  **Description**: Total number of message bytes received on the gRPC server. \
+  **Healthy**: Steady growth aligned with expected traffic. \
+  **Degraded**: Abnormal spikes may indicate flooding or misbehaving clients. If `grpc_server_msg_received_bytes_total/grpc_server_msg_sent_bytes_total` also rises, the server or downstream may not be processing requests as fast as they are received. \
+  **Metrics sample**:
+  ```
+  grpc_server_msg_received_bytes_total{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary"} 1729
+  grpc_server_msg_received_bytes_total{grpc_method="Subscribe",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="server_stream"} 245
+  ```
+
+- **`grpc_server_msg_sent_bytes_total`**
+
+  **Type**: Counter \
+  **Description**: Total number of message bytes sent by the gRPC server. \
+  **Healthy**: Consistent growth that matches the gRPC server and downstream processing rate. \
+  **Degraded**: A sudden drop may mean the server and downstream aren’t processing requests, If `grpc_server_msg_received_total/grpc_server_msg_sent_total` also rises, the server or downstream may be falling behind. \
+  **Metrics sample**:
+  ```
+  grpc_server_msg_sent_bytes_total{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary"} 0
+  grpc_server_msg_sent_bytes_total{grpc_method="Subscribe",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="server_stream"} 1147
+  ```
+
+- **`grpc_server_handled_total`**
+
+  **Type**: Counter \
+  **Description**: Total number of RPCs completed on the server, regardless of success or failure. \
+  **Healthy**: Most RPCs complete with `grpc_code="OK"`. \
+  **Degraded**: An increasing number of non-OK codes (e.g., `Unavailable`, `DeadlineExceeded`, `Internal`) signals grpc server instability or downstream errors. \
+  **Metrics sample**:
+  ```
+  grpc_server_handled_total{grpc_code="OK",grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary"} 3
+  ```
+
+- **`grpc_server_handling_seconds`**
+
+  **Type**: Histogram \
+  **Description**: Histogram of the duration of RPC handling by the gRPC server. \
+  **Healthy**: Request latencies fall mostly into the lower buckets (e.g., <0.1s). \
+  **Degraded**: Shifts into higher buckets (e.g., >1s or >5s) mean the server is slowing down, possibly due to load, resource starvation, or dependency issues. \
+  **Metrics sample**:
+  ```
+  grpc_server_handling_seconds_bucket{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary",le="0.005"} 3
+  grpc_server_handling_seconds_bucket{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary",le="0.01"} 3
+  grpc_server_handling_seconds_bucket{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary",le="0.025"} 3
+  grpc_server_handling_seconds_bucket{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary",le="0.05"} 3
+  grpc_server_handling_seconds_bucket{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary",le="0.1"} 3
+  grpc_server_handling_seconds_bucket{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary",le="0.25"} 3
+  grpc_server_handling_seconds_bucket{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary",le="0.5"} 3
+  grpc_server_handling_seconds_bucket{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary",le="1"} 3
+  grpc_server_handling_seconds_bucket{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary",le="2.5"} 3
+  grpc_server_handling_seconds_bucket{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary",le="5"} 3
+  grpc_server_handling_seconds_bucket{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary",le="10"} 3
+  grpc_server_handling_seconds_bucket{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary",le="+Inf"} 3
+  grpc_server_handling_seconds_sum{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary"} 0.0055182140000000005
+  grpc_server_handling_seconds_count{grpc_method="Publish",grpc_service="io.cloudevents.v1.CloudEventService",grpc_type="unary"} 3
+  ```
+
+#### CloudEvents-specific gRPC server metrics
+
+Metrics specific to CloudEvents RPC calls, started with `grpc_server_ce` as Prometheus subsystem name. Each metric comes with a operator guide on healthy vs. degraded values.
+
+- **`grpc_server_ce_called_total`**
+
+  **Type**: Counter \
+  **Description**: Total number of RPC requests called on the server. \
+  **Healthy**: Regular increments matching agents traffic. \
+  **Degraded**: Sudden stop (no calls received) or unexpected drops after a steady pattern may indicate communication issues with agents. \
+  **Metrics sample**:
+  ```
+  grpc_server_ce_called_total{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",method="Publish"} 1
+  grpc_server_ce_called_total{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",method="Subscribe"} 1
+  ```
+
+- **`grpc_server_ce_msg_received_total`**
+
+  **Type**: Counter \
+  **Description**: Total number of messages received on the gRPC server. \
+  **Healthy**: Regular increments matching agents traffic, most received events eventually lead to sent events. \
+  **Degraded**: Large gap of `grpc_server_ce_msg_received_total/grpc_server_ce_msg_sent_total` (many received but few sent/processed) may mean server bottlenecks, or dropped events. \
+  **Metrics sample**:
+  ```
+  grpc_server_ce_msg_received_total{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",method="Publish"} 1
+  grpc_server_ce_msg_received_total{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",method="Subscribe"} 1
+  ```
+
+- **`grpc_server_ce_msg_sent_total`**
+
+  **Type**: Counter \
+  **Description**: Total number of messages sent by the gRPC server. \
+  **Healthy**: Consistent growth that matches the gRPC server and downstream processing rate. \
+  **Degraded**: Large gap of `grpc_server_ce_msg_received_total/grpc_server_ce_msg_sent_total` (many received but few sent/processed) may mean server bottlenecks, or dropped events. \
+  **Metrics sample**:
+  ```
+  grpc_server_ce_msg_sent_total{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",method="Publish"} 1
+  ```
+
+- **`grpc_server_ce_processed_total`**
+
+  **Type**: Counter \
+  **Description**: Total number of messages processed by the gRPC server. \
+  **Healthy**: Most of cloudevents are processed with `grpc_code="OK"`. \
+  **Degraded**: Rising counts of non-OK codes show the server is failing during processing. \
+  **Metrics sample**:
+  ```
+  grpc_server_ce_processed_total{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish"} 1
+  ```
+
+- **`grpc_server_ce_processed_duration_seconds_bucket`**
+
+  **Type**: Histogram \
+  **Description**: Histogram of the duration of RPC requests for cloudevents processed on the server. \
+  **Healthy**: Processing durations mostly in small buckets (e.g., <0.1s). \
+  **Degraded**: Shifts into higher buckets (>1s or >5s) signals slowdown in event handling. \
+  **Metrics sample**:
+  ```
+  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.005"} 0
+  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.01"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.025"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.05"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.1"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.25"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.5"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="1"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="2.5"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="5"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="10"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="+Inf"} 1
+  grpc_server_ce_processed_duration_seconds_sum{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish"} 0.001053519
+  grpc_server_ce_processed_duration_seconds_count{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish"} 1
+  ```
+
 ### Test Plan
 
 **Note:** *Section not required until targeted at a release.*
