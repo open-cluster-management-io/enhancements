@@ -284,6 +284,18 @@ Common metrics for gRPC server health and performance, started with `grpc_server
 
 Metrics specific to CloudEvents RPC calls, started with `grpc_server_ce` as Prometheus subsystem name. Each metric comes with a operator guide on healthy vs. degraded values.
 
+- **`grpc_server_ce_subscribers`**
+
+  **Type**: Gauge \
+  **Description**: Current number of subscribers registered to the server. \
+  **Healthy**: A stable or predictable number of subscribers, based on expected agent number. \
+  **Degraded**: A sudden drop to zero (all agents disconnected) or a sharp surge above the baseline may indicate connection leaks, restarts, or faulty agents. \
+  **Metrics sample**:
+  ```
+  grpc_server_ce_subscribers{consumer="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles"} 1
+  grpc_server_ce_subscribers{consumer="cluster2",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles"} 1
+  ```
+
 - **`grpc_server_ce_called_total`**
 
   **Type**: Counter \
@@ -292,8 +304,8 @@ Metrics specific to CloudEvents RPC calls, started with `grpc_server_ce` as Prom
   **Degraded**: Sudden stop (no calls received) or unexpected drops after a steady pattern may indicate communication issues with agents. \
   **Metrics sample**:
   ```
-  grpc_server_ce_called_total{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",method="Publish"} 1
-  grpc_server_ce_called_total{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",method="Subscribe"} 1
+  grpc_server_ce_called_total{consumer="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",method="Publish"} 1
+  grpc_server_ce_called_total{consumer="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",method="Subscribe"} 1
   ```
 
 - **`grpc_server_ce_msg_received_total`**
@@ -304,8 +316,8 @@ Metrics specific to CloudEvents RPC calls, started with `grpc_server_ce` as Prom
   **Degraded**: Large gap of `grpc_server_ce_msg_received_total/grpc_server_ce_msg_sent_total` (many received but few sent/processed) may mean server bottlenecks, or dropped events. \
   **Metrics sample**:
   ```
-  grpc_server_ce_msg_received_total{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",method="Publish"} 1
-  grpc_server_ce_msg_received_total{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",method="Subscribe"} 1
+  grpc_server_ce_msg_received_total{consumer="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",method="Publish"} 1
+  grpc_server_ce_msg_received_total{consumer="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",method="Subscribe"} 1
   ```
 
 - **`grpc_server_ce_msg_sent_total`**
@@ -316,7 +328,7 @@ Metrics specific to CloudEvents RPC calls, started with `grpc_server_ce` as Prom
   **Degraded**: Large gap of `grpc_server_ce_msg_received_total/grpc_server_ce_msg_sent_total` (many received but few sent/processed) may mean server bottlenecks, or dropped events. \
   **Metrics sample**:
   ```
-  grpc_server_ce_msg_sent_total{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",method="Publish"} 1
+  grpc_server_ce_msg_sent_total{consumer="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",method="Publish"} 1
   ```
 
 - **`grpc_server_ce_processed_total`**
@@ -327,7 +339,7 @@ Metrics specific to CloudEvents RPC calls, started with `grpc_server_ce` as Prom
   **Degraded**: Rising counts of non-OK codes show the server is failing during processing. \
   **Metrics sample**:
   ```
-  grpc_server_ce_processed_total{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish"} 1
+  grpc_server_ce_processed_total{consumer="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish"} 1
   ```
 
 - **`grpc_server_ce_processed_duration_seconds_bucket`**
@@ -338,20 +350,20 @@ Metrics specific to CloudEvents RPC calls, started with `grpc_server_ce` as Prom
   **Degraded**: Shifts into higher buckets (>1s or >5s) signals slowdown in event handling. \
   **Metrics sample**:
   ```
-  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.005"} 0
-  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.01"} 1
-  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.025"} 1
-  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.05"} 1
-  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.1"} 1
-  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.25"} 1
-  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.5"} 1
-  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="1"} 1
-  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="2.5"} 1
-  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="5"} 1
-  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="10"} 1
-  grpc_server_ce_processed_duration_seconds_bucket{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="+Inf"} 1
-  grpc_server_ce_processed_duration_seconds_sum{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish"} 0.001053519
-  grpc_server_ce_processed_duration_seconds_count{cluster="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{consumer="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.005"} 0
+  grpc_server_ce_processed_duration_seconds_bucket{consumer="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.01"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{consumer="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.025"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{consumer="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.05"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{consumer="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.1"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{consumer="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.25"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{consumer="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="0.5"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{consumer="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="1"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{consumer="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="2.5"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{consumer="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="5"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{consumer="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="10"} 1
+  grpc_server_ce_processed_duration_seconds_bucket{consumer="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish",le="+Inf"} 1
+  grpc_server_ce_processed_duration_seconds_sum{consumer="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish"} 0.001053519
+  grpc_server_ce_processed_duration_seconds_count{consumer="cluster1",data_type="io.open-cluster-management.works.v1alpha1.manifestbundles",grpc_code="OK",method="Publish"} 1
   ```
 
 ### Test Plan
