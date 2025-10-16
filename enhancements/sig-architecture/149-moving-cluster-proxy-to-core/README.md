@@ -104,34 +104,58 @@ To enable the feature, the user needs to enable the feature gate in `ClusterMana
 In addition, A new `GRPCConfiguration` field should be added in `ClusterManager` API:
 
 ```go
-type GRPCConfiguration struct {
-	// ImagePullSpec is the image for grpc server
-    ImagePullSpec string `json:"imagePullSpec,omitempty"`
-	
-	// featureGates represents the features enabled for grpc server
-	FeatureGates []FeatureGate `json:"featureGates,omitempty"`
+type ServerConfiguration struct {
+	// imagePullSpec is the image for the server 
+	ImagePullSpec string `json:"imagePullSpec,omitempty"`
 
-	// endpointsExposure represents the configuration for grpc endpoint exposure.
-	// +optional
-	EndpointsExposure []EndpointExposure `json:"endpointsExposure"`
+	// featureGates represents the features enabled for the server
+    FeatureGates []FeatureGate `json:"featureGates,omitempty"`
+
+
+    // endpointsExposure represents the configuration for endpoints exposure of the server.
+    // +optional
+    EndpointsExposure []EndpointExposure `json:"endpointsExposure,omitempty"`
 }
 
-type EndpointExposure struct {
-	// type is the type of the endpoint, could be agentToServer or user.
-	Type string `json:"type"`
-	
-	// protocol is the protocol used for the endpoint, could be http or grpc.
-	Protocol string `json:"protocol"`
-	
-	GRPC *EndpointExposure `json:"grpcEndpointExposure"`
-	
-	HTTP *EndpointExposure `json:"httpEndpointExposure"`
-}
 
 type EndpointExposure struct {
-    Endpoint string `json:"endpoint,omitempty"`
-    CABundle []byte `json:"caBundle,omitempty"`
+    // usage defines the usage of the endpoint. It could be "agentToHub" indicating the endpoint is used
+    // for communication between agent and hub, or "consumer" indicating the endpoint is used for external consumer.
+    // +optional
+    Usage string `json:"usage,omitempty"`
+
+
+    // protocol is the protocol used for the endpoint, could be https or grpc.
+    // +kubebuilder:default:=grpc
+    // +kubebuilder:validation:Enum=grpc;https
+    // +required
+    Protocol string `json:"protocol"`
+
+
+    // grpc represents the configuration for grpc endpoint.
+    GRPC *Endpoint `json:"grpc,omitempty"`
+
+
+    // https represents the configuration for https endpoint.
+    HTTPS *Endpoint `json:"https,omitempty"`
 }
+
+
+type Endpoint struct {
+    // type specifies how the endpoint is exposed.
+    // You may need to apply an object to expose the endpoint, for example: a route.
+    // TODO: support loadbalancer.
+    // +kubebuilder:default:=hostname
+    // +kubebuilder:validation:Enum=hostname
+    // +required
+    Type EndpointExposureType `json:"type,omitempty"`
+
+
+    // hostname points to a fixed hostname for serving agents' handshakes.
+    // +optional
+    Hostname *HostnameConfig `json:"hostname,omitempty"`
+}
+
 ```
 
 The following are examples of `ClusterManager` on how to install grpc proxy.
@@ -139,20 +163,22 @@ Example of using proxy with csr registration and proxy would look like:
 
 ```yaml
 spec:
-  grpcConfiguration:
+  serverConfiguration:
     imagePullSpec: <grpc image>
     featureGates:
-    - feature: ClusterProxy
-      mode: Enabled
+      - feature: ClusterProxy
+        mode: Enabled
     endpointsExposure:
-    - type: user
-      potocol: HTTP
-      httpEndpointExposure:
-        endpoint: https://<external http server>
-    - type: agentToServer
-      protocol: GRPC
-      grpcEndpointExposure:
-        endpoint: grpc://<external grpc address>
+      - usage: user-server
+        protocol: https
+        https:
+          type: hostname
+          hostname: https://<external http server>
+      - usage: agentToServer
+        protocol: grpc
+        grpc:
+          type: hostname
+          hostname: grpc://<external grpc address>
 ```
 
 Example of grpc registration with proxy enabled:
@@ -163,20 +189,22 @@ spec:
     registrationDrivers:
     - authType: csr
     - authType: grpc
-  grpcConfiguration:
+  serverConfiguration:
     imagePullSpec: <grpc image>
     featureGates:
       - feature: ClusterProxy
         mode: Enabled
     endpointsExposure:
-      - type: user
-        potocol: HTTP
-        httpEndpointExposure:
-          endpoint: https://<external http server>
-      - type: agentToServer
-        protocol: GRPC
-        grpcEndpointExposure:
-          endpoint: grpc://<external grpc address>
+      - usage: user-server
+        protocol: https
+        https:
+          type: hostname
+          hostname: https://<external http server>
+      - usage: agentToServer
+        protocol: grpc
+        grpc:
+          type: hostname
+          hostname: grpc://<external grpc address>
 ```
 
 Example of grpc registraion with proxy disabled:
@@ -187,13 +215,13 @@ spec:
     registrationDrivers:
     - authType: csr
     - authType: grpc
-  grpcConfiguration:
+  serverConfiguration:
     imagePullSpec: <grpc image>
-    endpointsExposure:
-    - type: agentToServer
-      protocol: GRPC
-      grpcEndpointExposure:
-        endpoint: grpc://<external grpc address>
+      - usage: agentToServer
+        protocol: grpc
+        grpc:
+          type: hostname
+          hostname: grpc://<external grpc address>
 ```
 
 The proxyConfig field will also be added onto `Klusterlet` API:
