@@ -2,15 +2,11 @@ title: manifestworkreplicaset-rollout-plugin
 authors:
   - "@youngbupark"
 reviewers:
-  - "@qiujian16"
+  - TBD
 approvers:
-  - "@qiujian16"
-creation-date: yyyy-mm-dd
-last-updated: yyyy-mm-dd
+  - TBD
+creation-date: 2025-10-28
+last-updated: 2025-10-28
 status: provisional|implementable|implemented|deferred|rejected|withdrawn|replaced
 see-also:
-  - "/enhancements/this-other-neat-thing.md"  
-replaces:
-  - "/enhancements/that-less-than-great-idea.md"
-superseded-by:
-  - "/enhancements/our-past-effort.md"
+  - "/enhancements/rollback-tbd.md"

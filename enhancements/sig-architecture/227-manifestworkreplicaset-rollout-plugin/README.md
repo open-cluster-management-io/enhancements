@@ -12,7 +12,7 @@
 
 The ManifestWorkReplicaSet (MWRS) Rollout Plugin introduces a plugin-based extensibility model for the OCM Work Controller, enabling users to inject custom logic at critical phases of the multi-cluster rollout and rollback lifecycle.
 
-This design allows user to implement domain-specific logic — such as progressive traffic management, post-deployment validation, and automatic rollback — without changing the core MWRS controller.
+This design allows user to implement domain-specific logic -- such as progressive traffic management, post-deployment validation, and automatic rollback -- without changing the core MWRS controller.
 
 Through a sidecar-based gRPC extension point, the rollout plugin framework provides a flexible and secure mechanism to orchestrate multi-cluster rollouts that integrate seamlessly with external systems such as Argo Rollout, Istio / service meshes, or custom validation frameworks.
 
@@ -25,9 +25,7 @@ In real-world use cases, rollout orchestration often requires cross-cluster coor
 * Multi-cluster aware Argo Rollouts, where progressive canary traffic shifting must align with MWRS orchestration status.
 * Multi-cluster mesh traffic control, where traffic weights must be adjusted across clusters as rollout progresses.
 
-Currently, workloads deployed in managed clusters have no visibility into orchestration context or progress at the hub level, making such coordination challenging.
-
-Additionally, to ensure safe rollouts, users need the ability to verify functionality at each cluster stage before promotion to the next cluster. This often involves executing custom post-deployment validation tests to prevent propagating a faulty deployment across clusters — beyond what can be expressed through existing `conditionRules`.
+To ensure safe rollouts, users need the ability to verify functionality at each cluster stage before promotion to the next cluster. This often involves executing custom post-deployment validation tests to prevent propagating a faulty deployment across clusters — beyond what can be expressed through existing `conditionRules`.
 
 Finally, users also require automated rollback capabilities to revert to a previous revision when failures are detected. Rollback procedures often include cluster-specific cleanup or manifest mutation steps that are hard to standardize.
 
@@ -102,7 +100,7 @@ flowchart LR
 
 To enable the user stories described above, the following custom hooks will be required:
 
-| **Hook**                     | **Description**                                                                                 |
+| Hook                     | Description                                                                                 |
 | ---------------------------- | ----------------------------------------------------------------------------------------------- |
 | `BeginRollout`               | Called before rollout starts. Used to prepare metadata, preconditions, or environment setup. |
 | `ProgressRollout`            | Called every MWRS reconciler is triggered during rollout. |
@@ -116,11 +114,11 @@ The design extends the work-controller with these custom hooks, which are implem
 
 ### Plugin protocol
 
-The plugin will be implemented as a sidecar container running alongside the MWRSController. We chose a sidecar model to simplify the plugin onboarding process. gRPC will be used for communication. The plugin will run as a gRPC server, and the MWRSController will act as the gRPC client.
+The plugin will be implemented as a sidecar container running alongside the work controller in hub cluster. We chose a sidecar model to simplify the plugin onboarding process. gRPC will be used for communication. The plugin will run as a gRPC server, and the work controller will act as the gRPC client.
 
-#### Plugin Initialiation
+#### Plugin initialization
 
-When the work controller at hub starts, it attempts to call the `Initialize()` gRPC endpoint on the plugin server. If successful, the plugin returns its supported capabilities (e.g., Rollout, Rollback, MutateManifestWork). The reconciler will update the MWRS resource status with a `PluginLoaded` condition. If no plugin is configured, this condition will not be present.
+When the work controller at hub starts, it attempts to call the `Initialize()` gRPC endpoint on the plugin server. If successful, the plugin returns its supported capabilities (e.g., Rollout, Rollback, MutateManifestWork). The reconciler will set the MWRS resource status with a `PluginLoaded` condition. If no plugin is configured, this condition will not be present.
 
 ```yaml
 apiVersion: work.open-cluster-management.io/v1alpha1
@@ -142,31 +140,93 @@ status:
 
 | Condition                    | Type                 | Reason                       | Message                                                                                      |
 | ---------------------------- | -------------------- | ---------------------------- | -------------------------------------------------------------------------------------------- |
-| Plugin not configured        | —                    | —                            | No condition present                                                                         |
-| Plugin initialization failed | `PluginLoaded=False` | `PluginInitializationFailed` | `Cannot connect to plugin server`                                                            |
-| Plugin loaded successfully   | `PluginLoaded=True`  | `PluginInitialized`          | `Plugin is loaded successfully. Supported capability: Rollout, Rollback, MutateManifestWork` |
+| Plugin not configured        | -                    | -                            | No condition present                                                                         |
+| Plugin initialization failed | `PluginLoaded=False` | `Failed` | `Cannot connect to plugin server`                                                            |
+| Plugin loaded successfully   | `PluginLoaded=True`  | `Initialized`          | `Plugin is loaded successfully. Supported capability: Rollout, Rollback, MutateManifestWork` |
 
-#### Rollout with plugin
+#### Rollout sequence with plugin
 
-The following sequence describes the simplified rollout flow with plugin:
+The following sequence diagram describes the high-level orchestration with Plugin API calls.
 
-1. Get Placement from the current MWRS resource
-2. Get all ManifestWorks associated with current MWRS resource.
-3. Find all valid ManifestWork resources
-  3.1 find the same workload as what the current MWRS resource manifestwork template
-  3.2 determine cluster rollout status
-    3.2.1 (NEW) Call ValidateRolloutCompletion() Before setting Status to Succeeded. Add additional step `ValidationProgress`. If ValidateRolloutCompletion() returns IN_PROGRESS, it doesn't set the status to `Suceeded`. It will retry in the next reconciling loop until it returns FAILED or SUCCEEDED. only if it returns to SUCCEDED, it sets the rollout status to SUCCEEDED. Otherwise, it will mark it FAILED.
-4. Create rollout handler with the current selected placement decisions
-5. Get the rollout result which includes roll out candidate clusters and removed clusters.
-6. (NEW) Call ProgressRollout() Plugin API
-6. Iterate all the rollout candidate clusters
-   6.1 (NEW) Call BeforeRollout() Plugin API
-   6.2 Create ManifestWork resources to the rollout candidate clusters.
-7. Clean up manifestworks which are deployed to the removed clusters.
+```mermaid
+sequenceDiagram
+    participant APIServer
+    participant Work
+    participant PluginServer
+
+    loop Placements
+        Work->>APIServer: Get all Manifestworks associated with the current placement
+        loop existing manifests
+            Work->>Work: Check if this manifest is same as MWRS template?
+            Work->>Work: Determine cluster rollout status
+            alt RolloutStatus is "Validating"
+                Work->>PluginServer: (NEW) ValidateRolloutCompletion()
+                PluginServer-->>Work: Status: SUCCEEDED/FAILED/INPROGRESS
+                Work->>Work: Set RolloutStatus to SUCCEEDED if Validation result is SUCCEEDED
+            end
+        end
+        Work->>Work: Create rollout handler
+        Work->>Work: Find rollout and removed candidate clusters (RolloutResult)
+        Work->>PluginServer: (NEW) ProgressingRollout()
+        PluginServer-->>Work: OK
+        loop clusterToRollout clusters
+            Work->>PluginServer: (NEW) BeforeRollout()
+            PluginServer-->>Work: OK
+            Work->>PluginAPI: (NEW) MutateManifestwork()
+            PluginAPI-->>Work: Mutated Manifestwork resource
+            Work->>APIServer: Apply the mutated ManifestWork resource to the current cluster
+        end
+        Work->>APIServer: Clean up manifestworks for removed clusters.
+    end
+
+```
+
+This workflow introduces four new plugin API calls:
+
+* `ProgressingRollout()`: Called during every reconciliation loop to report the current rollout status to the plugin.
+* `BeforeRollout()`: Called before applying the ManifestWork to a target cluster, allowing the plugin to perform any necessary preparations.
+* `MutateManifestWork()`: Called before applying the ManifestWork to the cluster. This hook allows the plugin to modify the manifest, which is essential for:
+  - Injecting orchestration status (like the cluster's rollout index) into resource labels or annotations.
+  - Enabling advanced scenarios, such as modifying an Argo Rollout resource to skip steps during a rollback.
+  This direct mutation is required because it is difficult to inject this context via a default admission webhook without exposing all orchestration information in the ManifestWorkReplicaSet status.
+* `ValidateRolloutCompletion()`: Called after the Progressing condition on the target cluster's ManifestWork becomes False. This hook enables post-rollout testing before the status is set to Succeeded. For example, the plugin could use this call to create a new ManifestWork that runs a Kubernetes Job for verification.
+
+To support post-rollout testing, a new Validating status is introduced. The controller enters this state after the Progressing condition becomes False and then calls `ValidateRolloutCompletion()`.
+
+> Note: The `ValidateRolloutCompletion()` check must complete within the `ProgressDeadline` timeout.
+
+The overall Rollout Status is determined by the ManifestWork conditions and the validation result:
+
+| Progressing (ConditionRule) | Degraded (ConditionRule) | ValidateRolloutCompletion() | Rollout Status	| Description |
+|---|---|---|---|---|
+| True | True | N/A | Failed | Work is progressing but degraded |
+| True | False or not set | N/A | Progressing | Work is being applied and is healthy |
+| False | False or not set | INPROGRESS | Validating | Validating rollout |
+| False | False or not set | FAILED | Failed | The current rollout is failed |
+| False | False or not set | SUCCEEDED | Succeeded | Work has been successfully applied |
+| Unknown/Not set | Any | N/A | Progressing | Conservative fallback: treat as still progressing |
+
+The following state machine shows the expected transitions between rollout statuses:
+
+```mermaid
+stateDiagram
+  Validating: (NEW State) Validating
+  NextCluster: Move to the next cluster rollout
+  Rollback: Rollback (NOT IMPLEMENTED)
+  [*] --> ToApply
+  ToApply --> Progressing: Progressing = True
+  Progressing --> Validating: Progressing = False
+  Validating --> Succeeded: ValidateRolloutCompletion() returns SUCCEEDED
+  Validating --> Failed: ValidateRolloutCompletion() returns FAILED
+  Progressing --> Failed: Degraded = True
+  ToApply --> Failed: Degraded = True
+  Succeeded --> NextCluster
+  Failed --> Rollback
+```
 
 #### Rollback with plugin
 
-The sequence is similar to rollout sequence.
+> To be updated: Rollback flow will be similar to rollout scenario. This will be added based on manifest rollback enhancement.
 
 ### gRPC API design
 
@@ -180,12 +240,12 @@ service RolloutPluginService {
 
   // BeginRollout is called before the manifestwork resource is applied.
   // It is used to prepare the rollout.
-  rpc BeginRollout(RolloutPluginRequest) returns (RolloutPluginResponse);
+  rpc BeginRollout(RolloutPluginRequest) returns (google.protobuf.Empty);
 
   // ProgressRollout is called after the manifestwork is applied.
   // Whenever the feedbacks are updated, this method will be called.
   // The plugin can execute the rollout logic based on the feedback status changes.
-  rpc ProgressRollout(RolloutPluginRequest) returns (RolloutPluginResponse);
+  rpc ProgressRollout(RolloutPluginRequest) returns (google.protobuf.Empty);
 
   // ValidateRollout is called to validate the completion of the rollout.
   // It is used to check if the rollout is completed successfully.
@@ -196,12 +256,12 @@ service RolloutPluginService {
 
   // BeginRollback is called before the manifestwork resource is rolled back.
   // It is used to prepare the rollback.
-  rpc BeginRollback(RolloutPluginRequest) returns (RolloutPluginResponse);
+  rpc BeginRollback(RolloutPluginRequest) returns (google.protobuf.Empty);
 
   // ProgressRollback is called after the manifestwork is rolled back.
   // Whenever the feedbacks are updated, this method will be called.
   // The plugin can execute the rollback logic based on the feedback status changes.
-  rpc ProgressRollback(RolloutPluginRequest) returns (RolloutPluginResponse);
+  rpc ProgressRollback(RolloutPluginRequest) returns (google.protobuf.Empty);
 
   // ValidateRollback is called to validate the completion of the rollback.
   // It is used to check if the rollback is completed successfully.
