@@ -14,7 +14,7 @@ The ManifestWorkReplicaSet (MWRS) Rollout Plugin introduces a plugin-based exten
 
 This design allows user to implement domain-specific logic -- such as progressive traffic management, post-deployment validation, and automatic rollback -- without changing the core MWRS controller.
 
-Through a sidecar-based gRPC extension point, the rollout plugin framework provides a flexible and secure mechanism to orchestrate multi-cluster rollouts that integrate seamlessly with external systems such as Argo Rollout, Istio / service meshes, or custom validation frameworks.
+The rollout plugin framework provides a flexible and secure mechanism to orchestrate multi-cluster rollouts that integrate seamlessly with external components and services such as Argo Rollout, Istio / service meshes, or custom validation frameworks.
 
 ## Motivation
 
@@ -60,7 +60,7 @@ After each cluster completes its deployment, I need to run post-deployment tests
 
 #### Story 3 — automated rollback on failure
 
-As a user, I want MWRS to automatically roll back workloads in the event of a failed rollout. When a deployment fails, MWRS should identify the previous revision and restore it consistently to the already rolled out clusters. The rollback should be able to perform any additional operations needed to safely revert to the stable version — for example, reverting manifests or skipping rollout steps in dependent systems in Argo Rollout use-case, which requires the mutation of old manifest resources.
+As a user, I want MWRS to automatically roll back workloads in the event of a failed rollout. When a deployment fails, MWRS should identify the previous revision and restore it consistently to the already rolled out clusters. The rollback should be able to perform any additional operations needed to safely revert to the stable version - for example, reverting manifests or skipping rollout steps in dependent systems in Argo Rollout use-case, which requires the mutation of old manifest resources.
 
 ### Risks and Mitigation
 
