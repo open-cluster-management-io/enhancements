@@ -311,7 +311,7 @@ With the status column updates as follows:
 Below diagram shows the state flow.
 
 ```mermaid
-State Diagram-v2
+stateDiagram-v2
     [*] --> PlacementVerified=False : MWRS created
     PlacementVerified=False --> PlacementVerified=True : Found PlacementRef
     PlacementVerified=True --> Progressing=True : Start Rollout
