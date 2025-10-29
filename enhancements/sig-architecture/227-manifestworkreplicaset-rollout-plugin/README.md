@@ -64,7 +64,9 @@ As a user, I want MWRS to automatically roll back workloads in the event of a fa
 
 ### Risks and Mitigation
 
-> TBD. Add more details
+#### Encryption between Work Controller and Plugin Server
+
+This proposal does not currently include TLS encryption for the localhost communication between the work controller and the plugin server. However, a potential risk exists as some enterprise environments require mTLS (mutual TLS) for all component communication, even within a sidecar model. To meet these stringent security requirements, we may need to implement encryption for this localhost connection in a future release.
 
 ## Design Details
 
@@ -277,7 +279,7 @@ service RolloutPluginService {
 }
 ```
 
-#### Request
+#### Request message
 
 To address the user scenarios, the work controller will pass a common set of information in the gRPC request payload for each hook.
 
@@ -314,7 +316,41 @@ spec:
       # port: 6767
 ```
 
+#### Deployment manifest change to use plugin
 
+To run plugin server as a sidecar, [deployment manifest](https://github.com/open-cluster-management-io/ocm/blob/main/manifests/cluster-manager/management/work/deployment.yaml) will include `initContainers` field to run plugin image.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+...
+spec:
+  ...
+  selector:
+    ...
+  template:
+      ...
+    spec:
+      ...
+      initContainers:
+      - name: {{ .ClusterManagerName }}-plugin
+        image: {{ .PluginImage }}
+        restartPolicy: Always
+        args:
+          - "/plugin"
+        env:
+          - name: PLUGIN_SERVER_PORT
+            value: {{ .PluginServerPort }}
+      containers:
+      - name: {{ .ClusterManagerName }}-work-controller
+        image:  {{ .WorkImage }}
+        ...
+        env:
+        {{- if .PluginServerPort }}
+          - name: PLUGIN_SERVER_PORT
+            value: {{ .PluginServerPort }}
+        {{- end }}
+```
 
 ### Open Questions [optional]
 
