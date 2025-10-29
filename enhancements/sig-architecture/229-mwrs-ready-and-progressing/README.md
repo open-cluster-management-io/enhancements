@@ -219,6 +219,7 @@ be a good place to talk about core concepts and how they relate.
 TBD
 
 ## Design Details
+This design is on the assumption that summary.available will represent only manifestworks that are deployed AND available. Currently there is a bug (TBD file issue) that summary.available shows the manifestworks that are deployed but might not be available yet. 
 
 #### New Conditions:
 
