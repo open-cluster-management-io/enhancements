@@ -72,7 +72,7 @@ With the new status conditions - Ready and Progressing, here is the flow that th
 
 
 Step 1: Processing ManifestworkApplied on Cluster 1 
-`
+```
 status:
   conditions:
     # Previous conditions
@@ -104,9 +104,9 @@ status:
       status: "False"
       reason: NotAllClustersAvailable
       message: "ManifestWorks available in 0/2 clusters"
-`
+```
 Step 2: Completed ManifestworkApplied on Cluster 1, waiting to rollout to next cluster
-`
+```
 status:
   conditions:
     # Previous conditions
@@ -138,9 +138,9 @@ status:
       status: "False"
       reason: NotAllClustersAvailable
       message: "ManifestWorks available in 1/2 clusters"
-`
+```
 Step 3: Rolling out in Cluster 2
-`
+```
 status:
   conditions:
     # Previous conditions
@@ -172,9 +172,9 @@ status:
       status: "False"
       reason: NotAllClustersAvailable
       message: "ManifestWorks available in 1/2 clusters"
-`
-Step 3: Completed Rollout in both clusters
-`
+```
+Step 4: Completed Rollout in both clusters
+```
 status:
   conditions:
     # Previous conditions
@@ -206,7 +206,7 @@ status:
       status: "True"
       reason: AllClustersAvailable
       message: "ManifestWorks available in 2/2 clusters"
-`
+```
 
 ### Implementation Details/Notes/Constraints [optional]
 
