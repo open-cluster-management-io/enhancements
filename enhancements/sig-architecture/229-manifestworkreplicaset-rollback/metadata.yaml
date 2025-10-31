@@ -1,0 +1,12 @@
+title: manifestworkreplicaset-rollback
+authors:
+  - "@youngbupark"
+reviewers:
+  - TBD
+approvers:
+  - TBD
+creation-date: 2025-10-31
+last-updated: 2025-10-31
+status: provisional|implementable|implemented|deferred|rejected|withdrawn|replaced
+see-also:
+  - "/enhancements/sig-architecture/227-manifestworkreplicaset-rollout-plugin/README.md"
