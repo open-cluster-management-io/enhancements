@@ -1,0 +1,13 @@
+title: manifestworkreplicaset-rollback
+authors:
+  - "@youngbupark"
+  - "@annelaucg"
+reviewers:
+  - "@qiujian16"
+  - "@haoqing0110"
+approvers:
+  - "@qiujian16"
+  - "@haoqing0110"
+creation-date: 2025-10-31
+last-updated: 2025-12-01
+status: implementable
