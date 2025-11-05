@@ -48,9 +48,8 @@ As a user, I want MWRS to automatically roll back workloads in the event of a fa
 ### API Object
 
 * spec.revisionHistoryLimit: This field will control the retention of the revision history.
-* spec.placementRefs[*].rolloutStrategy.progressive.rollbackOnFailure:
+* spec.placementRefs[*].rolloutStrategy.progressive.abortOnFailure:
   - enabled: auto rollback on failure
-  - skipValidation: skip all condition rule checks for the fast rollback
 
 ```yaml
 apiVersion: work.open-cluster-management.io/v1alpha1
@@ -66,9 +65,8 @@ spec:
         type: Progressive
         progressive:
           ...
-        rollbackOnFailure:
+        abortOnFailure:
           enabled: true
-          skipValidation: true
   ...
 ```
 
@@ -166,7 +164,7 @@ metadata:
   name: <MWRS_Name>
   labels:
     # controller-hash is to distinguish between old and new
-	  # Manifestworks during Manifestwork template updates.
+    # Manifestworks during Manifestwork template updates.
     work.open-cluster-management.io/controller-hash: <hash>
     work.open-cluster-management.io/manifestworkreplicaset: default.mwrset-1
     work.open-cluster-management.io/placementname: placement1
@@ -234,78 +232,117 @@ In order to prevent the revision history of the ManifestWorkReplicaSet from exce
     1. The current history should be the largest `.revision` number amongst the others. Update `.revision` to the largest if it is not. (for example, after rollback, we will need to update it to the latest.)
 
 
-### Automatic Rollback
 
-In order to enable rollback, we will introduce the following reasons in `Progressing` type. 
-- Rollback
+### Status
 
-and we will introduce `RollbackCompleted` condition type.
-
-1. When Rollout fails, Controller will set the reason of `Progressing` condition type to `Rollback` (this will be available only if .status.currentRevision is not empty)
-1. If Rollback is in condition, Controller will find all existing Manifestworks with `.status.currentRevision` hash.
-1. If the current MWRS resource has .skipValidation option, it replaces all existing manifestworks with the `.status.currentRevision` history
-1. Otherwise, it will get all manifestworks the hash of which is `.status.updateRevision` -> rollout in reverse order.
-
-To enhance the visibility of the safe rollback process, we will add a RollbackSucceeded condition and additional Reasons to the Progressing condition.
+`Progressing` condition will be added to track the rollout update status.
 
 | Condition Type | Reasons | Description |
 | --- | --- | --- |
 | PlacementVerified | AsExpected, PlacementDecisionNotFound, PlacementDecisionEmpty or NotAsExpected | indicates if Placement is valid |
 | ManifestworkApplied | AsExpected, NotAsExpected or Processing | a ManifestWork has been created in each cluster defined by PlacementDecision |
 | PlacementRollOut | Progressing or Complete | indicates if RollOut Strategy is complete. | 
+| Progressing | NewRevisionCreated, FoundNewRevision, NewManifestAvaialable, RolloutAborted, ProgressDeadlineExceeded | the rollout is progressing. Progress for a rollout is considered when a new manifest is created or adopted, when new manifestwork rolls out |
 
-
-PlacementVerified -> ManifestworkApplied -> PlacementRollOut (Progressing) ---> Validation
-PlacementRollout (Progressing) -> PlacementRollback (Progressing) -> RollbackCompleted()
-
-`Validating` will be required for PlacementRollout
+The following status shows the example of conditions:
 
 ```yaml
+apiVersion: work.open-cluster-management.io/v1alpha1
+kind: ManifestWorkReplicaSet
+metadata:
+  name: mwrset-1
+  namespace: default
+spec: ...
 status:
+  collisionCount: 0
+  currentRevision: YYYYYYY
+  updateRevision: XXXXXXX
+  abort: true | false
+  abortedTime: "2025-11-04T15:41:05Z"
+
   conditions:
-    - lastTransitionTime: "2025-10-28T01:07:27Z"
-      message: ""
-      reason: AsExpected
-      status: "True"
-      type: PlacementVerified
-    - lastTransitionTime: "2025-10-30T12:03:14Z"
-      message: ""
-      reason: Complete
-      status: "True"
-      type: PlacementRolledOut
-    - lastTransitionTime: "2025-10-30T12:03:14Z"
-      message: ""
-      reason: AsExpected
-      status: "True"
-      type: ManifestworkApplied
+  - lastTransitionTime: "2025-11-04T15:41:05Z"
+    message: ""
+    reason: AsExpected
+    status: "True"
+    type: PlacementVerified
+  - lastTransitionTime: "2025-11-05T09:02:12Z"
+    message: ""
+    reason: Complete
+    status: "True"
+    type: PlacementRolledOut
+  - lastTransitionTime: "2025-11-05T09:02:12Z"
+    message: ""
+    reason: AsExpected
+    status: "True"
+    type: ManifestworkApplied
 
-    - lastTransitionTime: "2025-10-09T04:42:41Z"
-      message: ""
-      reason: Ready
-      observedGeneration: 1
-      status: "True"
-      type: Ready
-
-    - lastTransitionTime: "2025-10-09T04:42:41Z"
-      message: "New Manifest is available"
-      observedGeneration: 1
-      reason: RollingUpdate|RolloutCompleted|RolloutFailed|Rollback|RollbackCompleted
-      status: "True"
-      type: Progressing
-
-    - lastTransitionTime: "2025-10-09T04:42:41Z"
-      message: ""
-      reason: RollbackCompleted
-      observedGeneration: 1
-      status: "True"
-      type: RollbackCompleted
+  - lastTransitionTime: "2025-11-05T09:02:12Z"
+    message: "New revision mwrs-XXXXXXX is successfully progressed"
+    reason: NewManifestWorkAvailable
+    status: "True"
+    type: Progressing
+  placementSummary:
+  - availableDecisionGroups: 1 (2 / 2 clusters applied)
+    name: placement1
+    summary:
+      Updated: 2 # New update revision count
+      Applied: 2
+      available: 2
+      degraded: 0
+      progressing: 0
+      total: 2 # This represents the update revision count. shouldn't we repurpose total to count all existing manifestwork?
+  summary:
+    Updated: 2 # New update revision count
+    Applied: 2
+    available: 2
+    total: 2 # This represents the update revision count. shouldn't we repurpose total to count all existing manifestwork?
 ```
 
+### New manifestwork update transition
+
+| PlacementVerified | ManifestworkApplied | Progressing | PlacementRollOut |
+| --- | --- | --- | --- |
+| AsExpected (True) | | NewRevisionCreated (True) | |
+| AsExpected (True)| Progressing (False) | NewRevisionCreated (True) | Progressing (False) | 
+| AsExpected (True)| Progressing (False) | NewRevisionCreated (True) | Progressing (False) | 
+| AsExpected (True)| AsExpected (True) | NewRevisionAvailable (True) | Complete (True) |
 
 
-#### State changes
+### Found the existing revision transition (rollback)
 
-> State Machine change
+| PlacementVerified | ManifestworkApplied | Progressing | PlacementRollOut |
+| --- | --- | --- | --- |
+| AsExpected (True) | | FoundNewRevision (True) | |
+| AsExpected (True)| Progressing (False) | FoundNewRevision (True) | Progressing (False) |
+| AsExpected (True)| Progressing (False) | FoundNewRevision (True) | Progressing (False) |
+| AsExpected (True)| AsExpected (True) | NewRevisionAvailable (True) | Progressing (False) |
+
+### ProgressDeadlineExceeded transition
+
+| PlacementVerified | ManifestworkApplied | Progressing | PlacementRollOut |
+| --- | --- | --- | --- |
+| AsExpected (True) | | NewRevisionCreated (True) | |
+| AsExpected (True)| Progressing (False) | NewRevisionCreated (True) | Progressing (False) | 
+| AsExpected (True)| Progressing (False) | NewRevisionCreated (True) | Progressing (False) | 
+| AsExpected (True)| NotAsExpected (False) | ProgressDeadlineExceeded (True) | Progressing (False) |
+
+### Aborting transition
+
+| PlacementVerified | ManifestworkApplied | Progressing | PlacementRollOut |
+| --- | --- | --- | --- |
+| AsExpected (True) | | NewRevisionCreated (True) | |
+| AsExpected (True)| Progressing (False) | NewRevisionCreated (True) | Progressing (False) | 
+| AsExpected (True)| Progressing (False) | NewRevisionCreated (True) | Progressing (False) | 
+| AsExpected (True)| NotAsExpected (False) | ProgressDeadlineExceeded (True) | Progressing (False) |
+| AsExpected (False)| NotAsExpected (False) | RolloutAborted (False) | Progressing (False) |
+
+
+### Aborting vs Rollback
+
+Abort is used to cancel the current rollout. When aborting the current rollout, spec is not changed, but `status.abort` is set to `true`, which will set `status.abortedTime`. then loading the older revision and then apply to all manifestworks. 
+
+On the other hand, rollback is the explicit action. If user wants to roll back to the older revision, user can apply the older manifestTemplate to update the Spec. work controller will look up the history and roll it out as normal. 
 
 ### Open Questions [optional]
 
