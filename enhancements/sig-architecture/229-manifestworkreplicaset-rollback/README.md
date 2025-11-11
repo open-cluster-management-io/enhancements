@@ -1,7 +1,4 @@
-# ManifestWorkReplicaSet automatic rollback
-
-https://github.com/kubernetes/design-proposals-archive/blob/acc25e14ca83dfda4f66d8cb1f1b491f26e78ffe/apps/controller_history.md
-https://github.com/kubernetes/design-proposals-archive/blob/acc25e14ca83dfda4f66d8cb1f1b491f26e78ffe/apps/statefulset-update.md
+# Rollback ManifestWorkReplicaSet
 
 ## Release Signoff Checklist
 
@@ -23,9 +20,9 @@ Currently, when the progressive rollout fails, Work controller just stops rollou
 
 ### Goals
 
-- Define manifestwork template revision management
-- Define rollback state machine in ManifestWorkReplicaSet
-- Define rollback status in ManifestWorkReplicaSet
+- Define manifestwork template revision management.
+- Enable rollback feature with the revision.
+- Enable automatic aborting rollout on the failure of rollout.
 
 ### Non-Goals
 
@@ -35,7 +32,7 @@ TBD
 
 ### User Stories
 
-#### Story 1 — automated rollback on failure
+#### Story 1 — automatic rollback on failure
 
 As a user, I want MWRS to automatically roll back workloads in the event of a failed rollout. When a deployment fails, MWRS should identify the previous revision and restore it consistently to the already rolled out clusters. The rollback should be able to perform any additional operations needed to safely revert to the stable version - for example, reverting manifests or skipping rollout steps in dependent systems in Argo Rollout use-case, which requires the mutation of old manifest resources.
 
@@ -45,19 +42,19 @@ As a user, I want MWRS to automatically roll back workloads in the event of a fa
 
 ## Design Details
 
-### API Object
+The `abort` is the cancel operation to cancel the progressing rollout and roll it back to the the stable revision automatically without updating `.spec.ManifestWorkTemplate` whereas `rollback` requires the explicit manual action by updating `.spec.ManifestWorkTemplate`.
 
-* spec.revisionHistoryLimit: This field will control the retention of the revision history.
-* spec.placementRefs[*].rolloutStrategy.progressive.abortOnFailure:
-  - enabled: auto rollback on failure
+### ManifestWorkReplicaSet API Object
+
+To support abort and rollback feature, we will have the following API changes:
 
 ```yaml
-apiVersion: work.open-cluster-management.io/v1alpha1
-kind: ManifestWorkReplicaSet
+apiVersion: work.open-cluster-management.io/v1
+kind: ManifestWork
 metadata:
-  name: hello-rollout
-  namespace: default
-spec:
+  name: <MWRS_Name>
+spec: 
+  # the number of revision history limit
   revisionHistoryLimit: 3
   placementRefs:
     - name: placement-rollout-progressive
@@ -65,112 +62,8 @@ spec:
         type: Progressive
         progressive:
           ...
-        abortOnFailure:
-          enabled: true
-  ...
-```
-
-[Spec](https://github.com/open-cluster-management-io/api/blob/main/work/v1alpha1/types_manifestworkreplicaset.go#L57)
-
-```golang
-// ManifestWorkReplicaSetSpec defines the desired state of ManifestWorkReplicaSet
-type ManifestWorkReplicaSetSpec struct {
-  // RevisionHistoryLimit is the maximum number of revisions that will 
-  // be maintained in the manifestWorkTemplate's revision history. The revision history
-  // consists of all revisions not represented by a currently applied 
-  // manifestWorkTemplate version. The default value is 2.
-  RevisionHistoryLimit *int32 `json:revisionHistoryLimit,omitempty`
-
-  // ...
-}
-```
-
-[rolloutstrategy](https://github.com/open-cluster-management-io/api/blob/main/cluster/v1alpha1/types_rolloutstrategy.go#L126)
-
-```golang
-// RollbackConfig is a rollback configuration on failure.
-type RollbackConfig struct {
-  // +optional
-  Enabled bool `json:",inline"`
-
-  // +optional
-  SkipValidation bool `json:",inline"`
-}
-
-// localPlacementReference is the name of a Placement resource in current namespace
-type LocalPlacementReference struct {
-  // Name of the Placement resource in the current namespace
-  // +required
-  // +kubebuilder:validation:Required
-  // +kubebuilder:validation:MinLength=1
-  Name string `json:"name"`
-
-  // +optional
-  // +kubebuilder:default={type: All, all: {progressDeadline: None}}
-  RolloutStrategy cluster.RolloutStrategy `json:"rolloutStrategy"`
-
-  // RollbackConfig is the configuration to define rollback behavior on failure
-  // +optional
-  RollbackConfig *rollback `json:"rollback,omitempty"`
-}
-```
-
-```golang
-// ManifestWorkStatus represents the current status of managed cluster ManifestWork.
-type ManifestWorkStatus struct {
-  // collisionCount is the count of hash collisions for the Manifestwork. The StatefulSet controller
-	// uses this field as a collision avoidance mechanism when it needs to create the name for the
-	// newest ControllerRevision.
-	// +optional
-	CollisionCount *int32 `json:"collisionCount,omitempty"`
-
-  // CurrentRevision, if not empty, indicates the version of ManifestworkTemplate used to generate Manifestworks.
-  CurrentRevision string `json:"currentRevision,omitempty"`
-  
-  // UpdateRevision, if not empty, indicates the version of PodSpecTemplate, 
-  // VolumeClaimsTemplate tuple used to generate Pods in the sequence
-  // [Replicas-UpdatedReplicas,Replicas)
-  UpdateRevision string `json:"updateRevision,omitempty"`
-  
-	// Conditions contains the different condition statuses for this work.
-	// Valid condition types are:
-	// 1. Applied represents workload in ManifestWork is applied successfully on managed cluster.
-	// 2. Progressing represents workload in ManifestWork is being applied on managed cluster.
-	// 3. Available represents workload in ManifestWork exists on the managed cluster.
-	// 4. Degraded represents the current state of workload does not match the desired
-	// state for a certain period.
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
-
-	// ResourceStatus represents the status of each resource in manifestwork deployed on a
-	// managed cluster. The Klusterlet agent on managed cluster syncs the condition from the managed cluster to the hub.
-	// +optional
-	ResourceStatus ManifestResourceStatus `json:"resourceStatus,omitempty"`
-}
-```
-
-
-```yaml
-status:
-  collisionCount: 0
-  currentRevision: YYYYYYY
-  updateRevision: XXXXXXX
-```
-
-
-```yaml
-apiVersion: work.open-cluster-management.io/v1
-kind: ManifestWork
-metadata:
-  name: <MWRS_Name>
-  labels:
-    # controller-hash is to distinguish between old and new
-    # Manifestworks during Manifestwork template updates.
-    work.open-cluster-management.io/controller-hash: <hash>
-    work.open-cluster-management.io/manifestworkreplicaset: default.mwrset-1
-    work.open-cluster-management.io/placementname: placement1
-spec: 
-  placementRefs:
-    # ...
+        # (NEW) abort starts if abortOnFailure is true. otherwise, it ends on the failure.
+        abortOnFailure: true
   manifestWorkTemplate:
     manifestConfigs:
     - feedbackRules:
@@ -198,66 +91,17 @@ spec:
           metadata:
             name: hello-rollout
             namespace: default
-```
-
-### ManifestWork Revision History
-
-[ControllerRevision]() is a Kubernetes API resource used by controllers, such as the StatefulSet and DaemonSet controller, to track historical configuration changes. Work Controller will use the ControllerRevision to snapshot and version its target ManifestWork Object state.
-
-#### Snapshot Creation
-
-In order to snapshot a version of its target ManifestWork state, it will serialize and store the .Spec.ManifestWorkTemplate along with the .Generation in each snapshot. Each snapshot will be labeled with the ManifestWorkReplicaset name.
-
-#### History Reconstruction
-
-As proposed in Controller History, in order to reconstruct the revision history of a ManifestWorkReplicaSet, the Work controller will select all snapshots based on its ManifestWorkReplicaSet name and sort them by the contained .Generation. This will produce an ordered set of revisions to the ManifestWorkReplicaSet's target Object state.
-
-#### History Maintenance
-
-In order to prevent the revision history of the ManifestWorkReplicaSet from exceeding memory or storage limits, the Work controller will periodically prune its revision history so that no more that .Spec.RevisionHistoryLimit non-live versions of target Object state are preserved.
-
-### Revised Work Controller
-
-1. Reconstruct ManifestWorkReplicaSet history:
-    1. List existing ControllerRevision controlled by this ManifestWorkReplicaSet.
-    1. Find the history of the current ManifestWorkReplicaSet's ManifestWorkTemplate target state, and create one if not found:
-    1. The .name of the history will be unique, generated from .spec.ManifestWorkTemplate hash with hash collision resolution (`.status.collisionCount`) 
-    1. If history creation failed:
-        1. If it is because of name collision:
-            1. If the collided history is same as ManifestWorkReplicaSet's ManifestWorkTemplate target state, there is the already created the history
-            1. Otherwise, bump ManifestWorkReplicaSet .status.collisionCount by 1, 
-        1. Else, exit and reconcile again
-    1. New ControllerRevision will be labeled with `work.open-cluster-management.io/controller-hash`
-    1. Work controller will add a ControllerRef in the history `.ownerReferences`.
-    1. The current history should be the largest `.revision` number amongst the others. Update `.revision` to the largest if it is not. (for example, after rollback, we will need to update it to the latest.)
-
-
-
-### Status
-
-`Progressing` condition will be added to track the rollout update status.
-
-| Condition Type | Reasons | Description |
-| --- | --- | --- |
-| PlacementVerified | AsExpected, PlacementDecisionNotFound, PlacementDecisionEmpty or NotAsExpected | indicates if Placement is valid |
-| ManifestworkApplied | AsExpected, NotAsExpected or Processing | a ManifestWork has been created in each cluster defined by PlacementDecision |
-| PlacementRollOut | Progressing or Complete | indicates if RollOut Strategy is complete. | 
-| Progressing | NewRevisionCreated, FoundNewRevision, NewManifestAvaialable, RolloutAborted, ProgressDeadlineExceeded | the rollout is progressing. Progress for a rollout is considered when a new manifest is created or adopted, when new manifestwork rolls out |
-
-The following status shows the example of conditions:
-
-```yaml
-apiVersion: work.open-cluster-management.io/v1alpha1
-kind: ManifestWorkReplicaSet
-metadata:
-  name: mwrset-1
-  namespace: default
-spec: ...
 status:
+  # (NEW) hash collision count
   collisionCount: 0
+  # (NEW) current revision.
   currentRevision: YYYYYYY
+  # (NEW) desired update revision.
   updateRevision: XXXXXXX
+  # (NEW) abort is true if abort starts
   abort: true | false
+  # (NEW) abortedTime represents the time when abort starts.
+  # When new revision rollout, abort needs to be set to false and abortedTime should be nil.
   abortedTime: "2025-11-04T15:41:05Z"
 
   conditions:
@@ -277,29 +121,131 @@ status:
     status: "True"
     type: ManifestworkApplied
 
+  # (NEW) Progressing is new Condition type to present the detail rollout progress.
   - lastTransitionTime: "2025-11-05T09:02:12Z"
     message: "New revision mwrs-XXXXXXX is successfully progressed"
     reason: NewManifestWorkAvailable
     status: "True"
     type: Progressing
+
   placementSummary:
   - availableDecisionGroups: 1 (2 / 2 clusters applied)
     name: placement1
     summary:
-      Updated: 2 # New update revision count
+      # (NEW) update revision count
+      updated: 2
+
       Applied: 2
       available: 2
       degraded: 0
       progressing: 0
-      total: 2 # This represents the update revision count. shouldn't we repurpose total to count all existing manifestwork?
+      total: 2 # Can we use this for desired total cluster?
   summary:
-    Updated: 2 # New update revision count
+    # (NEW) update revision count
+    updated: 2
+
     Applied: 2
     available: 2
-    total: 2 # This represents the update revision count. shouldn't we repurpose total to count all existing manifestwork?
+    total: 2 # Can we use this for desired total cluster?
 ```
 
-### New manifestwork update transition
+#### API Status
+
+This enhancement introduces `RolloutDegraded` reason to `PlacementRollout` condition type to make the current rollout status clear. We also added `Progressing` condition type for updating the current rollout progress.
+
+| Condition Type | Reasons | Description |
+| --- | --- | --- |
+| PlacementVerified | AsExpected, PlacementDecisionNotFound, PlacementDecisionEmpty or NotAsExpected | indicates if Placement is valid |
+| ManifestworkApplied | AsExpected, NotAsExpected or Processing | a ManifestWork has been created in each cluster defined by PlacementDecision |
+| PlacementRollOut | Progressing or Complete or (NEW) RolloutDegraded | indicates if RollOut Strategy is complete. | 
+| (NEW) Progressing | NewRevisionCreated, FoundNewRevision, NewManifestAvaialable, RolloutAborted, ProgressDeadlineExceeded | the rollout is progressing. Progress for a rollout is considered when a new manifest is created or adopted, when new manifestwork rolls out |
+
+
+### ManifestWork API Object
+
+To track the revision of manifestwork, we will introduce `work.open-cluster-management.io/controller-hash` label. the hash can be used for identify the ControllerRevision history and filter `Manifestwork` resources.
+
+```yaml
+apiVersion: work.open-cluster-management.io/v1
+kind: ManifestWork
+metadata:
+  name: <MWRS_Name>
+  namespace: <cluster name>
+  labels:
+    # (NEW) controller-hash is to distinguish between old and new
+    # Manifestworks during Manifestwork template updates.
+    work.open-cluster-management.io/controller-hash: <hash>
+
+    # existing labels.
+    work.open-cluster-management.io/manifestworkreplicaset: default.mwrset-1
+    work.open-cluster-management.io/placementname: placement1
+spec: 
+  ...
+```
+
+### `Abort` vs `Rollback`
+
+Abort is used to `cancel` the current rollout. When aborting the current rollout, spec is not changed, but `status.abort` is set to `true`, which will set `status.abortedTime`. then loading the older revision and then apply `.spec.manifestWorkTemplate` of the old revision to all clusters at once.
+
+On the other hand, rollback is the explicit action. If user wants to roll back to the older revision, work controller can find the revision from the list of ControllerRevision resources and apply the older manifestTemplate to update the `.spec.manifestWorkTemplate`.
+
+### ManifestWork Revision History
+
+[ControllerRevision](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/controller-revision-v1/) is a Kubernetes API resource used by controllers, such as the StatefulSet and DaemonSet controller, to track historical configuration changes. Work Controller will use the ControllerRevision to snapshot and version its desired ManifestWork Object state.
+
+#### Snapshot Creation
+
+In order to snapshot a version of its desired ManifestWork state, it will serialize and store the `.Spec.ManifestWorkTemplate` along with the `.Generation` in each snapshot. Each snapshot will be labeled with the ManifestWorkReplicaset name.
+
+#### History Reconstruction
+
+As proposed in Controller History, in order to reconstruct the revision history of a `ManifestWorkReplicaSet`, the Work controller will select all snapshots based on its `ManifestWorkReplicaSet` name and sort them by the contained `.Generation`. This will produce an ordered set of revisions to the `ManifestWorkReplicaSet`'s desired Object state.
+
+#### History Maintenance
+
+In order to prevent the revision history of the `ManifestWorkReplicaSet` from exceeding storage limits, the Work controller will periodically prune its revision history so that no more that `.Spec.RevisionHistoryLimit` non-live versions of desired Object state are preserved.
+
+### Enhanced Rollout with revision history
+
+1. Reconstruct ManifestWorkReplicaSet history:
+    1. List existing `ControllerRevision`s controlled by this `ManifestWorkReplicaSet`.
+    1. Find the history of the current `ManifestWorkReplicaSet`'s `.spec.ManifestWorkTemplate` desired state, and create one if not found:
+    1. The `.name` of the history will be unique, generated from `.spec.ManifestWorkTemplate` hash with hash collision resolution (`.status.collisionCount`) 
+    1. If history creation failed:
+        1. If it is because of name collision:
+            1. If the collided history is same as `ManifestWorkReplicaSet`'s `.spec.ManifestWorkTemplate` desired state, there is the already created the history
+            1. Otherwise, bump ManifestWorkReplicaSet `.status.collisionCount` by 1, 
+        1. Else, exit and reconcile again
+    1. New ControllerRevision will be labeled with `work.open-cluster-management.io/controller-hash`
+    1. Work controller will add a ControllerRef in the history `.ownerReferences`.
+    1. The current history should be the largest `.revision` number amongst the others. Update `.revision` to the largest if it is not. (for example, after rollback, we will need to update it to the latest.)
+2. Update `.spec.updateRevision` to the newly calculated revision.
+3. Iterate each placement references (`.spec.placementRefs`)
+    1. Get all manifestworks associated with the current placement
+    1. Get the progressing manifestwork hash
+        1. Use `.spec.updateRevision` if `.status.abort` is true, otherwise, use `.spec.currentRevision`.
+    1. Find manifestworks which has the same hash of the progressing manifestwork hash.
+        1. Determine cluster rollout status (Failed, Success)
+    1. Create Rollout handler
+    1. Calculate RolloutResult (rollout/timeout/removed candidate clusters)
+    1. If rolloutResult includes timeout clusters and `.spec.placementRefs[*].rolloutStrategy.abortOnFailure` is true
+        1. Set `.status.abort` to true and set `.status.abortedTime` to the current time.
+        1. Fetch `ControllerRevision` corresponding to `.status.currentRevision` and extract `.spec.manifestWorkTemplate`
+        1. Apply `.spec.manifestWorkTemplate` to all clusters in `rolloutResult.clusterToRollout`
+    1. Iterate each cluster of `rolloutResult.clusterToRollout`
+        1. Create ManifestWork and add `work.open-cluster-management.io/controller-hash` label with new hash
+        2. Apply ManifestWork to each cluster namespace
+    1. Clean up manifestwork resources from each cluster namespace
+    1. Status update
+        1. Calculate `.summary.updated` by counting the number of `Succeeded` status of rollout cluster
+        1. if `.summary.updated` == `the desired total number of clusters`,
+            1. Set `.status.updateRevision` to `.status.currentRevision`
+
+### Status transition
+
+This section describes the detail status transition for each rollout condition.
+
+#### New manifestwork update transition
 
 | PlacementVerified | ManifestworkApplied | Progressing | PlacementRollOut |
 | --- | --- | --- | --- |
@@ -308,8 +254,7 @@ status:
 | AsExpected (True)| Progressing (False) | NewRevisionCreated (True) | Progressing (False) | 
 | AsExpected (True)| AsExpected (True) | NewRevisionAvailable (True) | Complete (True) |
 
-
-### Found the existing revision transition (rollback)
+#### Rollback (found the existing revision transition)
 
 | PlacementVerified | ManifestworkApplied | Progressing | PlacementRollOut |
 | --- | --- | --- | --- |
@@ -317,36 +262,30 @@ status:
 | AsExpected (True)| Progressing (False) | FoundNewRevision (True) | Progressing (False) |
 | AsExpected (True)| Progressing (False) | FoundNewRevision (True) | Progressing (False) |
 | AsExpected (True)| AsExpected (True) | NewRevisionAvailable (True) | Progressing (False) |
+| AsExpected (True)| AsExpected (True) | NewRevisionAvailable (True) | Complete (True) |
 
-### ProgressDeadlineExceeded transition
-
-| PlacementVerified | ManifestworkApplied | Progressing | PlacementRollOut |
-| --- | --- | --- | --- |
-| AsExpected (True) | | NewRevisionCreated (True) | |
-| AsExpected (True)| Progressing (False) | NewRevisionCreated (True) | Progressing (False) | 
-| AsExpected (True)| Progressing (False) | NewRevisionCreated (True) | Progressing (False) | 
-| AsExpected (True)| NotAsExpected (False) | ProgressDeadlineExceeded (True) | Progressing (False) |
-
-### Aborting transition
+#### ProgressDeadlineExceeded transition
 
 | PlacementVerified | ManifestworkApplied | Progressing | PlacementRollOut |
 | --- | --- | --- | --- |
 | AsExpected (True) | | NewRevisionCreated (True) | |
 | AsExpected (True)| Progressing (False) | NewRevisionCreated (True) | Progressing (False) | 
 | AsExpected (True)| Progressing (False) | NewRevisionCreated (True) | Progressing (False) | 
-| AsExpected (True)| NotAsExpected (False) | ProgressDeadlineExceeded (True) | Progressing (False) |
-| AsExpected (False)| NotAsExpected (False) | RolloutAborted (False) | Progressing (False) |
+| AsExpected (True)| NotAsExpected (False) | ProgressDeadlineExceeded (False) | RolloutDegraded (False) |
 
+#### Abort transition
 
-### Aborting vs Rollback
+| PlacementVerified | ManifestworkApplied | Progressing | PlacementRollOut |
+| --- | --- | --- | --- |
+| AsExpected (True) | | NewRevisionCreated (True) | |
+| AsExpected (True)| Progressing (False) | NewRevisionCreated (True) | Progressing (False) | 
+| AsExpected (True)| Progressing (False) | NewRevisionCreated (True) | Progressing (False) | 
+| AsExpected (True)| NotAsExpected (False) | ProgressDeadlineExceeded (False) | RolloutDegraded (False) |
+| AsExpected (False)| NotAsExpected (False) | RolloutAborted (False) | RolloutDegraded (False) |
 
-Abort is used to cancel the current rollout. When aborting the current rollout, spec is not changed, but `status.abort` is set to `true`, which will set `status.abortedTime`. then loading the older revision and then apply to all manifestworks. 
+### Open Questions
 
-On the other hand, rollback is the explicit action. If user wants to roll back to the older revision, user can apply the older manifestTemplate to update the Spec. work controller will look up the history and roll it out as normal. 
-
-### Open Questions [optional]
-
-> TBD
+1. Should we have the delay before starting aborting a rollout ?
 
 ### Test Plan
 
@@ -362,31 +301,8 @@ TBD
 
 ### Version Skew Strategy
 
-How will the component handle version skew with other components?
-What are the guarantees? Make sure this is in the test plan.
-
-Consider the following in developing a version skew strategy for this
-enhancement:
-- During an upgrade, we will always have skew among components, how will this impact your work?
-- Does this enhancement involve coordinating behavior in the hub and
-  in the klusterlet? How does an n-2 klusterlet without this feature available behave
-  when this feature is used?
-- Will any other components on the managed cluster change? For example, changes to infrastructure
-  configuration of the managed cluster may be needed before the updating klusterlet or other
-  agent components.
+TBD
 
 ## Implementation History
 
-Major milestones in the life cycle of a proposal should be tracked in `Implementation
-History`.
-
-## Drawbacks
-
-The idea is to find the best form of an argument why this enhancement should _not_ be implemented.
-
-## Alternatives
-
-Similar to the `Drawbacks` section the `Alternatives` section is used to
-highlight and record other possible approaches to delivering the value proposed
-by an enhancement.
-
+TBD
