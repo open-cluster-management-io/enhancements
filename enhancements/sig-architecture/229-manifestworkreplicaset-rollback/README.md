@@ -36,7 +36,6 @@ For critical applications, especially those requiring high availability, the abi
 ### Non-Goals
 
 - Manual rollback via kubectl plugin commands (rollback will be performed by updating `.spec.manifestWorkTemplate`)
-- Rollback of CRD versions (automatic rollback should be used with caution when CRDs are involved)
 - Rollback across different API versions of ManifestWorkReplicaSet
 
 ## Proposal
@@ -215,9 +214,9 @@ spec:
 
 ### `Abort` vs `Rollback`
 
-`Abort` is used to **cancel** the current rollout. When aborting the current rollout, spec is not changed, but `status.abort` is set to `true`, which will set `status.abortedTime`. then loading the older revision and then apply `.spec.manifestWorkTemplate` of the old revision to all clusters at once.
+`Abort` is used to **cancel** the current rollout. When aborting the current rollout, spec is not changed, but `status.abort` is set to `true`, which will set `status.abortedTime`. Then, it looks up ControllerRevision which has `.status.currentRevision` (older revision) and then apply `.spec.manifestWorkTemplate` to ManifestWork resources of all cluster namespaces at once.
 
-On the other hand, `rollback` is the explicit action. If user wants to roll back to the older revision, the user (or cli) can find the revision from the list of ControllerRevision resources and apply the older manifestTemplate to update the `.spec.manifestWorkTemplate`.
+On the other hand, `rollback` is the explicit action. If user wants to roll back to the older revision, the user (or CLI) can find the revision from the list of ControllerRevision resources and apply the older manifestTemplate to update the `.spec.manifestWorkTemplate`.
 
 ### ManifestWork Revision History
 
@@ -253,7 +252,7 @@ In order to prevent the revision history of the `ManifestWorkReplicaSet` from ex
 3. Iterate each placement references (`.spec.placementRefs`)
     1. Get all manifestworks associated with the current placement
     1. `(NEW)` Find the progressing manifestwork hash
-        1. Use `.spec.updateRevision` if `.status.abort` is true, otherwise, use `.spec.currentRevision`.
+        1. Use `.spec.updateRevision` if `.status.abort` is true, otherwise, use `.status.currentRevision`.
     1. Find manifestworks which has the same hash of the progressing manifestwork hash.
         1. [Determine cluster rollout status (Failed, Success)](https://github.com/open-cluster-management-io/ocm/blob/main/pkg/work/hub/controllers/manifestworkreplicasetcontroller/manifestworkreplicaset_deploy_reconcile.go#L96)
     1. Create Rollout handler
