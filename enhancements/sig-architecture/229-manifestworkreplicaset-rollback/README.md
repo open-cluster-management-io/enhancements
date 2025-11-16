@@ -12,9 +12,9 @@
 
 This enhancement proposes adding rollback capabilities to ManifestWorkReplicaSet (MWRS) to enable safe recovery from failed multi-cluster deployments. The solution leverages Kubernetes ControllerRevision resources to maintain a historical record of MWRS template changes, similar to how StatefulSet and DaemonSet controllers track revision history. 
 
-The enhancement introduces two key rollback mechanisms: automatic rollback on failure (via `abortOnFailure` flag) and manual rollback (via spec updates). When a progressive rollout fails, the controller can automatically revert to the previous stable revision across all affected clusters, minimizing downtime and impact. For manual rollback scenarios, users can update the MWRS spec to reference a previous revision, and the controller will restore that revision.
+The enhancement introduces two key rollback mechanisms: automatic abort on failure (via `abortOnFailure` flag) and manual rollback (via spec updates). When a progressive rollout fails, the controller can automatically revert to the previous stable revision across all affected clusters, minimizing downtime and impact. For manual rollback scenarios, users can update the MWRS spec to reference a previous revision, and the controller will restore that revision.
 
-New API fields include `revisionHistoryLimit` to control history retention, `abortOnFailure` to enable automatic rollback, and status fields (`currentRevision`, `updateRevision`, `abort`, `abortedTime`, `collisionCount`) to track rollout state. The enhancement also introduces a new `Progressing` condition type and `RolloutDegraded` reason to provide better visibility into rollout and rollback operations.
+New API fields include `revisionHistoryLimit` to control history retention, `abortOnFailure` to enable automatic abort, and status fields (`currentRevision`, `updateRevision`, `abort`, `abortedTime`, `collisionCount`) to track rollout state. The enhancement also introduces a new `Progressing` condition type and `RolloutDegraded` reason to provide better visibility into rollout and rollback operations.
 
 ## Motivation
 
@@ -42,9 +42,9 @@ For critical applications, especially those requiring high availability, the abi
 
 ### User Stories
 
-#### Story 1 — Automatic rollback on failure
+#### Story 1 — Automatic abort on failure
 
-As a user, I want MWRS to automatically roll back workloads in the event of a failed rollout. When a deployment fails, MWRS should identify the previous revision and restore it consistently to the already rolled out clusters. The rollback should be able to perform any additional operations needed to safely revert to the stable version.
+As a user, I want MWRS to automatically abort workloads in the event of a failed rollout. When a deployment fails, MWRS should identify the previous revision and restore it consistently to the already rolled out clusters. The abort should be able to perform any additional operations needed to safely revert to the stable version.
 
 #### Story 2 — Manual rollback capability
 
@@ -216,7 +216,7 @@ spec:
 
 ### `Abort` vs `Rollback`
 
-`Abort` is used to **cancel** the current rollout. When aborting the current rollout, spec is not changed, but `status.abort` is set to `true`, which will set `status.abortedTime`. Then, it looks up ControllerRevision which has `.status.currentRevision` (older revision) and then apply `.spec.manifestWorkTemplate` to ManifestWork resources of all cluster namespaces at once.
+`Abort` is the **cancellation operation** of the current rollout. When aborting the current rollout, spec is not changed, but `status.abort` is set to `true`, which will set `status.abortedTime`. Then, it looks up ControllerRevision which has `.status.currentRevision` (older revision) and then apply `.spec.manifestWorkTemplate` to ManifestWork resources of all cluster namespaces at once.
 
 On the other hand, `rollback` is the explicit action. If user wants to roll back to the older revision, the user (or CLI) can find the revision from the list of ControllerRevision resources and apply the older manifestTemplate to update the `.spec.manifestWorkTemplate`.
 
@@ -245,7 +245,7 @@ In order to prevent the revision history of the `ManifestWorkReplicaSet` from ex
     1. If history creation failed:
         1. If it is because of name collision:
             1. If the collided history is same as `ManifestWorkReplicaSet`'s `.spec.ManifestWorkTemplate` desired state, there is the already created the history
-            1. Otherwise, bump ManifestWorkReplicaSet `.status.collisionCount` by 1, 
+            1. Otherwise, bump `ManifestWorkReplicaSet`'s `.status.collisionCount` by 1, 
         1. Else, exit and reconcile again
     1. New ControllerRevision will be labeled with `work.open-cluster-management.io/controller-hash`
     1. Work controller will add a ControllerRef in the history `.ownerReferences`.
@@ -262,14 +262,14 @@ In order to prevent the revision history of the `ManifestWorkReplicaSet` from ex
     1. `(NEW)` If rolloutResult includes timeout clusters and `.spec.placementRefs[*].rolloutStrategy.abortOnFailure` is true
         1. Set `.status.abort` to true and set `.status.abortedTime` to the current time.
         1. Fetch `ControllerRevision` corresponding to `.status.currentRevision` and extract `.spec.manifestWorkTemplate`
-        1. Apply `.spec.manifestWorkTemplate` to all clusters in `rolloutResult.clusterToRollout`
+        1. Apply `.spec.manifestWorkTemplate` to all clusters (`ManifestWork` resource in each cluster namespace) in `rolloutResult.clusterToRollout`
     1. Iterate each cluster of `rolloutResult.clusterToRollout`
-        1. `(NEW)` Create ManifestWork and add `work.open-cluster-management.io/controller-hash` label with new hash
-        2. Apply ManifestWork to each cluster namespace
+        1. `(NEW)` Create `ManifestWork` and add `work.open-cluster-management.io/controller-hash` label with new hash
+        2. Apply `ManifestWork` to each cluster namespace
     1. Clean up manifestwork resources from each cluster namespace
     1. `(NEW)` Status update
-        1. Calculate `.summary.updated` by counting the number of `Succeeded` status of rollout cluster
-        1. if `.summary.updated` == `the desired total number of clusters`,
+        1. Calculate `.summary.updated` by counting the number of `Succeeded` status of rollout clusters (which have the updateRevision)
+        1. if `.summary.updated` == `.summary.desiredTotal`,
             1. Set `.status.updateRevision` to `.status.currentRevision`
 
 ### Status transition
