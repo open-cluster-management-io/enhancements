@@ -190,7 +190,7 @@ The following state machine shows the expected transitions between rollout statu
 stateDiagram
   Validating: (NEW State) Validating
   NextCluster: Move to the next cluster rollout
-  Rollback: Rollback (NOT IMPLEMENTED)
+  Abort: Abort (stop the current rollout and revert it back)
   [*] --> ToApply
   ToApply --> Progressing: Progressing = True
   Progressing --> Validating: Progressing = False
@@ -199,10 +199,10 @@ stateDiagram
   Progressing --> Failed: Degraded = True
   ToApply --> Failed: Degraded = True
   Succeeded --> NextCluster
-  Failed --> Rollback
+  Failed --> Abort
 ```
 
-#### Rollback with plugin
+#### Automatic abort with plugin
 
 > To be updated: Rollback flow will be similar to rollout scenario. This will be added based on manifest rollback enhancement.
 
