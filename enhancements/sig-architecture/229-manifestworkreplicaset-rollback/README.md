@@ -12,7 +12,7 @@
 
 This enhancement proposes adding rollback capabilities to ManifestWorkReplicaSet (MWRS) to enable safe recovery from failed multi-cluster deployments. The solution leverages Kubernetes ControllerRevision resources to maintain a historical record of MWRS template changes, similar to how StatefulSet and DaemonSet controllers track revision history. 
 
-The enhancement introduces two key rollback mechanisms: automatic abort on failure (via `abortOnFailure` flag) and manual rollback (via spec updates). When a progressive rollout fails, the controller can automatically revert to the previous stable revision across all affected clusters, minimizing downtime and impact. For manual rollback scenarios, users can update the MWRS spec to reference a previous revision, and the controller will restore that revision.
+The enhancement introduces two key rollback mechanisms: automatic abort on failure (via `abortOnFailure` flag) and manual rollback (via spec updates). When a progressive rollout fails, the controller can automatically revert to the previous stable revision across all affected clusters, minimizing downtime and impact. For manual rollback scenarios, users can update the MWRS spec to reference a previous revision (e.g. using CLI), and the controller will restore that revision.
 
 New API fields include `revisionHistoryLimit` to control history retention, `abortOnFailure` to enable automatic abort, and status fields (`currentRevision`, `updateRevision`, `abort`, `abortedTime`, `collisionCount`) to track rollout state. The enhancement also introduces a new `Progressing` condition type and `RolloutDegraded` reason to provide better visibility into rollout and rollback operations.
 
@@ -37,6 +37,7 @@ For critical applications, especially those requiring high availability, the abi
 
 - Manual rollback via kubectl plugin commands (rollback will be performed by updating `.spec.manifestWorkTemplate`)
 - Rollback across different API versions of ManifestWorkReplicaSet
+- Support automatic progressive abort.
 
 ## Proposal
 
@@ -216,9 +217,15 @@ spec:
 
 ### `Abort` vs `Rollback`
 
-`Abort` is the **cancellation operation** of the current rollout. When aborting the current rollout, spec is not changed, but `status.abort` is set to `true`, which will set `status.abortedTime`. Then, it looks up ControllerRevision which has `.status.currentRevision` (older revision) and then apply `.spec.manifestWorkTemplate` to ManifestWork resources of all cluster namespaces at once.
+`Abort` is the **cancellation operation** of the current rollout. When aborting the current rollout, **spec is not changed**, but `status.abort` is set to `true`, which will set `status.abortedTime`. Then, it looks up ControllerRevision which has `.status.currentRevision` (older revision) and then apply `.spec.manifestWorkTemplate` to ManifestWork resources of all cluster namespaces at once. This `Abort` operation can start not only by failure automatically but also by setting `.status.abort` to `true` manually.
 
 On the other hand, `rollback` is the explicit action. If user wants to roll back to the older revision, the user (or CLI) can find the revision from the list of ControllerRevision resources and apply the older manifestTemplate to update the `.spec.manifestWorkTemplate`.
+
+| | Abort | Rollback |
+| --- | --- | --- |
+| 
+| `.spec` Change | No | Yes |
+| 
 
 ### ManifestWork Revision History
 
