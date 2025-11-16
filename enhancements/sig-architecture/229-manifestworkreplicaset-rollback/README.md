@@ -170,12 +170,14 @@ status:
       degraded: 0
       progressing: 0
       total: 2
+      desiredTotal: 2
   summary:
     # (NEW) updated: count of clusters with the update revision applied
     updated: 2
     Applied: 2
     available: 2
     total: 2
+    desiredTotal: 2
 ```
 
 #### API Status
