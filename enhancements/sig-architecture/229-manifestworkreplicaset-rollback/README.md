@@ -322,6 +322,8 @@ This section describes the detail status transition for each rollout condition.
 | AsExpected (True)| NotAsExpected (False) | ProgressDeadlineExceeded (False) | RolloutDegraded (False) |
 | AsExpected (False)| NotAsExpected (False) | RolloutAborted (False) | RolloutDegraded (False) |
 
+> When abort is failed, `Progressing` condition shows `RolloutAborted` reason with the failure message.
+
 ### Open Questions
 
 1. Should we have the delay before starting aborting a rollout ?
