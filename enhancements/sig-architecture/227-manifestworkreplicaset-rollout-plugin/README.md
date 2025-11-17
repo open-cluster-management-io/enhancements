@@ -100,19 +100,7 @@ flowchart LR
     Plugin -->|Update traffic weights| MeshService
 ```
 
-To enable the user stories described above, the following custom hooks will be required:
-
-| Hook                         | Description                                                                                 |
-| ---------------------------- | ----------------------------------------------------------------------------------------------- |
-| `BeginRollout`               | Called before rollout starts. Used to prepare metadata, preconditions, or environment setup. |
-| `ProgressRollout`            | Called every MWRS reconciler is triggered during rollout. |
-| `ValidateRolloutCompletion`  | Called when cluster rollout finishes. Plugin determines success, failure, or in-progress state. |
-| `BeingAbort`                 | Called before abort starts to prepare environment. |
-| `ProgressAbort`              | Called every MWRS reconciler is triggered during the abort. |
-| `ValidateAbortCompletion`    | Called after abort completion for verification. |
-| `MutateManifestWork`         | Called before creating or updating ManifestWork to modify manifest templates dynamically. |
-
-The design extends the work-controller with these custom hooks, which are implemented using a gRPC protocol between the controller and a plugin sidecar.
+The design extends the work-controller with the plugin, which are implemented using a gRPC protocol between the controller and a plugin sidecar.
 
 ### Plugin protocol
 
@@ -134,25 +122,52 @@ sequenceDiagram
 
     loop Placements
         Work->>APIServer: Get all Manifestworks associated with the current placement
+        Work->>Work: Get the desire revision (e.g. use .status.currentRevision for abort operation)
         loop existing manifests
-            Work->>Work: Check if this manifest is same as MWRS template?
+            Work->>Work: Check if this manifest is same as the desired revision?
             Work->>Work: Determine cluster rollout status
             alt RolloutStatus is "Validating"
+                alt is normal rollout? (.status.abort == false)
                 Work->>PluginServer: (NEW) ValidateRolloutCompletion()
                 PluginServer-->>Work: Status: SUCCEEDED/FAILED/INPROGRESS
+                else is abort operation? (.status.abort == true)
+                Work->>PluginServer: (NEW) ValidateAbortCompletion()
+                PluginServer-->>Work: Status: SUCCEEDED/FAILED/INPROGRESS
+                end
                 Work->>Work: Set RolloutStatus to SUCCEEDED if Validation result is SUCCEEDED
             end
         end
         Work->>Work: Create rollout handler
-        Work->>Work: Find rollout and removed candidate clusters (RolloutResult)
-        Work->>PluginServer: (NEW) ProgressingRollout()
+        Work->>Work: Find rollout/removed/timeout candidate clusters (RolloutResult)
+        alt timeout clusters exists and .spec.placementRefs[*].rolloutStrategy.abortOnFailure is true
+          Note over Work, PluginServer: Start automatic abort
+          Work->>Work: Set .status.abort to true
+          Work->>Work: Set .status.abortedTime to the current time
+        end
+        alt is normal rollout? (.status.abort == false)
+          Work->>PluginServer: (NEW) ProgressRollout()
+        else is abort operation? (.status.abort == true)
+          Work->>PluginServer: (NEW) ProgressAbort()
+        end
         PluginServer-->>Work: OK
-        loop clusterToRollout clusters
-            Work->>PluginServer: (NEW) BeforeRollout()
-            PluginServer-->>Work: OK
-            Work->>PluginAPI: (NEW) MutateManifestwork()
-            PluginAPI-->>Work: Mutated Manifestwork resource
-            Work->>APIServer: Apply the mutated ManifestWork resource to the current cluster
+        alt is normal rollout? (.status.abort == false)
+          Note over Work, PluginServer: Normal Rollout
+          loop clusterToRollout clusters
+              Work->>PluginServer: (NEW) BeginRollout()
+              PluginServer-->>Work: OK
+              Work->>PluginServer: (NEW) MutateManifestwork()
+              PluginServer-->>Work: (NEW) Return mutated Manifestwork resource
+              Work->>APIServer: Apply the mutated ManifestWork resource to the current cluster
+          end
+        else is abort operation? (.status.abort == true)
+          Note over Work, PluginServer: Automatic Abort
+          loop existing clusters (updated clusters)
+              Work->>PluginServer: (NEW) BeginAbort()
+              PluginServer-->>Work: OK
+              Work->>PluginServer: (NEW) MutateManifestwork()
+              PluginServer-->>Work: (NEW) Return mutated Manifestwork resource
+              Work->>APIServer: Apply the mutated ManifestWork resource to the current cluster
+          end
         end
         Work->>APIServer: Clean up manifestworks for removed clusters.
     end
@@ -161,17 +176,17 @@ sequenceDiagram
 
 This workflow introduces four new plugin API calls:
 
-* `ProgressingRollout()`: Called during every reconciliation loop to report the current rollout status to the plugin.
-* `BeforeRollout()`: Called before applying the ManifestWork to a target cluster, allowing the plugin to perform any necessary preparations.
-* `MutateManifestWork()`: Called before applying the ManifestWork to the cluster. This hook allows the plugin to modify the manifest, which is essential for:
+
+* `BeginRollout()`: Called before applying the ManifestWork to a target cluste to roll out new revision, allowing the plugin to perform any necessary preparations.
+* `ProgressRollout()`: Called during every reconciliation loop to report the current rollout status to the plugin.
+* `ValidateRolloutCompletion()`: Called after the `Progressing` condition on the target cluster's ManifestWork becomes False. This hook enables post-rollout testing before the status is set to Succeeded. For example, the plugin could use this call to create a new ManifestWork that runs a Kubernetes Job for verification. **Note that this hook must be called within the `ProgressDeadline` timeout.**
+* `BeginAbort()`: Called before applying the ManifestWork to a target cluster to abort the updated cluster
+* `ProgressAbort()`: Called during every reconciliation loop to report the current abort status to the plugin
+* `ValidateAbortCompletion()`: Called after the `Progressing` condition on the target cluster's ManifestWork becomes False. This hook enables post-rollback testing before the status is set to Succeeded. **Note that this hook must be called within the `ProgressDeadline` timeout.**
+* `MutateManifestWork()`: Called before applying the `ManifestWork` to the cluster. This hook allows the plugin to modify the manifest, which is essential for:
   - Injecting orchestration status (like the cluster's rollout index) into resource labels or annotations.
   - Enabling advanced scenarios, such as modifying an Argo Rollout resource to skip steps during a rollback.
-  This direct mutation is required because it is difficult to inject this context via a default admission webhook without exposing all orchestration information in the ManifestWorkReplicaSet status.
-* `ValidateRolloutCompletion()`: Called after the Progressing condition on the target cluster's ManifestWork becomes False. This hook enables post-rollout testing before the status is set to Succeeded. For example, the plugin could use this call to create a new ManifestWork that runs a Kubernetes Job for verification.
-
-To support post-rollout testing, a new Validating status is introduced. The controller enters this state after the Progressing condition becomes False and then calls `ValidateRolloutCompletion()`.
-
-> Note: The `ValidateRolloutCompletion()` check must complete within the `ProgressDeadline` timeout.
+  - This direct mutation is required because it is difficult to inject this context via a default admission webhook without exposing all orchestration information in the ManifestWorkReplicaSet status.
 
 The overall Rollout Status is determined by the ManifestWork conditions and the validation result:
 
@@ -202,10 +217,6 @@ stateDiagram
   Failed --> Abort
 ```
 
-#### Automatic abort with plugin
-
-> To be updated: Rollback flow will be similar to rollout scenario. This will be added based on manifest rollback enhancement.
-
 ### gRPC API design
 
 The following service defines the contract between Work Controller and the plugin. Each call must be idempotent, stateless, and time-bounded (≤30 s) to ensure consistent controller reconciliation. Plugin server must implement the following APIs. The helpers to implement server and clients will be implemented in [ocm/sdk-go](https://github.com/open-cluster-management-io/sdk-go) repository. 
@@ -227,27 +238,29 @@ service RolloutPluginService {
 
   // ValidateRolloutCompletion is called to validate the completion of the rollout.
   // It is used to check if the rollout is completed successfully.
-  // If the validation is completed successfully, the plugin should return a OK result.
-  // If the validation is still in progress, the plugin should return a INPROGRESS result.
-  // If the validation is failed, the plugin should return a FAILED result.
-  rpc ValidateRolloutCompletion(RolloutPluginRequest) returns (ValidateResponse);
+  // If the validation is completed successfully, the plugin should return a SUCCEEDED result.
+  // If the validation is still in progress, the plugin should return an INPROGRESS result.
+  // If the validation fails, the plugin should return a FAILED result.
+  rpc ValidateRolloutCompletion(ValidateCompletionRequest) returns (ValidateResponse);
 
-  // BeginAbort is called before starting abort of the manifestwork resource.
-  // It is used to prepare the abort.
+  // BeginAbort is called before the manifestwork resource is aborted.
+  // It is used to prepare the rollback.
   rpc BeginAbort(RolloutPluginRequest) returns (google.protobuf.Empty);
 
   // ProgressAbort is called after the manifestwork is aborted.
+  // Whenever the feedbacks are updated, this method will be called.
+  // The plugin can execute the abort logic based on the feedback status changes.
   rpc ProgressAbort(RolloutPluginRequest) returns (google.protobuf.Empty);
 
-  // ValidateAbortCompletion is called to validate the completion of the abort operation.
-  // It is used to check if the abort operation is completed successfully.
-  // If the validation is completed successfully, the plugin should return a OK result.
-  // If the validation is still in progress, the plugin should return a INPROGRESS result.
-  // If the validation is failed, the plugin should return a FAILED result.
-  rpc ValidateAbortCompletion(RolloutPluginRequest) returns (ValidateResponse);
+  // ValidateAbortCompletion is called to validate the completion of the abort.
+  // It is used to check if the abort is completed successfully.
+  // If the validation is completed successfully, the plugin should return a SUCCEEDED result.
+  // If the validation is still in progress, the plugin should return an INPROGRESS result.
+  // If the validation fails, the plugin should return a FAILED result.
+  rpc ValidateAbortCompletion(ValidateCompletionRequest) returns (ValidateResponse);
 
-  // MutateManifestWork is called to mutate the manifestwork resource before it is applied or rolled back.
-  // MWRS controller provides the current rollout status to the plugin.
+  // MutateManifestWork is called to mutate the manifestwork resource before it is applied or aborted.
+  // MWRS Controller provides the current rollout status to the plugin.
   // The plugin can use this information to mutate the manifestwork resource.
   rpc MutateManifestWork(MutateManifestWorkRequest) returns (MutateManifestWorkResponse);
 }
