@@ -143,19 +143,21 @@ sequenceDiagram
           Note over Work, PluginServer: Start automatic abort
           Work->>Work: Set .status.abort to true
           Work->>Work: Set .status.abortedTime to the current time
+          Work->>Work: Update the desired revision to `.status.currentRevision`
         end
         alt is normal rollout? (.status.abort == false)
           Work->>PluginServer: (NEW) ProgressRollout()
+          PluginServer-->>Work: OK
         else is abort operation? (.status.abort == true)
           Work->>PluginServer: (NEW) ProgressAbort()
+          PluginServer-->>Work: OK
         end
-        PluginServer-->>Work: OK
         alt is normal rollout? (.status.abort == false)
           Note over Work, PluginServer: Normal Rollout
           loop clusterToRollout clusters
               Work->>PluginServer: (NEW) BeginRollout()
               PluginServer-->>Work: OK
-              Work->>PluginServer: (NEW) MutateManifestwork()
+              Work->>PluginServer: (NEW) MutateManifestwork(the desired revision)
               PluginServer-->>Work: (NEW) Return mutated Manifestwork resource
               Work->>APIServer: Apply the mutated ManifestWork resource to the current cluster
           end
@@ -164,7 +166,7 @@ sequenceDiagram
           loop existing clusters (updated clusters)
               Work->>PluginServer: (NEW) BeginAbort()
               PluginServer-->>Work: OK
-              Work->>PluginServer: (NEW) MutateManifestwork()
+              Work->>PluginServer: (NEW) MutateManifestwork(the desired revision)
               PluginServer-->>Work: (NEW) Return mutated Manifestwork resource
               Work->>APIServer: Apply the mutated ManifestWork resource to the current cluster
           end
@@ -175,7 +177,6 @@ sequenceDiagram
 ```
 
 This workflow introduces four new plugin API calls:
-
 
 * `BeginRollout()`: Called before applying the ManifestWork to a target cluste to roll out new revision, allowing the plugin to perform any necessary preparations.
 * `ProgressRollout()`: Called during every reconciliation loop to report the current rollout status to the plugin.
