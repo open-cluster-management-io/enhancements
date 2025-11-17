@@ -12,5 +12,3 @@ see-also:
   - "/enhancements/sig-architecture/58-addon-configuration"
   - "/enhancements/sig-architecture/76-addon-install-strategy"
   - "/enhancements/sig-architecture/81-addon-lifecycle"
-superseded-by:
-  - "/enhancements/our-past-effort.md"
