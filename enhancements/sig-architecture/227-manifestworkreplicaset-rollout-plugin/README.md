@@ -64,9 +64,7 @@ As a user, I want MWRS to automatically roll back workloads in the event of a fa
 
 ### Risks and Mitigation
 
-#### Encryption between Work Controller and Plugin Server
-
-This proposal does not currently include TLS encryption for the localhost communication between the work controller and the plugin server. However, a potential risk exists as some enterprise environments require mTLS (mutual TLS) for all component communication, even within a sidecar model. To meet these stringent security requirements, we may need to implement encryption for this localhost connection in a future release.
+TBD
 
 ## Design Details
 
@@ -108,7 +106,7 @@ The Plugin will be implemented as a sidecar container running alongside the work
 
 #### Plugin initialization
 
-When the work controller at hub starts, it attempts to call the `Initialize()` gRPC endpoint on the plugin server. If successful, the plugin returns its supported capabilities (e.g., Rollout, Abort, MutateManifestWork). The reconciler will call plugins based on the given capability.
+When the work controller at hub starts, it attempts to call the `Initialize()` gRPC endpoint on the plugin server.
 
 #### Rollout sequence with plugin
 
@@ -127,13 +125,8 @@ sequenceDiagram
             Work->>Work: Check if this manifest is same as the desired revision?
             Work->>Work: Determine cluster rollout status
             alt RolloutStatus is "Validating"
-                alt is normal rollout? (.status.abort == false)
                 Work->>PluginServer: (NEW) ValidateRolloutCompletion()
                 PluginServer-->>Work: Status: SUCCEEDED/FAILED/INPROGRESS
-                else is abort operation? (.status.abort == true)
-                Work->>PluginServer: (NEW) ValidateAbortCompletion()
-                PluginServer-->>Work: Status: SUCCEEDED/FAILED/INPROGRESS
-                end
                 Work->>Work: Set RolloutStatus to SUCCEEDED if Validation result is SUCCEEDED
             end
         end
@@ -145,31 +138,14 @@ sequenceDiagram
           Work->>Work: Set .status.abortedTime to the current time
           Work->>Work: Update the desired revision to `.status.currentRevision`
         end
-        alt is normal rollout? (.status.abort == false)
-          Work->>PluginServer: (NEW) ProgressRollout()
-          PluginServer-->>Work: OK
-        else is abort operation? (.status.abort == true)
-          Work->>PluginServer: (NEW) ProgressAbort()
-          PluginServer-->>Work: OK
-        end
-        alt is normal rollout? (.status.abort == false)
-          Note over Work, PluginServer: Normal Rollout
-          loop clusterToRollout clusters
-              Work->>PluginServer: (NEW) BeginRollout()
-              PluginServer-->>Work: OK
-              Work->>PluginServer: (NEW) MutateManifestwork(the desired revision)
-              PluginServer-->>Work: (NEW) Return mutated Manifestwork resource
-              Work->>APIServer: Apply the mutated ManifestWork resource to the current cluster
-          end
-        else is abort operation? (.status.abort == true)
-          Note over Work, PluginServer: Automatic Abort
-          loop existing clusters (updated clusters)
-              Work->>PluginServer: (NEW) BeginAbort()
-              PluginServer-->>Work: OK
-              Work->>PluginServer: (NEW) MutateManifestwork(the desired revision)
-              PluginServer-->>Work: (NEW) Return mutated Manifestwork resource
-              Work->>APIServer: Apply the mutated ManifestWork resource to the current cluster
-          end
+        Work->>PluginServer: (NEW) ProgressRollout()
+        PluginServer-->>Work: OK
+        loop clusterToRollout clusters
+            Work->>PluginServer: (NEW) BeginRollout()
+            PluginServer-->>Work: OK
+            Work->>PluginServer: (NEW) MutateManifestwork(the desired revision)
+            PluginServer-->>Work: (NEW) Return mutated Manifestwork resource
+            Work->>APIServer: Apply the mutated ManifestWork resource to the current cluster
         end
         Work->>APIServer: Clean up manifestworks for removed clusters.
     end
@@ -181,9 +157,6 @@ This workflow introduces four new plugin API calls:
 * `BeginRollout()`: Called before applying the ManifestWork to a target cluste to roll out new revision, allowing the plugin to perform any necessary preparations.
 * `ProgressRollout()`: Called during every reconciliation loop to report the current rollout status to the plugin.
 * `ValidateRolloutCompletion()`: Called after the `Progressing` condition on the target cluster's ManifestWork becomes False. This hook enables post-rollout testing before the status is set to Succeeded. For example, the plugin could use this call to create a new ManifestWork that runs a Kubernetes Job for verification. **Note that this hook must be called within the `ProgressDeadline` timeout.**
-* `BeginAbort()`: Called before applying the ManifestWork to a target cluster to abort the updated cluster
-* `ProgressAbort()`: Called during every reconciliation loop to report the current abort status to the plugin
-* `ValidateAbortCompletion()`: Called after the `Progressing` condition on the target cluster's ManifestWork becomes False. This hook enables post-rollback testing before the status is set to Succeeded. **Note that this hook must be called within the `ProgressDeadline` timeout.**
 * `MutateManifestWork()`: Called before applying the `ManifestWork` to the cluster. This hook allows the plugin to modify the manifest, which is essential for:
   - Injecting orchestration status (like the cluster's rollout index) into resource labels or annotations.
   - Enabling advanced scenarios, such as modifying an Argo Rollout resource to skip steps during a rollback.
@@ -244,22 +217,6 @@ service RolloutPluginService {
   // If the validation fails, the plugin should return a FAILED result.
   rpc ValidateRolloutCompletion(ValidateCompletionRequest) returns (ValidateResponse);
 
-  // BeginAbort is called before the manifestwork resource is aborted.
-  // It is used to prepare the rollback.
-  rpc BeginAbort(RolloutPluginRequest) returns (google.protobuf.Empty);
-
-  // ProgressAbort is called after the manifestwork is aborted.
-  // Whenever the feedbacks are updated, this method will be called.
-  // The plugin can execute the abort logic based on the feedback status changes.
-  rpc ProgressAbort(RolloutPluginRequest) returns (google.protobuf.Empty);
-
-  // ValidateAbortCompletion is called to validate the completion of the abort.
-  // It is used to check if the abort is completed successfully.
-  // If the validation is completed successfully, the plugin should return a SUCCEEDED result.
-  // If the validation is still in progress, the plugin should return an INPROGRESS result.
-  // If the validation fails, the plugin should return a FAILED result.
-  rpc ValidateAbortCompletion(ValidateCompletionRequest) returns (ValidateResponse);
-
   // MutateManifestWork is called to mutate the manifestwork resource before it is applied or aborted.
   // MWRS Controller provides the current rollout status to the plugin.
   // The plugin can use this information to mutate the manifestwork resource.
@@ -282,9 +239,15 @@ The plugin hook APIs will identify the ManifestWorkReplicaSet being processed wi
   - rolloutStatus: The current [cluster rollout status](https://github.com/open-cluster-management-io/sdk-go/blob/main/pkg/apis/cluster/v1alpha1/rollout.go#L23-L39) (e.g., ToApply, Progressing, Succeeded, Failed, TimeOut, Skip).
   - manifestRevisionName: The name of the manifest revision applied to the cluster.
 
-### Configure custom plugin for work controller
+#### Error handling
 
-A new `workConfiguration.plugin` field is introduced in ClusterManager to configure the rollout plugin:
+<TBD> Add more
+
+gRPC status codes follow the [standard gRPC status codes](https://grpc.github.io/grpc/core/md_doc_statuscodes.html): 0 = OK, 1 = CANCELLED, 2 = UNKNOWN, 3 = INVALID_ARGUMENT, 4 = DEADLINE_EXCEEDED, etc.
+
+### Register custom plugins for work controller
+
+A new `workConfiguration.plugins` field is introduced in ClusterManager to register the rollout plugins:
 
 ```yaml
 apiVersion: operator.open-cluster-management.io/v1
@@ -297,47 +260,53 @@ spec:
   workConfiguration:
     workDriver: kube
     # plugin configuration
-    plugin:
-      # the image name of plugin sidecar
-      image: quay.io/open-cluster-management/my-rollout-plugin:v0.0.1
-      # localhost sidecar port
-      # port: 6767
+    plugins:
+      - name: my-rollout
+        endpoint: my-rollout.my-namespace:10843
+        caCertificate:
+          # optional. secretRef is the reference for ca
+          secretRef: 
+            name: my-rollout-ca
+            namespace: default
+          # optional. 
+          caBundle: "REPLACE_WITH_BASE64_CA_CERT"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: secret-tls
+  namespace: default
+type: kubernetes.io/tls
+data:
+  ca.crt: "REPLACE_WITH_BASE64_CA_CERT" 
 ```
 
-#### Deployment manifest change to use plugin
+### Using plugin in MWRS
 
-To run plugin server as a sidecar, [deployment manifest](https://github.com/open-cluster-management-io/ocm/blob/main/manifests/cluster-manager/management/work/deployment.yaml) will include `initContainers` field to run plugin image.
+Plugin is an opt-in feature. User can use the registered plugin by setting `.spec.placementRefs[*].rolloutStrategy.plugin`. The reconciler makes sure that plugin is available and show its availability in `PluginLoaded` status condition.
 
 ```yaml
-apiVersion: apps/v1
-kind: Deployment
-...
+apiVersion: work.open-cluster-management.io/v1
+kind: ManifestWorkReplicaSet
+metadata:
+  name: <MWRS_Name>
 spec:
-  ...
-  selector:
-    ...
-  template:
-      ...
-    spec:
-      ...
-      initContainers:
-      - name: {{ .ClusterManagerName }}-plugin
-        image: {{ .PluginImage }}
-        restartPolicy: Always
-        args:
-          - "/plugin"
-        env:
-          - name: PLUGIN_SERVER_PORT
-            value: {{ .PluginServerPort }}
-      containers:
-      - name: {{ .ClusterManagerName }}-work-controller
-        image:  {{ .WorkImage }}
-        ...
-        env:
-        {{- if .PluginServerPort }}
-          - name: PLUGIN_SERVER_PORT
-            value: {{ .PluginServerPort }}
-        {{- end }}
+  placementRefs:
+    - name: placement-rollout-progressive
+      rolloutStrategy:
+        type: Progressive
+        # plugin is optional.
+        plugin: my-rollout
+        progressive:
+          ...
+status:
+  conditions:
+    - lastTransitionTime: "2025-10-09T04:40:41Z"
+      message: "my-rollout plugin is available."
+      observedGeneration: 1
+      reason: Available
+      status: "True"
+      type: PluginLoaded
 ```
 
 ### Open Questions [optional]
