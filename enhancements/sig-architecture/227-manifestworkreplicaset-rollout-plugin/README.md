@@ -329,7 +329,3 @@ The plugin mechanism is opt-in. Work controller without plugin configuration beh
 ### Version Skew Strategy
 
 The proposed changes introduce new condition and new fields in the exising custom resources. 
-
-## Alternatives
-
-- Implement plugin server as a standalone service: In order to run plugin server securely, we need to enable TLS connection. Using a sidecar, we can avoid the complex network and security configuration.
