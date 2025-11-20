@@ -153,155 +153,136 @@ Additionally, the agent updates the `AddonPlacementScore` resource in each manag
 
 6. **Visualize and utilize scores with Prometheus/Grafana/ResourceArrangement, etc.**
 
-```plantuml
-@startuml
+```mermaid
+sequenceDiagram
+    actor User
+    box HubCluster
+        participant AFC as OCM<br/>AddonFramework<br/>Controller
+        participant DSFC as DynamicScoring<br/>Framework<br/>Controller
+        participant APS as Addon<br/>Placement<br/>Score
+    end
+    box ManagedCluster
+        participant DSCM as DynamicScoring<br/>ConfigMap
+        participant DSA as DynamicScoring<br/>Agent
+        participant MP as Prometheus
+    end
+    participant ScoringAPI
 
-actor User
+    Note over User,MP: Install Dynamic Scoring Framework Addon
+    User->>AFC: Install Dynamic Scoring Framework Addon
+    AFC->>DSFC: Deploy Controller
+    DSFC->>DSA: Deploy Agent
 
-box "HubCluster" #LightBlue
-participant "OCM\nAddonFramework\nController" as AFC
-participant "DynamicScoring\nFramework\nController" as DSFC
-participant "Addon\nPlacement\nScore" as APS
-end box
+    Note over User,MP: Register Scoring API
+    User->>DSFC: Create CR (=Registration Scoring API)
+    User->>DSFC: Create CR (=Set Dynamic Scoring Configuration)
+    DSFC->>ScoringAPI: Health Check
+    DSFC->>ScoringAPI: Fetch ScoringAPI Configuration (if needed)
+    DSFC->>DSCM: Distribute ConfigMap
+    DSA->>DSCM: Fetch Configuration
 
-box "ManagedCluster" #LightGreen
-participant "DynamicScoring\nConfigMap" as DSCM
-participant "DynamicScoring\nAgent" as DSA
-participant "Prometheus" as MP
-end box
+    Note over User,MP: Execute Scoring
+    rect rgb(240, 240, 240)
+        Note over DSA,APS: Each Score [Listed in ConfigMap]
+        alt Periodic Execution [Use each interval by the score]
+            DSA<<->>MP: Fetch Sources
+            DSA<<->>ScoringAPI: Call Scoring API, Fetch Scores
+            DSA->>APS: Update Score
+            DSA->>DSA: Update Metrics Endpoint
+        else Execution Error
+            DSA->>DSFC: Report Error
+            DSFC->>AFC: Send Alert
+        end
+    end
 
-
-== Install Dynamic Scoring Framework Addon ==
-User -> AFC: Install Dynamic Scoring Framework Addon
-AFC -> DSFC: Deploy Controller
-DSFC -> DSA: Deploy Agent
-
-== Register Scoring API ==
-
-User -> DSFC: Create CR (=Registration Scoring API)
-User -> DSFC: Create CR (=Set Dynamic Scoring Configuration)
-DSFC -> ScoringAPI: Health Check
-DSFC -> ScoringAPI: Fetch ScoringAPI Configuration (if needed)
-DSFC -> DSCM: Distribute ConfigMap
-DSA -> DSCM: Fetch Configuration
-
-== Execute Scoring ==
-group Each Score [Listed in ConfigMap]
-  alt Periodic Execution [Use each interval by the score]
-  DSA <-> MP: Fetch Sources
-  DSA <-> ScoringAPI: Call Scoring API, Fetch Scores
-  DSA -> APS: Update Score
-  DSA -> DSA: Update Metrics Endpoint
-  else Execution Error
-  DSA -> DSFC: Report Error
-  DSFC -> AFC: Send Alert
-  end
-end
-
-== Scrape Scores ==
-MP -> DSA: Scrap Scores from Metrics Endpoint
-
-@enduml
+    Note over User,MP: Scrape Scores
+    MP->>DSA: Scrap Scores from Metrics Endpoint
 ```
 
 #### DynamicScorer Definition Details
 
 A CR (Custom Resource) for registering scoring APIs. The fields are defined as follows:
 
-```plantuml
-@startuml
-' --- SecretRef ---
-class SecretRef {
-  +string Name
-  +string Key
+```go
+type Config struct {
+  Name        string        `json:"name"`
+  Description string        `json:"description"`
+  Source      SourceConfig  `json:"source"`
+  Scoring     ScoringConfig `json:"scoring"`
 }
 
-' --- AuthConfig ---
-class AuthConfig {
-  +SecretRef TokenSecretRef
-}
-AuthConfig --> SecretRef
-
-' --- SourceConfigWithAuth ---
-class SourceConfigWithAuth {
-  +string Host
-  +string Path
-  +*common.SourceParams Params
-  +*AuthConfig Auth
-}
-SourceConfigWithAuth --> AuthConfig
-SourceConfigWithAuth --> common.SourceParams
-
-' --- ScoringConfigWithAuth ---
-class ScoringConfigWithAuth {
-  +string Host
-  +string Path
-  +*common.ScoringParams Params
-  +*AuthConfig Auth
-}
-ScoringConfigWithAuth --> AuthConfig
-ScoringConfigWithAuth --> common.ScoringParams
-
-' --- DynamicScorerSpec ---
-class DynamicScorerSpec {
-  +string Description
-  +string ConfigURL
-  +string ConfigSyncMode
-  +string Location
-  +SourceConfigWithAuth Sources
-  +ScoringConfigWithAuth Scoring
-  +string ScoreDestination
-  +string ScoreDimensionFormat
-}
-DynamicScorerSpec --> SourceConfigWithAuth
-DynamicScorerSpec --> ScoringConfigWithAuth
-
-' --- DynamicScorerStatus ---
-class DynamicScorerStatus {
-  +string HealthStatus
-  +*common.Config LastSyncedConfig
-}
-DynamicScorerStatus --> common.Config
-
-' --- SourceParams ---
-class common.SourceParams {
-  +string Query
-  +int Range
-  +int Step
+type SourceConfig struct {
+  Host   string       `json:"host,omitempty"`
+  Path   string       `json:"path"`
+  Params SourceParams `json:"params"`
 }
 
-' --- ScoringParams ---
-class common.ScoringParams {
-  +string Name
-  +int Interval
+type SourceParams struct {
+  Query string `json:"query"`
+  Range int    `json:"range"`
+  Step  int    `json:"step"`
 }
 
-' --- SourceConfig ---
-class common.SourceConfig {
-  +string Host
-  +string Path
-  +SourceParams Params
+type ScoringConfig struct {
+  Host   string        `json:"host,omitempty"`
+  Path   string        `json:"path"`
+  Params ScoringParams `json:"params"`
 }
-SourceConfig --> SourceParams
 
-' --- ScoringConfig ---
-class common.ScoringConfig {
-  +string Host
-  +string Path
-  +ScoringParams Params
+type ScoringParams struct {
+  Name     string `json:"name"`
+  Interval int    `json:"interval"`
 }
-ScoringConfig --> ScoringParams
 
-' --- Config ---
-class common.Config {
-  +string Name
-  +string Description
-  +SourceConfig Sources
-  +ScoringConfig Scoring
+type AuthConfig struct {
+  TokenSecretRef SecretRef `json:"tokenSecretRef"`
 }
-Config --> SourceConfig
-Config --> ScoringConfig
-@enduml
+
+type SecretRef struct {
+  Name string `json:"name"`
+  Key  string `json:"key"`
+}
+
+type SourceConfigWithAuth struct {
+  Host   string        `json:"host,omitempty"`
+  Path   string        `json:"path,omitempty"`
+  Params *SourceParams `json:"params,omitempty"`
+  Auth   *AuthConfig   `json:"auth,omitempty"`
+}
+
+type ScoringConfigWithAuth struct {
+  Host   string         `json:"host,omitempty"`
+  Path   string         `json:"path,omitempty"`
+  Params *ScoringParams `json:"params,omitempty"`
+  Auth   *AuthConfig    `json:"auth,omitempty"`
+}
+
+// DynamicScorerSpec defines the desired state of DynamicScorer.
+type DynamicScorerSpec struct {
+  Description          string                `json:"description"`
+  ConfigURL            string                `json:"configURL"`
+  ConfigSyncMode       string                `json:"configSyncMode"`
+  Location             string                `json:"location,omitempty"`
+  Source               SourceConfigWithAuth  `json:"source,omitempty"`
+  Scoring              ScoringConfigWithAuth `json:"scoring,omitempty"`
+  ScoreDestination     string                `json:"scoreDestination,omitempty"`
+  ScoreDimensionFormat string                `json:"scoreDimensionFormat,omitempty"`
+}
+
+// DynamicScorerStatus defines the observed state of DynamicScorer.
+type DynamicScorerStatus struct {
+  HealthStatus     string  `json:"healthStatus"`
+  LastSyncedConfig *Config `json:"lastSyncedConfig,omitempty"`
+}
+
+// DynamicScorer is the Schema for the dynamicscorers API.
+type DynamicScorer struct {
+  metav1.TypeMeta   `json:",inline"`
+  metav1.ObjectMeta `json:"metadata,omitempty"`
+
+  Spec   DynamicScorerSpec   `json:"spec,omitempty"`
+  Status DynamicScorerStatus `json:"status,omitempty"`
+}
 ```
 
 ```Sources``` is an array to support multiple data sources. Each source represents a Prometheus-compatible endpoint and a PromQL query to fetch metrics.
@@ -432,6 +413,11 @@ spec:
 In this case, the agent sets the score name in the following format:
 
 ```yaml
+apiVersion: cluster.open-cluster-management.io/v1alpha1
+kind: AddOnPlacementScore
+metadata:
+  name: simple-prediction-score # score name replaced _ with -
+  namespace: cluster1 # managed cluster name
 status:
   scores:
     - name: "mynode-mynamespace-mypod"
@@ -493,66 +479,49 @@ Meanwhile, ```/healthz``` and ```/config``` are provided as publicly accessible 
 
 DynamicScoringConfig is a CR that aggregates the current information of registered DynamicScorers and distributes it to managed clusters.
 
-Related class definitions:
+Related data struct definitions:
 
-```plantuml
-@startuml
-' --- DynamicScoringConfigSpec ---
-class DynamicScoringConfigSpec {
-  +[]Mask common.Masks
+```go
+type ScorerSummary struct {
+  Name                    string `json:"name"`
+  ScoreName               string `json:"scoreName"`
+  SourceEndpoint          string `json:"sourceEndpoint"`
+  SourceEndpointAuthName  string `json:"sourceEndpointAuthName"`
+  SourceEndpointAuthKey   string `json:"sourceEndpointAuthKey"`
+  SourceQuery             string `json:"sourceQuery"`
+  SourceRange             int    `json:"sourceRange"`
+  SourceStep              int    `json:"sourceStep"`
+  ScoringEndpoint         string `json:"scoringEndpoint"`
+  ScoringInterval         int    `json:"scoringInterval"`
+  ScoringEndpointAuthName string `json:"scoringEndpointAuthName"`
+  ScoringEndpointAuthKey  string `json:"scoringEndpointAuthKey"`
+  Location                string `json:"location"`
+  ScoreDestination        string `json:"scoreDestination"`
+  ScoreDimensionFormat    string `json:"scoreDimensionFormat"`
 }
-DynamicScoringConfigSpec --> common.Mask
-
-' --- Mask ---
-class common.Mask {
-  +string ClusterName
-  +string ScoreName
-}
-
-' --- ScorerSummary ---
-class ScorerSummary {
-  +string Name
-  +string ScoreName
-  +string SourceEndpoint
-  +string SourceEndpointAuthName
-  +string SourceEndpointAuthKey
-  +string SourceQuery
-  +int SourceRange
-  +int SourceStep
-  +string ScoringEndpoint
-  +int ScoringInterval
-  +string ScoringEndpointAuthName
-  +string ScoringEndpointAuthKey
-  +string Location
-  +string ScoreDestination
-}
-@enduml
 ```
 
 ScorerSummary is a flattened summary of DynamicScorer CR information and is distributed to managed clusters as follows:
 
-```plantuml
-@startuml
-skinparam componentStyle rectangle
-skinparam defaultTextAlignment center
-left to right direction
-
-package "Hub Cluster" {
-  [DynamicScorer CR] <<CRD>>
-  [DynamicScoringConfig CR] <<CRD>>
-  [Controller] <<Controller>>
-  [ScorerSummary ConfigMap] <<ConfigMap>>
-}
-
-package "Managed Cluster(s)" {
-  [Scoring Agent] <<Agent>>
-}
-
-[DynamicScorer CR] --> [Controller] : Watch & Reconcile
-[DynamicScoringConfig CR] --> [Controller] : Watch & Reconcile
-[Controller] --> [ScorerSummary ConfigMap] : Generate and apply ScorerSummary[]
-[ScorerSummary ConfigMap] --> [Scoring Agent] : Distribute ConfigMap (via OCM)
-@enduml
+```mermaid
+graph LR
+    subgraph "Hub Cluster"
+        A[DynamicScorer CR]
+        B[DynamicScoringConfig CR]
+        C[Controller]
+        D[ScorerSummary ConfigMap ManifestWork]
+    end
+    
+    subgraph "Managed Cluster(s)"
+        E[Managed Cluster Internal ConfigMap]
+        F[DynamicScoringAgent]
+    end
+    
+    A -->|Watch & Reconcile| C
+    B -->|Watch & Reconcile| C
+    C -->|"Generate and apply<br/>ScorerSummary[]"| D
+    D -->|Distribute ConfigMap<br/>via OCM| E
+    E -->|Read ConfigMap| F
 ```
 
 ##### Excluding Unnecessary DynamicScorers with Mask
@@ -576,24 +545,25 @@ DynamicScoringAgent is deployed in each managed cluster and executes scoring acc
 
 Basic flow:
 
-```plantuml
-@startuml
-actor DynamicScoringAgent
-participant Prometheus
-participant "Scoring API" as ScoringAPI
+```mermaid
+sequenceDiagram
+    participant DSA as DynamicScoringAgent
+    participant Prometheus
+    participant ScoringAPI as Scoring API
 
-group Scoring (DynamicScorer interval)
-  DynamicScoringAgent -> Prometheus : GET /api/v1/query_range\n(query, range, step)
-  Prometheus -> DynamicScoringAgent : time series data
-  DynamicScoringAgent -> ScoringAPI : POST /scoring\n(time series data)
-  ScoringAPI -> DynamicScoringAgent : Scoring result
-  DynamicScoringAgent -> DynamicScoringAgent : Update /metrics
-end group
+    rect rgb(240, 240, 240)
+        Note over DSA,ScoringAPI: Scoring (DynamicScorer interval)
+        DSA->>Prometheus: GET /api/v1/query_range<br/>(query, range, step)
+        Prometheus->>DSA: time series data
+        DSA->>ScoringAPI: POST /scoring<br/>(time series data)
+        ScoringAPI->>DSA: Scoring result
+        DSA->>DSA: Update /metrics
+    end
 
-group Score Gathering (ServiceMonitor interval)
-  Prometheus -> DynamicScoringAgent : scrape /metrics
-end group
-@enduml
+    rect rgb(240, 240, 240)
+        Note over DSA,Prometheus: Score Gathering (ServiceMonitor interval)
+        Prometheus->>DSA: scrape /metrics
+    end
 ```
 
 The agent periodically retrieves time-series data from Prometheus and requests scoring from the registered Scoring API.  
