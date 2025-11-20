@@ -43,13 +43,15 @@ The distribution and control of the Scoring Agent are carried out using the OCM 
   - Support both external APIs (hosted outside the cluster) and internal APIs (hosted within any cluster, hub or spoke).
     - For internal APIs, connectivity between the scoring API and the requester (an agent in each cluster) must be established.
       - The simplest approach is to deploy scoring API Pods to each cluster and use their own endpoints for scoring (although this may introduce additional costs, as mentioned above).
+      - The second approach is to deploy the scoring API only in the hub cluster and allow agents in each managed cluster to access it.
+        - In this case, network connectivity between clusters must be established (e.g., via VPN, VPC peering, or other networking solutions).
       - Alternatively, a tool can be used to connect services across clusters and share API endpoints (e.g., Skupper).
         - In this case, the framework should provide access metrics from each cluster to the scoring API (count, latency, ...).
     - For external APIs, the framework should provide an authorization management.
   - Perform health checks on registered APIs and disable those that are not functioning properly.
   - Manage API configurations (e.g., query range, frequency).
     - In some cases, the API provider may want to enforce specific configurations; the framework should support applying these settings.
-    - In other cases, the PF operator may wish to set configurations according to their own requirements.
+    - In other cases, some API users may wish to set configurations according to their own requirements.
 - **Management of Agents Running on Managed Clusters**
   - Deploy agents to each managed cluster to periodically retrieve time-series metrics.
   - Agents should be able to interact with multiple source components:
@@ -68,6 +70,12 @@ The distribution and control of the Scoring Agent are carried out using the OCM 
 Implementation of the evaluation logic itself.
 The evaluation logic is expected to be implemented outside the Dynamic Scoring Framework.
 (But hte interfaces for Scoring APIs are defined in the framework.)
+
+For example, scoring APIs can be implemented easily using:
+
+- Flask & Time series prediction libraries (e.g., Prophet, ARIMA)
+- FastAPI & Machine learning frameworks (e.g., TensorFlow, PyTorch)
+- LLMs (e.g., GPT, LLaMA)
 
 ## Proposal
 
@@ -179,11 +187,14 @@ DSA -> DSCM: Fetch Configuration
 
 == Execute Scoring ==
 group Each Score [Listed in ConfigMap]
-  group Periodic Execution [Use each interval by the score]
+  alt Periodic Execution [Use each interval by the score]
   DSA <-> MP: Fetch Sources
   DSA <-> ScoringAPI: Call Scoring API, Fetch Scores
   DSA -> APS: Update Score
   DSA -> DSA: Update Metrics Endpoint
+  else Execution Error
+  DSA -> DSFC: Report Error
+  DSFC -> AFC: Send Alert
   end
 end
 
@@ -240,6 +251,7 @@ class DynamicScorerSpec {
   +SourceConfigWithAuth Sources
   +ScoringConfigWithAuth Scoring
   +string ScoreDestination
+  +string ScoreDimensionFormat
 }
 DynamicScorerSpec --> SourceConfigWithAuth
 DynamicScorerSpec --> ScoringConfigWithAuth
@@ -399,10 +411,41 @@ In summary, implementers of the Scoring API should consider the following points
 3. Return the score calculation results while taking into account the mapping rules of the Dynamic Scoring Agent:
    1. Set the app, container, device, namespace, node, pod, and meta labels appropriately according to the intended use of the scores.
 
+Framework user can customize output destination with ```spec.scoreDestination``` field in DynamicScorer CR.
+
+When ```spec.scoreDestination``` is ```"addonPlacementScore"```, the agent updates the score to ```AddonPlacementScore``` resource in addition to exporting it via metrics endpoint.
+
+```spec.scoreDimensionFormat``` can be used to customize the dimension format of the ```AddonPlacementScore.status.scores[].name```.
+
+```yaml
+apiVersion: dynamic-scoring.open-cluster-management.io/v1
+kind: DynamicScorer
+metadata:
+  name: simple-prediction-scorer
+  namespace: dynamic-scoring
+spec:
+  description: A simple prediction scorer for time series data
+  scoreDestination: AddOnPlacementScore
+  scoreDimensionFormat: "${node}-${namespace}-${pod}"
+```
+
+In this case, the agent sets the score name in the following format:
+
+```yaml
+status:
+  scores:
+    - name: "mynode-mynamespace-mypod"
+      value: 123.45
+```
+
+When dimension strings are duplicated, the value appearing later in the score array is selected.
+(This is the initial implementation; aggregation functions such as average, maximum, or minimum may be added in the future.)
+
+
 ##### DynamicScorer Endpoint requirements
 
 1. it must have ```/healthz``` endpoint
-2. it must have ```/scoring``` endpoint (schema  follows above section)
+2. it must have ```/scoring``` endpoint (schema follows above section)
 3. it must have ```/config``` endpoint
 
 ```/config``` response body example is here
@@ -433,6 +476,18 @@ In summary, implementers of the Scoring API should consider the following points
 This endpoint represents the expected configuration when the Scoring API is invoked.
 
 If ```ConfigSyncMode``` is ```"full"```, DynamicScorer CR status is periodically updated by calling this endpoint.
+
+In this case, the result from the config endpoint takes precedence over the value set in the CR.
+
+If ```ConfigSyncMode``` is ```"none"```, this endpoint is not called and the status is not updated.
+
+In this case, the value set in the CR is used as-is.
+
+It might also be desirable to allow customization of the integration strategy between the CR and ```/config``` results.
+
+And in the beta version, the ```/scoring``` endpoint is assumed to be protectable with a token. By specifying a secret, requests will include a bearer token in the header (secrets must be manually registered for each managed cluster).
+Meanwhile, ```/healthz``` and ```/config``` are provided as publicly accessible endpoints, without any protection.
+
 
 #### DynamicScoringConfig Definition Details
 
@@ -512,6 +567,8 @@ spec:
     - clusterName: "cluster1"
       scoreName: "something_gpu_score"
 ```
+
+When a mask is set, the Agent does not calculate that score. In other words, it does not make a request to the Scoring API, reducing unnecessary load on the API. This is useful, for example, to control GPU scoring so that only agents in clusters with GPUs are triggered, when some clusters in a multi-cluster environment have GPUs and others do not.
 
 #### DynamicScoringAgent Definition Details
 
