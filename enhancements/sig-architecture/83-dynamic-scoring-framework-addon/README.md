@@ -69,7 +69,7 @@ The distribution and control of the Scoring Agent are carried out using the OCM 
 
 Implementation of the evaluation logic itself.
 The evaluation logic is expected to be implemented outside the Dynamic Scoring Framework.
-(But hte interfaces for Scoring APIs are defined in the framework.)
+(But the interfaces for Scoring APIs are defined in the framework.)
 
 For example, scoring APIs can be implemented easily using:
 
@@ -623,6 +623,20 @@ TBW
   - Pros: Enables more comprehensive scoring that considers both runtime metrics and workload configurations. And we can implement advanced scoring logic that takes into account resource requests/limits, replica counts, and other configuration parameters.
   - Cons: Increases the complexity of the Scoring API and may require additional data handling mechanisms.
 
+### Alternative 4: Dynamic Scoring Framework MCP
+
+**This is a PoC feature.**
+
+To connect the Dynamic Scoring Framework with AI agents, it may be better to provide a sample implementation as a Model Context Protocol (MCP) server.
+
+![mcp-connection](res/mcp-connection.png)
+
+This MCP server can be deployed in the hub cluster and can support several use cases.
+
+It provides the following capabilities (as an example):
+
+- Fetching AddonPlacementScores
+- Generating desired Placements for deploying applications using some AddonPlacementScores (e.g., for use with ManifestWorkReplicaSet)
 
 ## Infrastructure Needed
 
