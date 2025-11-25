@@ -407,7 +407,52 @@ metadata:
 spec:
   description: A simple prediction scorer for time series data
   scoreDestination: AddOnPlacementScore
-  scoreDimensionFormat: "${node}-${namespace}-${pod}"
+  scoreDimensionFormat: "${node}-${namespace}-${pod}" # format string
+```
+
+In this example, the score name is generated using the format string ```${node}-${namespace}-${pod}```.
+
+```${node}```, ```${namespace}```, ```${pod}``` in the format string are replaced with the corresponding metric labels.
+
+The available dimension strings are as follows:
+
+- ```${scoreName}```
+- ```${cluster}```
+- ```${node}```
+- ```${pod}```
+- ```${container}```
+- ```${device}```
+- ```${namespace}```
+- ```${app}```
+- ```${meta}```
+
+With the above configuration, when the agent receives the following score from the Scoring API at cluster1:
+
+```json
+{
+  "results": [
+    {
+      "metric": {
+        "__name__": "container_cpu_usage_seconds_total",
+        "instance": "hoge",
+        "node": "mynode1", 
+        "namespace": "mynamespace",
+        "pod": "mypod1"
+      },
+      "score": 12
+    },
+    {
+      "metric": {
+        "__name__": "container_cpu_usage_seconds_total",
+        "instance": "hoge",
+        "node": "mynode2", 
+        "namespace": "mynamespace",
+        "pod": "mypod2"
+      },
+      "score": 34
+    }
+  ]
+}
 ```
 
 In this case, the agent sets the score name in the following format:
@@ -420,13 +465,16 @@ metadata:
   namespace: cluster1 # managed cluster name
 status:
   scores:
-    - name: "mynode-mynamespace-mypod"
-      value: 123.45
+    - name: "mynode1-mynamespace-mypod1" # generated from format string
+      value: 12
+    - name: "mynode2-mynamespace-mypod2" # generated from format string
+      value: 34
 ```
 
 When dimension strings are duplicated, the value appearing later in the score array is selected.
 (This is the initial implementation; aggregation functions such as average, maximum, or minimum may be added in the future.)
 
+Also, if we have cluster2, AddonPlacementScore is created namespace ```cluster2``` in the same way.
 
 ##### DynamicScorer Endpoint requirements
 
@@ -473,7 +521,6 @@ It might also be desirable to allow customization of the integration strategy be
 
 And in the beta version, the ```/scoring``` endpoint is assumed to be protectable with a token. By specifying a secret, requests will include a bearer token in the header (secrets must be manually registered for each managed cluster).
 Meanwhile, ```/healthz``` and ```/config``` are provided as publicly accessible endpoints, without any protection.
-
 
 #### DynamicScoringConfig Definition Details
 
