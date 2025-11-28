@@ -529,6 +529,17 @@ DynamicScoringConfig is a CR that aggregates the current information of register
 Related data struct definitions:
 
 ```go
+
+type DynamicScoringConfigSpec struct {
+  Masks []Mask `json:"masks,omitempty"`
+}
+
+type Mask struct {
+  ClusterName string `json:"clusterName"`
+  ScoreName   string `json:"scoreName"`
+}
+
+
 type ScorerSummary struct {
   Name                    string `json:"name"`
   ScoreName               string `json:"scoreName"`
