@@ -1,0 +1,14 @@
+title: dynamic-scoring-framework-addon
+authors:
+  - "@KA-Takeuchi"
+reviewers:
+  - TBD
+approvers:
+  - TBD
+creation-date: 2025-11-10
+last-updated: 2025-11-10
+status: provisional
+see-also:
+  - "/enhancements/sig-architecture/58-addon-configuration"
+  - "/enhancements/sig-architecture/76-addon-install-strategy"
+  - "/enhancements/sig-architecture/81-addon-lifecycle"
