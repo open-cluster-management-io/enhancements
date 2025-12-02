@@ -212,6 +212,7 @@ type Config struct {
 }
 
 type SourceConfig struct {
+  Type   string       `json:"type,omitempty"`
   Host   string       `json:"host,omitempty"`
   Path   string       `json:"path"`
   Params SourceParams `json:"params"`
@@ -244,6 +245,7 @@ type SecretRef struct {
 }
 
 type SourceConfigWithAuth struct {
+  Type   string        `json:"type,omitempty"`
   Host   string        `json:"host,omitempty"`
   Path   string        `json:"path,omitempty"`
   Params *SourceParams `json:"params,omitempty"`
@@ -285,24 +287,45 @@ type DynamicScorer struct {
 }
 ```
 
-```Sources``` is an array to support multiple data sources. Each source represents a Prometheus-compatible endpoint and a PromQL query to fetch metrics.
+When registering a DynamicScorer CR, the following fields under spec are required:
 
-```Scoring``` represents the scoring API endpoint and its configuration.
+- ```Description```: Description of the scorer
+- ```ConfigURL```: Endpoint from which the scorer retrieves configuration values
+- ```ConfigSyncMode```: Mode for importing the above endpoint (e.g., full/none)
+
+The following fields are optional:
+
+- ```Location```: Where the Scoring API is hosted (e.g., internal/external)
+- ```Source```: Configuration values related to the inputs of the Scoring API
+- ```Scoring```: Configuration values related to the evaluation policy of the Scoring API
+- ```ScoreDestination```: Destination of the evaluation results (e.g., AddonPlacementScore)
+- ```ScoreDimensionFormat```: Format specification for the dimensions when storing scores (for AddonPlacementScore)
 
 ##### Source Configuration
 
+- ```type```: Type of the source component (e.g., prometheus)
 - ```host```: The hostname or IP address of the Prometheus-compatible endpoint.
 - ```path```: The API path to query metrics (e.g., `/api/v1/query_range`).
+- ```auth```: Authentication configuration for the source endpoint.
 - ```params.query```: The PromQL query to fetch metrics.
 - ```params.range```: The time range (in seconds) for the query.
 - ```params.step```: The step duration (in seconds) for the query.
+
+When the type is ```prometheus```, the following fields must have valid values: ```host```, ```path```, ```params.query```, ```params.range```, and ```params.step```. However, if ```ConfigSyncMode``` is set to ```full```, these values will be configured by the Scoring API, so you do not need to pre-populate them in the CR fields.
+
+```auth``` field can be used to set authentication for the source endpoint. By specifying a secret, requests will include a bearer token in the header (secrets must be manually registered for each managed cluster).
 
 ##### Scoring Configuration
 
 - ```host```: The hostname or IP address of the scoring API endpoint.
 - ```path```: The API path for scoring (e.g., `/score`).
+- ```auth```: Authentication configuration for the scoring endpoint.
 - ```params.name```: The name of the scoring metric.
 - ```params.interval```: The scoring interval (in seconds).
+
+When ```ConfigSyncMode``` is set to ```full```, these values will be configured by the Scoring API, so you do not need to pre-populate them in the CR fields.
+
+```auth``` field can be used to set authentication for the scoring endpoint. By specifying a secret, requests will include a bearer token in the header (secrets must be manually registered for each managed cluster).
 
 ##### CR config vs. API config endpoint
 
@@ -489,6 +512,7 @@ Also, if we have cluster2, AddonPlacementScore is created namespace ```cluster2`
   "name": "simple-prediction-scorer",
   "description": "A simple prediction score for time series data",
   "source": {
+    "type": "prometheus",
     "host": "http://kube-prometheus-kube-prome-prometheus.monitoring.svc:9090",
     "path": "/api/v1/query_range",
     "params": {
@@ -543,6 +567,7 @@ type Mask struct {
 type ScorerSummary struct {
   Name                    string `json:"name"`
   ScoreName               string `json:"scoreName"`
+  SourceType              string `json:"sourceType"`
   SourceEndpoint          string `json:"sourceEndpoint"`
   SourceEndpointAuthName  string `json:"sourceEndpointAuthName"`
   SourceEndpointAuthKey   string `json:"sourceEndpointAuthKey"`
@@ -584,7 +609,8 @@ graph LR
 
 ##### Excluding Unnecessary DynamicScorers with Mask
 
-Mask is defined in the spec of DynamicScoringConfig and is used to restrict which DynamicScorer information is distributed to each managed cluster.
+By default, all registered DynamicScorers are included in the ConfigMap distributed to each managed cluster when they are active.
+However, the mask field defined in the DynamicScoringConfig spec is used to restrict which DynamicScorer information is distributed to each managed cluster.
 
 For example, if a cluster does not have a GPU and does not need GPU scoring, you can exclude GPU-related DynamicScorer info with a Mask:
 
