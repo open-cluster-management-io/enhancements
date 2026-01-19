@@ -107,11 +107,11 @@ type ConfigReferent struct {
 
 #### Conversion Webhook Design
 - The conversion webhook will convert v1alpha1 `spec.supportedConfigs` to v1beta1 `spec.defaultConfigs`.
-- `PLACEHOLDER` as a **reserved name** will be used in `spec.defaultConfigs.name` to store the converted v1alpha1 API without default configs.
+- `__reserved_no_default__` as a **reserved name** will be used in `spec.defaultConfigs.name` to store the converted v1alpha1 API without default configs.
 
 For example:
 
-**Case 1: `ClusterManagementAddOn` `spec.supportedConfigs` is defined in v1alpha1**
+**Case 1: `ClusterManagementAddOn` `spec.supportedConfigs` is defined in v1alpha1 without defaultConfig**
 
 ```yaml
 apiVersion: addon.open-cluster-management.io/v1alpha1
@@ -131,7 +131,7 @@ spec:
   defaultConfigs:
   - group: addon.open-cluster-management.io
     resource: addondeploymentconfigs
-    name: PLACEHOLDER
+    name: __reserved_no_default__
 ```
 
 **Case 2: `spec.supportedConfigs.defaultConfig` is defined in v1alpha1**
@@ -166,8 +166,192 @@ spec:
 #### Key Change
 Redesign `status.registrations` to be more flexible for future addon registration patterns in v1beta1.
 
-#### API Definition & Conversion Webhook
-More details in [Addon registration enhancement](https://docs.google.com/document/d/1JO-GEhhMwJQeDFvApcC-JU63bnfWsMb-9QRX-gzhAqc/edit?tab=t.0#heading=h.k654poy68xzg).
+The v1alpha1 `RegistrationConfig` uses a flat structure with `signerName`, `subject`, and `driver` fields. In v1beta1, this is redesigned into a typed structure with two registration types: `kubeClient` and `customSigner`.
+
+#### API Definition
+
+**v1beta1 Structure:**
+
+```golang
+// RegistrationType represents the type of registration configuration for the addon agent.
+type RegistrationType string
+
+const (
+	// kubeClient represents the registration type for addon agents that need to access
+	// the hub kube-apiserver using kubeClient.
+	KubeClient RegistrationType = "kubeClient"
+
+	// customSigner represents the registration type for addon agents that need to access non-kube endpoints
+	// on the hub cluster with client certificate authentication.
+	CustomSigner RegistrationType = "customSigner"
+)
+
+// RegistrationConfig defines the configuration for the addon agent to register to the hub cluster.
+type RegistrationConfig struct {
+	// type specifies the type of registration configuration.
+	// +kubebuilder:validation:Enum=kubeClient;customSigner
+	// +required
+	Type RegistrationType `json:"type"`
+
+	// kubeClient holds the configuration for kubeClient type registration.
+	// It should be set when type is "kubeClient".
+	// +optional
+	KubeClient *KubeClientConfig `json:"kubeClient,omitempty"`
+
+	// customSigner holds the configuration for customSigner type registration.
+	// It should be set when type is "customSigner".
+	// +optional
+	CustomSigner *CustomSignerConfig `json:"customSigner,omitempty"`
+}
+
+type KubeClientConfig struct {
+	// subject is the user subject of the addon agent to be registered to the hub.
+	// +optional
+	Subject KubeClientSubject `json:"subject,omitempty"`
+
+	// driver is the authentication driver used by managedclusteraddon for kubeClient registration. Possible values are csr and token.
+	// This field is set by the agent to declare which driver it is using.
+	// +optional
+	// +kubebuilder:validation:Enum=csr;token
+	Driver string `json:"driver,omitempty"`
+}
+
+type CustomSignerConfig struct {
+	// signerName is the name of signer that addon agent will use to create csr.
+	// +required
+	// +kubebuilder:validation:MaxLength=571
+	// +kubebuilder:validation:MinLength=5
+	// +kubebuilder:validation:Pattern=^([a-z0-9][a-z0-9-]*[a-z0-9]\.)+[a-z]+\/[a-z0-9-\.]+$
+	SignerName string `json:"signerName"`
+
+	// subject is the user subject of the addon agent to be registered to the hub.
+	// +optional
+	Subject Subject `json:"subject,omitempty"`
+}
+
+// BaseSubject contains the common fields for addon agent subjects.
+type BaseSubject struct {
+	// user is the user name of the addon agent.
+	User string `json:"user"`
+
+	// groups is the user group of the addon agent.
+	// +optional
+	Groups []string `json:"groups,omitempty"`
+}
+
+type KubeClientSubject struct {
+	BaseSubject `json:",inline"`
+}
+
+// subject is the user subject of the addon agent to be registered to the hub.
+// If it is not set, the addon agent will have the default subject
+//
+//	"subject": {
+//	  "user": "system:open-cluster-management:cluster:{clusterName}:addon:{addonName}:agent:{agentName}",
+//	  "groups: ["system:open-cluster-management:cluster:{clusterName}:addon:{addonName}"]
+//	}
+type Subject struct {
+	BaseSubject `json:",inline"`
+
+	// organizationUnits is the ou of the addon agent
+	// +optional
+	OrganizationUnits []string `json:"organizationUnits,omitempty"`
+}
+```
+
+#### Conversion Webhook Design
+
+**v1alpha1 → v1beta1 Conversion:**
+- If `signerName == "kubernetes.io/kube-apiserver-client"`:
+  - Set `type = "kubeClient"`
+  - Create `KubeClientConfig` with `subject` (user, groups) and `driver`
+- Otherwise:
+  - Set `type = "customSigner"`
+  - Create `CustomSignerConfig` with original `signerName` and full `subject` (user, groups, organizationUnits)
+
+**v1beta1 → v1alpha1 Conversion:**
+- If `type == "kubeClient"`:
+  - Set `signerName = "kubernetes.io/kube-apiserver-client"`
+  - Copy `subject.user` and `subject.groups` from `kubeClient.subject`
+  - Copy `driver` from `kubeClient.driver`
+- If `type == "customSigner"`:
+  - Copy `signerName` from `customSigner.signerName`
+  - Copy full `subject` including `organizationUnits`
+
+**Examples:**
+
+**Case 1: kubeClient type registration**
+
+```yaml
+# v1alpha1
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: ManagedClusterAddOn
+metadata:
+  name: helloworld
+  namespace: cluster1
+status:
+  registrations:
+  - signerName: kubernetes.io/kube-apiserver-client
+    subject:
+      user: foo
+      groups:
+      - group1
+    driver: csr
+---
+# v1beta1
+apiVersion: addon.open-cluster-management.io/v1beta1
+kind: ManagedClusterAddOn
+metadata:
+  name: helloworld
+  namespace: cluster1
+status:
+  registrations:
+  - type: kubeClient
+    kubeClient:
+      subject:
+        user: foo
+        groups:
+        - group1
+      driver: csr
+```
+
+**Case 2: customSigner type registration**
+
+```yaml
+# v1alpha1
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: ManagedClusterAddOn
+metadata:
+  name: custom-addon
+  namespace: cluster1
+status:
+  registrations:
+  - signerName: signer1
+    subject:
+      user: foo
+      groups:
+      - "group1"
+      organizationUnits:
+      - "group1"
+---
+# v1beta1
+apiVersion: addon.open-cluster-management.io/v1beta1
+kind: ManagedClusterAddOn
+metadata:
+  name: custom-addon
+  namespace: cluster1
+status:
+  registrations:
+  - type: customSigner
+    customSigner:
+      signerName: signer1
+      subject:
+        user: foo
+        groups:
+        - "group1"
+        organizationUnits:
+        - "group1"
+```
 
 ### ManagedClusterAddon installNamespace
 
@@ -175,7 +359,7 @@ More details in [Addon registration enhancement](https://docs.google.com/documen
 `ManagedClusterAddon` `spec.installNamespace` is removed in v1beta1.
 
 #### Conversion Webhook Design
-- Annotation `addon.open-cluster-management.io/v1alpha1-install-namespace:<install-namespace>` will be introduced in v1beta1 to store the `spec.installNamespace` in v1alpha1.
+- Annotation `addon.open-cluster-management.io/v1alpha1-install-namespace:<install-namespace>` will be introduced in v1beta1 to store the `spec.installNamespace` value from v1alpha1.
 - The conversion webhook will convert [v1alpha1](https://github.com/open-cluster-management-io/api/blob/main/addon/v1alpha1/types_managedclusteraddon.go#L44) `spec.installNamespace` to v1beta1 annotation.
 
 For example:
@@ -197,7 +381,7 @@ metadata:
   namespace: cluster1
   annotations:
     addon.open-cluster-management.io/v1alpha1-install-namespace: helloworld
-spec: 
+spec:
 ...
 ```
 
@@ -225,6 +409,7 @@ status:
       name: managed-serviceaccount-2.10
       specHash: 649d929d65e3cb801d3a627ba6de3103f951f8fb225b7e0915885b7bc6b84129
     lastObservedGeneration: 1
+    # Deprecated fields (duplicated from desiredConfig)
     name: managed-serviceaccount-2.10
     resource: addontemplates
 ---
@@ -243,6 +428,7 @@ status:
       specHash: 649d929d65e3cb801d3a627ba6de3103f951f8fb225b7e0915885b7bc6b84129
     resource: addontemplates
     lastObservedGeneration: 1
+    # Deprecated name/namespace fields removed
 ```
 
 ### Other removed deprecated fields
