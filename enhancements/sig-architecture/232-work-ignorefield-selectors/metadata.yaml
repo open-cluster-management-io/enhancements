@@ -1,0 +1,13 @@
+title: work-ignorefield-selectors
+authors:
+  - "@ncr38"
+reviewers:
+  - TBD
+approvers:
+  - TBD
+creation-date: 2026-02-09
+last-updated: 2026-02-09
+status: provisional
+see-also:
+  - "/enhancements/sig-architecture/132-work-update-only-when-spec-change"
+  - "/enhancements/sig-architecture/47-manifestwork-updatestrategy"
