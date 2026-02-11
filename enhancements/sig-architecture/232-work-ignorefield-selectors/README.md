@@ -334,6 +334,99 @@ spec:
                   - '.spec.http[].route[].weight'
 ```
 
+##### Example 4: Combined JSONPath and JQPathExpressions for Operator-Injected Containers
+
+This example demonstrates a scenario where a service mesh operator (like Istio) injects sidecar containers into Pods via a mutating admission webhook. The hub wants to manage the main application container but allow the operator to inject and manage sidecars, volumes, and init containers.
+
+```yaml
+apiVersion: work.open-cluster-management.io/v1
+kind: ManifestWork
+metadata:
+  namespace: cluster1
+  name: app-pod
+spec:
+  workload:
+    manifests:
+      - apiVersion: v1
+        kind: Pod
+        metadata:
+          name: my-application
+          namespace: production
+          labels:
+            app: my-application
+            version: v1
+        spec:
+          containers:
+            - name: application
+              image: myapp:1.2.3
+              ports:
+                - containerPort: 8080
+              env:
+                - name: LOG_LEVEL
+                  value: "info"
+          # When this Pod is created, Istio mutating webhook intercepts and injects:
+          # - containers: istio-proxy sidecar
+          # - initContainers: istio-init
+          # - volumes: istio-envoy, istio-data, istio-token, istiod-ca-cert
+          # - annotations: sidecar.istio.io/status, prometheus.io/scrape, etc.
+  manifestConfigs:
+    - resourceIdentifier:
+        resource: pods
+        namespace: production
+        name: my-application
+      updateStrategy:
+        type: ServerSideApply
+        serverSideApply:
+          ignoreFields:
+            - condition: OnSpokePresent
+              # Use JSONPath for simple, well-known static fields
+              jsonPaths:
+                - .metadata.annotations.kubectl.kubernetes.io/restartedAt
+                - .metadata.annotations.sidecar.istio.io/status
+                - .metadata.annotations.prometheus.io/scrape
+                - .metadata.annotations.prometheus.io/port
+              # Use JQPathExpressions for complex conditional logic on arrays
+              # Ignore all containers except the main 'application' container
+              jqPathExpressions:
+                - '.spec.containers[] | select(.name != "application")'
+                # Ignore all volumes injected by Istio (have istio- prefix)
+                - '.spec.volumes[]? | select(.name | startswith("istio-"))'
+                # Ignore all init containers (typically istio-init, istio-validation)
+                - '.spec.initContainers[]?'
+                # Ignore volume mounts in injected containers
+                - '.spec.containers[] | select(.name != "application") | .volumeMounts[]?'
+```
+
+**Scenario Explanation**:
+
+1. **Hub defines in ManifestWork**: 
+   - Pod with single "application" container
+   - Application image, ports, environment variables
+   - Pod labels and basic metadata
+
+2. **Istio mutating admission webhook intercepts Pod creation** and injects:
+   - `istio-proxy` sidecar container into `spec.containers[]`
+   - `istio-init` into `spec.initContainers[]`
+   - Multiple volumes: `istio-envoy`, `istio-data`, `istio-token`, `istiod-ca-cert`
+   - Annotations: `sidecar.istio.io/status`, `prometheus.io/scrape`, `prometheus.io/port`
+
+3. **Work-agent behavior with ignoreFields**:
+   - Ignores the injected `istio-proxy` container (jq expression filters it out)
+   - Ignores all Istio-related volumes (jq expression with `startswith("istio-")`)
+   - Ignores all init containers
+   - Ignores operator-added annotations (JSONPath)
+   - Still manages the "application" container (not filtered by jq)
+
+**Why both selector types**:
+- **JSONPath** (`jsonPaths`): For simple annotation paths that are always at the same location in pod metadata
+- **JQPathExpressions** (`jqPathExpressions`): For conditional filtering within the containers/volumes arrays - "ignore all containers except 'application'" or "ignore volumes matching a pattern"
+
+**Behavior**:
+- When Istio webhook injects `istio-proxy` sidecar during Pod creation, work-agent won't try to remove it
+- When you update the application container image in ManifestWork, work-agent applies only that change
+- When Istio adds volumes for certificates and config, work-agent ignores them
+- The operator can freely manage its injected resources without conflicts
+
 ### Risks and Mitigation
 
 #### Risk 1: jq Expression Performance
