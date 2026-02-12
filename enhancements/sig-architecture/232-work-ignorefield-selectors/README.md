@@ -136,6 +136,68 @@ type IgnoreField struct {
 3. Invalid expressions should be validated at admission time where possible
 4. jqPathExpressions should have a configurable execution timeout (default: 1 second) to prevent resource exhaustion
 
+#### Error Handling and Condition Reporting
+
+**Validation Phase (ManifestWork Webhook)**:
+
+Syntax and compilation errors for `jsonPointers` and `jqPathExpressions` will be caught during ManifestWork creation/update by the validation webhook:
+
+- **JSON Pointer syntax errors**: Invalid pointer format (e.g., missing leading `/`, invalid escape sequences)
+- **jq expression syntax errors**: Parse failures (e.g., unclosed quotes, invalid operators)
+- **jq expression compilation errors**: Semantic errors (e.g., undefined functions, invalid type operations)
+
+These errors will **reject the ManifestWork creation** with a clear error message from the webhook.
+
+**Runtime Phase (Work-Agent on Spoke Cluster)**:
+
+Runtime errors that occur during `ignoreFields` processing will be reported in the manifest-level `Applied` condition:
+
+```go
+const (
+    // Manifest-level Applied condition reasons
+    AppliedManifestComplete                = "AppliedManifestComplete"
+    AppliedManifestFailed                  = "AppliedManifestFailed"
+    AppliedManifestSSAIgnoreFieldError     = "AppliedManifestSSAIgnoreFieldError"  // NEW
+)
+```
+
+**Runtime errors include**:
+
+1. **jq expression timeout**: Expression runs longer than configured timeout (default: 1 second)
+   ```
+   Reason: AppliedManifestSSAIgnoreFieldError
+   Message: Failed to process ignoreFields: JQ expression timed out after 1s: '.spec.containers[] | until(false; .)'
+   ```
+
+2. **jq expression type mismatch**: Expression expects different data type than actual resource
+   ```
+   Reason: AppliedManifestSSAIgnoreFieldError
+   Message: Failed to process ignoreFields: JQ expression runtime error in '.spec.replicas[]': cannot iterate over number
+   ```
+
+3. **jq expression function errors**: Runtime errors from jq functions
+   ```
+   Reason: AppliedManifestSSAIgnoreFieldError
+   Message: Failed to process ignoreFields: JQ expression runtime error in '.metadata.labels | fromjson': fromjson only works on strings
+   ```
+
+4. **JSON Pointer application errors**: Errors applying JSON Pointer patches (rare, as most are caught at validation)
+   ```
+   Reason: AppliedManifestSSAIgnoreFieldError
+   Message: Failed to process ignoreFields: JSON Pointer error in '/spec/nonexistent': path not found
+   ```
+
+**Error Handling Strategy**:
+
+- **Validation errors** → ManifestWork creation **rejected** by webhook
+- **Runtime errors** → ManifestWork **created**, but manifest-level `Applied` condition set to `False` with `AppliedManifestSSAIgnoreFieldError` reason
+- **Work-level condition** → Aggregates manifest-level conditions; if any manifest has `Applied=False`, work-level `Applied` is also `False`
+
+This approach ensures:
+- Early feedback for syntax errors (at ManifestWork creation time)
+- Clear error reporting for runtime issues (in status conditions)
+- Consistent with OCM's existing error handling patterns (specific error types with detailed messages in conditions)
+
 #### Agent Implementation
 
 The work-agent implementation in `pkg/work/spoke/apply/server_side_apply.go` will be extended to handle the new selector types.
