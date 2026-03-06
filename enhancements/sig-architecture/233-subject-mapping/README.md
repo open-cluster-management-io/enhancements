@@ -635,7 +635,7 @@ type PlacementRef struct {
     Name string `json:"name"`
 
     // Namespace is the namespace of the Placement resource
-    // Required since SubjectMapping is cluster-scoped
+    // Required since multiple Placements with the same name can exist in different namespaces
     // +required
     // +kubebuilder:validation:MinLength=1
     Namespace string `json:"namespace"`
