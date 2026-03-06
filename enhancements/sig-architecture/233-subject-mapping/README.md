@@ -97,6 +97,16 @@ spec:
   tokenExpirationSeconds: 3600
 ```
 
+**ManagedServiceAccount Creation**:
+
+The SubjectMapping controller creates ManagedServiceAccount resources in **cluster namespaces** (e.g., `cluster1`, `cluster2`), not in the subject's namespace. This follows OCM's standard pattern where cluster-specific resources live in cluster namespaces.
+
+For this example with 3 bound clusters (via ManagedClusterSetBinding in `argocd` namespace):
+
+- ManagedServiceAccount `cluster1/hub-argocd-sa` → creates ServiceAccount on cluster1
+- ManagedServiceAccount `cluster2/hub-argocd-sa` → creates ServiceAccount on cluster2
+- ManagedServiceAccount `cluster3/hub-argocd-sa` → creates ServiceAccount on cluster3
+
 **Example 2: User Mapping with Placement (Future)**
 
 > **Note**: User subject support is planned for future releases. Alpha/Beta releases will focus on ServiceAccount subjects only.
@@ -140,7 +150,7 @@ The SubjectMapping controller will:
 - Discover target clusters based on subject type:
   - **ServiceAccount subjects**: Via ManagedClusterSetBinding in the ServiceAccount's namespace
   - **User subjects**: Via referenced Placement and its PlacementDecisions
-- Automatically create ManagedServiceAccount resources for each bound cluster
+- Automatically create ManagedServiceAccount resources in each cluster's namespace (e.g., `cluster1/hub-argocd-sa`, `cluster2/hub-argocd-sa`)
 - Maintain status with creation progress and readiness conditions
 
 #### Architecture Components
@@ -160,9 +170,70 @@ Responsibilities:
 - Discover target clusters based on subject type:
   - **ServiceAccount**: Via ManagedClusterSetBinding in the ServiceAccount's namespace
   - **User**: Via referenced Placement's PlacementDecisions
-- Create and maintain ManagedServiceAccount resources for each bound cluster (imports ManagedServiceAccount API from `managed-serviceaccount` repository)
+- Create and maintain ManagedServiceAccount resources for each bound cluster with annotation to disable token sync
 - Update status conditions (Ready, PartiallyReady, Failed)
 - Handle cluster binding/unbinding events (ManagedClusterSetBinding changes or PlacementDecision updates)
+
+**ManagedServiceAccount Creation**:
+
+SubjectMapping controller creates ManagedServiceAccount resources with a special annotation to prevent token synchronization to the hub:
+
+```go
+const (
+    // Annotation to control token sync behavior
+    AnnotationTokenProjection = "authentication.open-cluster-management.io/token-projection"
+
+    TokenProjectionNone   = "none"   // Don't sync token to hub
+    TokenProjectionSecret = "secret" // Sync token to hub (default)
+)
+
+// Example ManagedServiceAccount created by SubjectMapping controller
+// IMPORTANT: ManagedServiceAccount is created in the cluster namespace (e.g., "cluster1"),
+// NOT the subject's namespace. This follows OCM's standard pattern where cluster-specific
+// resources live in cluster namespaces.
+msa := &authv1beta1.ManagedServiceAccount{
+    ObjectMeta: metav1.ObjectMeta{
+        Name:      managedServiceAccountName,  // From spec.managedServiceAccount.name
+        Namespace: clusterName,                // Cluster namespace (e.g., "cluster1", "cluster2")
+        Annotations: map[string]string{
+            AnnotationTokenProjection: TokenProjectionNone,
+        },
+        Labels: map[string]string{
+            // Track which SubjectMapping created this MSA for lifecycle management
+            "authentication.open-cluster-management.io/subject-mapping": subjectMappingName,
+            "authentication.open-cluster-management.io/managed-by":      "subject-mapping-controller",
+        },
+    },
+    Spec: authv1beta1.ManagedServiceAccountSpec{
+        Rotation: authv1beta1.ManagedServiceAccountRotation{
+            Validity: metav1.Duration{
+                Duration: time.Duration(tokenExpirationSeconds) * time.Second,
+            },
+        },
+    },
+}
+```
+
+The managed-serviceaccount addon agent honors this annotation:
+
+- **Missing annotation or `"secret"`**: Sync token to hub as Secret (default, backward compatible)
+- **`"none"`**: Create ServiceAccount on managed cluster only, don't sync token to hub
+
+**Lifecycle Management**:
+
+Since SubjectMapping is cluster-scoped and ManagedServiceAccount is namespaced (in cluster namespaces), owner references cannot be used. The controller uses:
+
+- **Finalizers** on SubjectMapping to ensure cleanup of all associated ManagedServiceAccounts before deletion
+- **Labels** on ManagedServiceAccounts (see example above) to track which SubjectMapping created them
+- On SubjectMapping deletion, the controller deletes all ManagedServiceAccounts with matching labels across all cluster namespaces
+
+This approach:
+
+- Requires **no ManagedServiceAccount API changes**
+- Is **fully backward compatible** (existing ManagedServiceAccounts continue working)
+- Eliminates token storage on hub for SubjectMapping use case
+- Allows managed-serviceaccount addon to support both use cases simultaneously
+- Follows OCM patterns (consistent with ManifestWork, Placement, etc.)
 
 **2. Authentication Module (Spoke-side)**
 
@@ -171,7 +242,10 @@ Responsibilities:
 **Deployment**: Runs in the proxy-agent on each managed cluster
 
 The proxy-agent component will be enhanced with an authentication module to:
-- Watch SubjectMapping CRs on the hub (via informer)
+
+- Watch SubjectMapping CRs on the hub (via informer) for create/update/delete events
+  - On update: Invalidate cached tokens if spec fields affecting token generation changed
+  - On delete: Invalidate all cached tokens for the subject
 - Intercept requests from mapped hub subjects
 - Extract subject information from request authentication:
   - **ServiceAccount**: Extract from `system:serviceaccount:<namespace>:<name>` user
@@ -179,6 +253,7 @@ The proxy-agent component will be enhanced with an authentication module to:
 - Resolve hub subject to managed cluster service account names via SubjectMapping lookup
 - Request tokens from the local TokenRequest API
 - Cache tokens for performance (keyed by hub subject + managed SA name)
+  - Automatic invalidation on time expiration and SubjectMapping changes
 - Inject tokens transparently into Authorization headers
 - Forward authenticated requests to the managed cluster API server
 
@@ -222,9 +297,9 @@ The following diagram illustrates the complete SubjectMapping flow for transpare
 │  │ 2. Controller watches SubjectMapping                     │  │
 │  │    - Finds ManagedClusterSetBinding in argocd namespace  │  │
 │  │    - Discovers bound clusters (cluster1...cluster100)    │  │
-│  │    - Creates ManagedServiceAccount for each cluster:     │  │
-│  │      * argocd/cluster1 → argocd-spoke-sa                │  │
-│  │      * argocd/cluster2 → argocd-spoke-sa                │  │
+│  │    - Creates ManagedServiceAccount in each cluster NS:   │  │
+│  │      * cluster1/argocd-spoke-sa (MSA in cluster1 NS)    │  │
+│  │      * cluster2/argocd-spoke-sa (MSA in cluster2 NS)    │  │
 │  │      * ...                                                │  │
 │  └──────────────────────────────────────────────────────────┘  │
 │                                                                  │
@@ -357,9 +432,17 @@ To optimize performance and reduce API server load:
 - **Cache Duration**: 80% of token expiration time (e.g., 48 minutes for 1-hour tokens)
 - **Cache Location**: In-memory on proxy-agent (distributed across spokes)
 - **Cache Invalidation**:
-  - Time-based expiration (80% of token lifetime)
-  - SubjectMapping deletion or update
-  - ManagedServiceAccount deletion
+  - **Time-based expiration**: Tokens automatically evicted after 80% of their lifetime
+  - **SubjectMapping changes** (detected via informer watch on hub):
+    - Deletion: Invalidate all cached tokens for the mapped subject
+    - Spec updates that affect token generation:
+      - `hubSubject.*` (kind, serviceAccount, user fields) → invalidate (different source subject)
+      - `managedServiceAccount.name` → invalidate (different target SA)
+      - `tokenExpirationSeconds` → invalidate (new expiration policy)
+      - `placementRef.*` (for User subjects) → invalidate (different cluster selection)
+    - Spec updates that do NOT trigger invalidation:
+      - No changes or metadata-only updates (labels, annotations)
+  - **Detection mechanism**: proxy-agent runs informer watching SubjectMapping resources on the hub cluster
 
 This distributed caching approach:
 - Scales horizontally (each spoke caches independently)
@@ -472,10 +555,10 @@ type SubjectMapping struct {
     Status SubjectMappingStatus `json:"status,omitempty"`
 }
 
+// +kubebuilder:validation:XValidation:rule="self.hubSubject.kind == 'ServiceAccount' ? !has(self.placementRef) : has(self.placementRef)",message="placementRef is required for User subjects and must not be set for ServiceAccount subjects"
 type SubjectMappingSpec struct {
     // HubSubject specifies the subject on the hub cluster to map
     // +required
-    // +kubebuilder:validation:XValidation:rule="self.hubSubject.kind == 'ServiceAccount' ? !has(self.placementRef) : has(self.placementRef)",message="placementRef is required for User subjects and must not be set for ServiceAccount subjects"
     HubSubject HubSubject `json:"hubSubject"`
 
     // ManagedServiceAccount specifies the service account to create on managed clusters
@@ -499,12 +582,12 @@ type SubjectMappingSpec struct {
     TokenExpirationSeconds int64 `json:"tokenExpirationSeconds,omitempty"`
 }
 
+// +kubebuilder:validation:XValidation:rule="self.kind == 'ServiceAccount' ? has(self.serviceAccount) : true",message="serviceAccount is required when kind is ServiceAccount"
+// +kubebuilder:validation:XValidation:rule="self.kind == 'User' ? has(self.user) : true",message="user is required when kind is User"
 type HubSubject struct {
     // Kind is the type of subject (ServiceAccount or User)
     // +required
     // +kubebuilder:validation:Enum=ServiceAccount;User
-    // +kubebuilder:validation:XValidation:rule="self.kind == 'ServiceAccount' ? has(self.serviceAccount) : true",message="serviceAccount is required when kind is ServiceAccount"
-    // +kubebuilder:validation:XValidation:rule="self.kind == 'User' ? has(self.user) : true",message="user is required when kind is User"
     Kind string `json:"kind"`
 
     // ServiceAccount specifies a ServiceAccount subject
@@ -586,65 +669,27 @@ type SubjectMappingStatus struct {
 
 **Hub Token Validation:**
 
-proxy-agent validates hub tokens using the existing cluster-proxy pattern ([reference implementation](https://github.com/open-cluster-management-io/cluster-proxy/blob/main/pkg/serviceproxy/service_proxy.go#L253-L265)):
+proxy-agent validates hub tokens using the existing cluster-proxy TokenReview pattern ([reference](https://github.com/open-cluster-management-io/cluster-proxy/blob/main/pkg/serviceproxy/service_proxy.go#L253-L265)). The hub apiserver returns the authenticated user identity:
 
-```go
-// Call hub apiserver TokenReview API
-tokenReview, err := hubKubeClient.AuthenticationV1().TokenReviews().Create(ctx, &authenticationv1.TokenReview{
-    Spec: authenticationv1.TokenReviewSpec{
-        Token: token,
-    },
-}, metav1.CreateOptions{})
+- ServiceAccount: `system:serviceaccount:<namespace>:<name>`
+- User: `admin@example.com` or `system:admin`
 
-// Extract authenticated user identity
-username := tokenReview.Status.User.Username
-// Examples:
-//   ServiceAccount: "system:serviceaccount:argocd:argocd-sa"
-//   User: "admin@example.com" or "system:admin"
-```
+**Subject Matching:**
 
-**Subject Matching Logic:**
-
-For **ServiceAccount subjects** (Alpha/Beta implementation):
-
-```go
-expectedUsername := fmt.Sprintf("system:serviceaccount:%s:%s",
-    mapping.Spec.HubSubject.ServiceAccount.Namespace,
-    mapping.Spec.HubSubject.ServiceAccount.Name)
-
-if username == expectedUsername {
-    return mapping.Spec.ManagedServiceAccount.Name
-}
-```
-
-For **User subjects** (Future implementation):
-
-```go
-if username == mapping.Spec.HubSubject.User.Name {
-    return mapping.Spec.ManagedServiceAccount.Name
-}
-```
+- **ServiceAccount**: Match TokenReview username against `system:serviceaccount:{namespace}:{name}` format
+- **User**: Match TokenReview username against user name directly
 
 **Conflict Resolution:**
 
 When multiple SubjectMappings map the same hub subject:
 
-1. **Controller Detection**: Marks all conflicting mappings with `Conflicted` condition:
-
-   ```yaml
-   conditions:
-   - type: Conflicted
-     status: "True"
-     reason: DuplicateHubSubject
-     message: "ServiceAccount 'argocd/argocd-sa' also mapped by: mapping-b"
-   ```
-
-2. **Runtime Resolution**: proxy-agent selects the **first created** SubjectMapping by `creationTimestamp`
-   - Deterministic and stable
-   - Prevents name-based hijacking (attacker cannot override by choosing alphabetically earlier name)
+1. **Controller Detection**: Marks all conflicting mappings with `Conflicted` status condition indicating duplicate subjects
+2. **Runtime Resolution**: proxy-agent selects the first created SubjectMapping using deterministic ordering:
+   - Sort by `creationTimestamp` (earliest wins)
+   - Tiebreaker: `metadata.uid` (lexicographically smaller)
+   - Prevents name-based hijacking
    - Admin must delete first mapping to change it
-
-3. **No Validation Webhook Required**: Conflicts detected by controller, visible in status
+3. **No Webhook Required**: Conflicts detected asynchronously via status conditions
 
 ### Security Considerations
 
@@ -670,9 +715,11 @@ When multiple SubjectMappings map the same hub subject:
 
 **Conflict Resolution Security:**
 
-- First-created wins prevents name-based hijacking
+- First-created wins (by `creationTimestamp`, with `UID` tiebreaker) prevents name-based hijacking
+- Deterministic resolution across all proxy-agents ensures consistent behavior
 - Admin must delete existing mapping to override
-- All conflicts visible via `Conflicted` condition
+- All conflicts visible via `Conflicted` condition in status
+- No webhook required - simpler operations, no single point of failure
 
 **Required RBAC:**
 
@@ -706,62 +753,36 @@ verbs: ["create"]
 
 #### Unit Tests
 
-**Alpha/Beta (ServiceAccount subjects):**
-
-- SubjectMapping controller logic (cluster discovery, ManagedServiceAccount creation)
-- ManagedClusterSetBinding watching for ServiceAccount subjects
-- proxy-agent token resolution and caching for ServiceAccount subjects
-- Token cache eviction and expiration
-- Subject extraction from TokenReview response (ServiceAccount username format)
-- Error handling for TokenRequest API failures
-- Conflict detection for duplicate ServiceAccount subjects
-
-**Future (User subjects):**
-
-- Placement and PlacementDecision watching for User subjects
-- proxy-agent token resolution for User subjects
-- Subject extraction from TokenReview response (User username)
+- SubjectMapping controller: cluster discovery, ManagedServiceAccount creation, finalizers
+- Cluster discovery: ManagedClusterSetBinding (ServiceAccount subjects), Placement (User subjects)
+- proxy-agent: token resolution, caching, cache invalidation, TokenReview integration
+- Conflict detection and resolution logic
 
 #### Integration Tests
 
-**Alpha/Beta (ServiceAccount subjects):**
-
-- SubjectMapping creation triggers ManagedServiceAccount creation
-- ManagedClusterSetBinding changes trigger reconciliation
-- Token generation and caching in proxy-agent for ServiceAccount subjects
-- Token injection into requests
-- Cache invalidation on SubjectMapping deletion
-- Multiple SubjectMappings for different ServiceAccount subjects
-- Conflict resolution (first-created wins)
-
-**Future (User subjects):**
-
-- User subject PlacementDecision changes trigger reconciliation
-- Token generation for User subjects
+- SubjectMapping lifecycle: creation, updates, deletion with cleanup
+- ManagedClusterSetBinding/PlacementDecision changes trigger reconciliation
+- Token generation, caching, and injection into requests
+- Conflict resolution: first-created wins with UID tiebreaker, status conditions
 
 #### E2E Tests
 
-**Alpha/Beta (ServiceAccount subjects):**
-
-- End-to-end request flow from hub application (ServiceAccount) to managed cluster
-- Token lifecycle (generation, caching, expiration, refresh)
-- Multiple concurrent requests using cached tokens
-- SubjectMapping for clusters with different cluster-proxy versions
-- ArgoCD integration scenario with ServiceAccount subject (100+ clusters)
-- Token expiration and regeneration during long-running operations
-
-**Future (User subjects):**
-
-- End-to-end request flow from human user (User subject) to managed cluster
-- User accessing clusters via kubectl with User subject mapping
-- Placement predicate changes affecting cluster selection for User subjects
+- Complete request flow: hub application/user → cluster-proxy → managed cluster
+- Token lifecycle: generation, caching, expiration, refresh
+- Multi-cluster scenarios (100+ clusters)
+- ArgoCD integration with ServiceAccount subjects
 
 ### Graduation Criteria
 
 #### Alpha (cluster-proxy v0.x.0) - ServiceAccount subjects only
 
+- [ ] **managed-serviceaccount addon enhancement** to honor `authentication.open-cluster-management.io/token-projection` annotation
+  - [ ] Agent skips token sync when annotation value is `"none"`
+  - [ ] Backward compatible (missing annotation defaults to existing behavior)
+  - [ ] Unit and integration tests in managed-serviceaccount repository
 - [ ] SubjectMapping CRD in cluster-proxy repository (`pkg/apis/authentication/v1alpha1`)
 - [ ] SubjectMapping controller implementation in addon-manager for ServiceAccount subjects
+  - [ ] Creates ManagedServiceAccount with `token-projection: none` annotation
 - [ ] ManagedClusterSetBinding-based cluster discovery
 - [ ] Authentication module in proxy-agent for ServiceAccount token resolution and caching
 - [ ] TokenReview-based hub token validation
@@ -802,17 +823,21 @@ verbs: ["create"]
 
 **Upgrade:**
 - SubjectMapping is additive; existing ManagedServiceAccount workflows are unaffected
-- New CRD installed via operator upgrade
+- **managed-serviceaccount addon** must be upgraded to support `token-projection` annotation
+  - Fully backward compatible: existing ManagedServiceAccounts (without annotation) continue syncing tokens
+  - New ManagedServiceAccounts created by SubjectMapping won't sync tokens
+- New SubjectMapping CRD installed via cluster-proxy operator upgrade
 - SubjectMapping controller deployed alongside existing controllers
 - proxy-agent enhancement is backward compatible (no token mapping if SubjectMapping doesn't exist)
 - Applications can migrate incrementally by creating SubjectMapping resources
 
 **Migration Path:**
-1. Upgrade hub and managed cluster components
-2. Create SubjectMapping for specific applications
-3. Verify application functionality
-4. Gradually migrate other applications
-5. Optionally clean up old ManagedServiceAccount and Secret resources
+1. Upgrade managed-serviceaccount addon (both hub and managed clusters)
+2. Upgrade cluster-proxy (both hub and managed clusters) with SubjectMapping support
+3. Create SubjectMapping for specific applications
+4. Verify application functionality
+5. Gradually migrate other applications
+6. Optionally clean up old ManagedServiceAccount and Secret resources created manually
 
 **Downgrade:**
 - If SubjectMapping is removed, applications fall back to existing authentication
@@ -858,42 +883,15 @@ verbs: ["create"]
 
 ### ManagedServiceAccountTokenRequest API
 
-An alternative approach using an explicit, on-demand token generation API instead of transparent proxy-based authentication:
-
-**Design Overview:**
-
-- Introduce a CREATE-only `ManagedServiceAccountTokenRequest` resource
-- Applications explicitly call the API to request short-lived tokens
-- Aggregated API server handles requests and connects to managed clusters via cluster-proxy
-- Tokens returned in API response (never stored persistently)
-- Spec includes: `targetCluster`, `managedServiceAccount`, `expirationSeconds`, `audiences`, `boundObjectRef`
-- Status returns: ephemeral `token` and `expirationTimestamp`
-
-**Implementation Components:**
-
-- Aggregated API server for `authentication.open-cluster-management.io/v1beta1`
-- TokenRequest REST handler orchestrating the workflow
-- Cluster-proxy client factory for managed cluster connections
-- APIService registration with hub cluster
-
-**Workflow:**
-
-1. Application submits TokenRequest to hub cluster API
-2. Aggregated API server validates permissions and parameters
-3. Server connects to target managed cluster via cluster-proxy
-4. Calls Kubernetes TokenRequest API on managed cluster
-5. Returns short-lived token (hours-to-minutes validity) in response
-6. Application uses token for managed cluster access
+An alternative approach using an explicit API for on-demand token generation: applications call a `ManagedServiceAccountTokenRequest` API to get short-lived tokens. The aggregated API server connects to managed clusters via cluster-proxy and returns ephemeral tokens.
 
 **Rejected because:**
+- Requires application code changes (explicit API calls, token lifecycle management)
+- Not transparent (unlike SubjectMapping which works with existing ServiceAccount tokens)
+- Additional infrastructure (aggregated API server deployment and management)
+- Less integrated with cluster-proxy's existing authentication flow
 
-- **Requires code changes**: Applications must explicitly call the TokenRequest API and handle token lifecycle
-- **Not transparent**: Unlike SubjectMapping which uses existing ServiceAccount tokens transparently
-- **Additional API server**: Requires deploying and managing an aggregated API server
-- **Manual token management**: Applications responsible for token refresh and expiration handling
-- **Less integration**: Doesn't leverage cluster-proxy's existing authentication flow
-
-SubjectMapping provides a superior user experience by eliminating code changes and providing transparent authentication for supported subject types (ServiceAccount, User) through the existing cluster-proxy infrastructure.
+SubjectMapping provides transparent authentication without code changes by leveraging cluster-proxy infrastructure.
 
 ## Infrastructure Needed
 
@@ -911,9 +909,19 @@ The SubjectMapping feature will be implemented in the **cluster-proxy** reposito
 - Follows OCM patterns where components contain both hub and spoke code (e.g., addon-framework, work)
 
 **Dependencies:**
-- Imports `ManagedServiceAccount` API from `open-cluster-management.io/managed-serviceaccount`
-- Imports `Placement` and `PlacementDecision` APIs from `open-cluster-management.io/api`
-- Imports `ManagedClusterSetBinding` API from `open-cluster-management.io/api`
+
+1. **managed-serviceaccount addon** (runtime dependency):
+   - SubjectMapping controller creates ManagedServiceAccount CRs annotated with `authentication.open-cluster-management.io/token-projection: none`
+   - managed-serviceaccount addon agent must be enhanced to honor this annotation:
+     - When annotation is `"none"`: Create ServiceAccount on managed cluster, skip token sync to hub
+     - When annotation is missing or `"secret"`: Create ServiceAccount and sync token to hub (existing behavior)
+   - **No API changes required** - fully backward compatible
+   - Both use cases supported simultaneously (traditional ManagedServiceAccount + SubjectMapping)
+
+2. **API Imports**:
+   - Imports `ManagedServiceAccount` API from `open-cluster-management.io/managed-serviceaccount`
+   - Imports `Placement` and `PlacementDecision` APIs from `open-cluster-management.io/api`
+   - Imports `ManagedClusterSetBinding` API from `open-cluster-management.io/api`
 
 ### Additional Infrastructure
 
