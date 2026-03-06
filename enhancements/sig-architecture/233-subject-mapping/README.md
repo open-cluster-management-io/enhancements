@@ -235,6 +235,14 @@ This approach:
 - Allows managed-serviceaccount addon to support both use cases simultaneously
 - Follows OCM patterns (consistent with ManifestWork, Placement, etc.)
 
+**Cluster Binding/Unbinding**:
+
+The controller continuously reconciles cluster membership via watches on ManagedClusterSetBinding, ManagedCluster labels, and PlacementDecision:
+
+- **Cluster Added**: Creates ManagedServiceAccount in new cluster's namespace, updates status
+- **Cluster Removed**: Deletes corresponding ManagedServiceAccount, updates status
+- **Cleanup**: Orphaned resources removed during reconciliation
+
 **2. Authentication Module (Spoke-side)**
 
 **Location**: `pkg/proxyagent/authentication/`
