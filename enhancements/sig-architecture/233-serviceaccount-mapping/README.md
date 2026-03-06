@@ -15,7 +15,7 @@ This enhancement proposes a SubjectMapping API that enables transparent authenti
 **Implementation Phases:**
 
 - **Alpha/Beta**: ServiceAccount subject mapping (primary implementation)
-- **Future**: User and Group subject mapping (designed but not implemented initially)
+- **Future**: User subject mapping (designed but not implemented initially)
 
 ## Motivation
 
@@ -31,7 +31,7 @@ These challenges become more pronounced as cluster count scales and security req
 
 - Eliminate token storage on the hub cluster by generating tokens on-demand
 - Simplify RBAC requirements for applications and users accessing managed clusters
-- Support mapping for multiple subject types: ServiceAccounts, Users, and Groups
+- Support mapping for multiple subject types: ServiceAccounts and Users
 - Provide transparent authentication requiring zero code changes to existing applications
 - Automatically provision ManagedServiceAccounts for all bound clusters
 - Maintain backward compatibility with existing ManagedServiceAccount resources
@@ -59,7 +59,7 @@ As a security engineer, I want to eliminate long-lived service account tokens st
 
 #### Story 3: Transparent Migration
 
-As an application developer, I want to use ServiceAccountMapping without changing my application code, so that I can improve security without development overhead.
+As an application developer, I want to use SubjectMapping without changing my application code, so that I can improve security without development overhead.
 
 #### Story 4: Dynamic Cluster Binding
 
@@ -68,10 +68,6 @@ As a platform operator, I want service account permissions to automatically exte
 #### Story 5: Human User Access
 
 As a cluster administrator, I want to grant my team members access to managed clusters through the hub without distributing individual kubeconfigs, so that I can centrally manage access and use short-lived credentials.
-
-#### Story 6: Group-Based Access
-
-As a security engineer, I want to map hub groups (like `system:authenticated` or custom LDAP groups) to managed cluster service accounts, so that I can provide consistent access patterns across all managed clusters based on group membership.
 
 ### Implementation Details
 
@@ -101,7 +97,9 @@ spec:
   tokenExpirationSeconds: 3600
 ```
 
-**Example 2: User Mapping with Placement**
+**Example 2: User Mapping with Placement (Future)**
+
+> **Note**: User subject support is planned for future releases. Alpha/Beta releases will focus on ServiceAccount subjects only.
 
 ```yaml
 apiVersion: authentication.open-cluster-management.io/v1alpha1
@@ -137,45 +135,11 @@ spec:
             environment: production
 ```
 
-**Example 3: Group Mapping with Placement (Future)**
-
-> **Note**: Group subject support is planned for future releases. Alpha/Beta releases will focus on ServiceAccount subjects only.
-
-```yaml
-apiVersion: authentication.open-cluster-management.io/v1alpha1
-kind: SubjectMapping
-metadata:
-  name: developers-group-access
-spec:
-  hubSubject:
-    kind: Group  # Future implementation
-    group:
-      name: "system:authenticated:oauth"  # or custom group like "developers"
-
-  managedServiceAccount:
-    name: hub-developers
-
-  # Reference a Placement for cluster selection
-  placementRef:
-    name: all-development-clusters
-
-  tokenExpirationSeconds: 3600
----
-apiVersion: cluster.open-cluster-management.io/v1beta1
-kind: Placement
-metadata:
-  name: all-development-clusters
-spec:
-  clusterSets:
-    - development
-    - staging
-```
-
 The SubjectMapping controller will:
 - Watch SubjectMapping resources
 - Discover target clusters based on subject type:
   - **ServiceAccount subjects**: Via ManagedClusterSetBinding in the ServiceAccount's namespace
-  - **User/Group subjects**: Via referenced Placement and its PlacementDecisions
+  - **User subjects**: Via referenced Placement and its PlacementDecisions
 - Automatically create ManagedServiceAccount resources for each bound cluster
 - Maintain status with creation progress and readiness conditions
 
@@ -195,7 +159,7 @@ Responsibilities:
 - Watch SubjectMapping CRs and referenced Placements/PlacementDecisions
 - Discover target clusters based on subject type:
   - **ServiceAccount**: Via ManagedClusterSetBinding in the ServiceAccount's namespace
-  - **User/Group**: Via referenced Placement's PlacementDecisions
+  - **User**: Via referenced Placement's PlacementDecisions
 - Create and maintain ManagedServiceAccount resources for each bound cluster (imports ManagedServiceAccount API from `managed-serviceaccount` repository)
 - Update status conditions (Ready, PartiallyReady, Failed)
 - Handle cluster binding/unbinding events (ManagedClusterSetBinding changes or PlacementDecision updates)
@@ -212,7 +176,6 @@ The proxy-agent component will be enhanced with an authentication module to:
 - Extract subject information from request authentication:
   - **ServiceAccount**: Extract from `system:serviceaccount:<namespace>:<name>` user
   - **User**: Extract from user identity (e.g., `admin@example.com`)
-  - **Group**: Match against user's group memberships
 - Resolve hub subject to managed cluster service account names via SubjectMapping lookup
 - Request tokens from the local TokenRequest API
 - Cache tokens for performance (keyed by hub subject + managed SA name)
@@ -248,7 +211,7 @@ The following diagram illustrates the complete SubjectMapping flow for transpare
 │                         Hub Cluster                             │
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────┐  │
-│  │ 1. Admin Creates ServiceAccountMapping                   │  │
+│  │ 1. Admin Creates SubjectMapping                          │  │
 │  │    namespace: argocd                                     │  │
 │  │    hubServiceAccount: argocd-hub-sa                      │  │
 │  │    managedServiceAccount: argocd-spoke-sa                │  │
@@ -256,7 +219,7 @@ The following diagram illustrates the complete SubjectMapping flow for transpare
 │                              │                                   │
 │                              ▼                                   │
 │  ┌──────────────────────────────────────────────────────────┐  │
-│  │ 2. Controller watches ServiceAccountMapping              │  │
+│  │ 2. Controller watches SubjectMapping                     │  │
 │  │    - Finds ManagedClusterSetBinding in argocd namespace  │  │
 │  │    - Discovers bound clusters (cluster1...cluster100)    │  │
 │  │    - Creates ManagedServiceAccount for each cluster:     │  │
@@ -285,7 +248,7 @@ The following diagram illustrates the complete SubjectMapping flow for transpare
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────┐  │
 │  │ 5. proxy-agent (spoke-side)                              │  │
-│  │    - Watches ServiceAccountMapping on hub                │  │
+│  │    - Watches SubjectMapping on hub                      │  │
 │  │    - Receives request via tunnel                         │  │
 │  │    - Detects caller: argocd-hub-sa (from request auth)   │  │
 │  │    - Looks up mapping in local cache                     │  │
@@ -331,10 +294,10 @@ This diagram shows how SubjectMapping enables transparent authentication through
 
 1. **Setup Phase:**
    - Admin creates SubjectMapping on the hub
-   - For User/Group subjects: Admin also creates a Placement resource (or references existing one)
+   - For User subjects: Admin also creates a Placement resource (or references existing one)
    - Controller discovers bound clusters:
      - ServiceAccount: via ManagedClusterSetBinding in the ServiceAccount's namespace
-     - User/Group: via Placement's PlacementDecisions
+     - User: via Placement's PlacementDecisions
    - ManagedServiceAccount resources are automatically created for each cluster
 
 2. **Request Phase:**
@@ -391,7 +354,6 @@ To optimize performance and reduce API server load:
 - **Cache Key**: Hash of `{subjectKind}/{subjectIdentifier}/{managedServiceAccountName}`
   - ServiceAccount: `ServiceAccount/{namespace}/{name}/{managedSA}`
   - User: `User/{username}/{managedSA}`
-  - Group: `Group/{groupname}/{managedSA}`
 - **Cache Duration**: 80% of token expiration time (e.g., 48 minutes for 1-hour tokens)
 - **Cache Location**: In-memory on proxy-agent (distributed across spokes)
 - **Cache Invalidation**:
@@ -434,7 +396,7 @@ spec:
 # for all clusters in the "production" clusterset
 ```
 
-**For User/Group Subjects:**
+**For User Subjects:**
 
 Uses Placement API for cluster selection:
 
@@ -491,7 +453,7 @@ This approach leverages OCM's existing Placement API capabilities:
 | cluster-proxy complexity | Medium - adds authentication logic | - Isolated authentication module<br>- Comprehensive unit tests<br>- Feature flag for gradual rollout |
 | Token cache memory usage | Low - distributed across spokes | - 55-minute expiration<br>- LRU eviction if needed<br>- Monitoring and alerts |
 | Token request failures | Medium - temporary access disruption | - Retry with exponential backoff<br>- Fallback to synchronous token request<br>- Error logging and metrics |
-| ServiceAccountMapping misconfiguration | Low - wrong permissions granted | - Validation webhook<br>- Clear documentation<br>- RBAC examples |
+| SubjectMapping misconfiguration | Low - wrong permissions granted | - Validation webhook<br>- Clear documentation<br>- RBAC examples |
 | Backward compatibility | High - breaking existing workflows | - Coexist with ManagedServiceAccount<br>- Clear migration guide<br>- No forced migration |
 
 ## Design Details
@@ -501,7 +463,7 @@ This approach leverages OCM's existing Placement API capabilities:
 **New API Group**: `authentication.open-cluster-management.io/v1alpha1`
 
 ```go
-// SubjectMapping maps hub subjects (ServiceAccounts, Users, Groups) to managed cluster service accounts
+// SubjectMapping maps hub subjects (ServiceAccounts, Users) to managed cluster service accounts
 type SubjectMapping struct {
     metav1.TypeMeta   `json:",inline"`
     metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -513,6 +475,7 @@ type SubjectMapping struct {
 type SubjectMappingSpec struct {
     // HubSubject specifies the subject on the hub cluster to map
     // +required
+    // +kubebuilder:validation:XValidation:rule="self.hubSubject.kind == 'ServiceAccount' ? !has(self.placementRef) : has(self.placementRef)",message="placementRef is required for User subjects and must not be set for ServiceAccount subjects"
     HubSubject HubSubject `json:"hubSubject"`
 
     // ManagedServiceAccount specifies the service account to create on managed clusters
@@ -520,7 +483,7 @@ type SubjectMappingSpec struct {
     ManagedServiceAccount ManagedServiceAccountSpec `json:"managedServiceAccount"`
 
     // PlacementRef references a Placement resource for cluster selection.
-    // Required for User and Group subjects.
+    // Required for User subjects.
     // Ignored for ServiceAccount subjects (uses ManagedClusterSetBinding instead).
     // +optional
     PlacementRef *PlacementRef `json:"placementRef,omitempty"`
@@ -537,9 +500,11 @@ type SubjectMappingSpec struct {
 }
 
 type HubSubject struct {
-    // Kind is the type of subject (ServiceAccount, User, or Group)
+    // Kind is the type of subject (ServiceAccount or User)
     // +required
-    // +kubebuilder:validation:Enum=ServiceAccount;User;Group
+    // +kubebuilder:validation:Enum=ServiceAccount;User
+    // +kubebuilder:validation:XValidation:rule="self.kind == 'ServiceAccount' ? has(self.serviceAccount) : true",message="serviceAccount is required when kind is ServiceAccount"
+    // +kubebuilder:validation:XValidation:rule="self.kind == 'User' ? has(self.user) : true",message="user is required when kind is User"
     Kind string `json:"kind"`
 
     // ServiceAccount specifies a ServiceAccount subject
@@ -551,11 +516,6 @@ type HubSubject struct {
     // Required when Kind is User
     // +optional
     User *UserSubject `json:"user,omitempty"`
-
-    // Group specifies a Group subject
-    // Required when Kind is Group
-    // +optional
-    Group *GroupSubject `json:"group,omitempty"`
 }
 
 type ServiceAccountSubject struct {
@@ -577,13 +537,6 @@ type UserSubject struct {
     Name string `json:"name"`
 }
 
-type GroupSubject struct {
-    // Name is the group name (e.g., "system:authenticated", "developers")
-    // +required
-    // +kubebuilder:validation:MinLength=1
-    Name string `json:"name"`
-}
-
 type PlacementRef struct {
     // Name is the name of the Placement resource
     // +required
@@ -591,10 +544,10 @@ type PlacementRef struct {
     Name string `json:"name"`
 
     // Namespace is the namespace of the Placement resource
-    // Defaults to the same namespace as SubjectMapping (if SubjectMapping were namespaced)
-    // For cluster-scoped SubjectMapping, this must be specified
-    // +optional
-    Namespace string `json:"namespace,omitempty"`
+    // Required since SubjectMapping is cluster-scoped
+    // +required
+    // +kubebuilder:validation:MinLength=1
+    Namespace string `json:"namespace"`
 }
 
 type ManagedServiceAccountSpec struct {
@@ -848,22 +801,22 @@ verbs: ["create"]
 ### Upgrade / Downgrade Strategy
 
 **Upgrade:**
-- ServiceAccountMapping is additive; existing ManagedServiceAccount workflows are unaffected
+- SubjectMapping is additive; existing ManagedServiceAccount workflows are unaffected
 - New CRD installed via operator upgrade
-- ServiceAccountMapping controller deployed alongside existing controllers
-- proxy-agent enhancement is backward compatible (no token mapping if ServiceAccountMapping doesn't exist)
-- Applications can migrate incrementally by creating ServiceAccountMapping resources
+- SubjectMapping controller deployed alongside existing controllers
+- proxy-agent enhancement is backward compatible (no token mapping if SubjectMapping doesn't exist)
+- Applications can migrate incrementally by creating SubjectMapping resources
 
 **Migration Path:**
 1. Upgrade hub and managed cluster components
-2. Create ServiceAccountMapping for specific applications
+2. Create SubjectMapping for specific applications
 3. Verify application functionality
 4. Gradually migrate other applications
 5. Optionally clean up old ManagedServiceAccount and Secret resources
 
 **Downgrade:**
-- If ServiceAccountMapping is removed, applications fall back to existing authentication
-- ManagedServiceAccount resources created by ServiceAccountMapping controller persist
+- If SubjectMapping is removed, applications fall back to existing authentication
+- ManagedServiceAccount resources created by SubjectMapping controller persist
 - Applications need to manage tokens directly again (previous behavior)
 - No data loss; graceful degradation
 
@@ -871,22 +824,22 @@ verbs: ["create"]
 
 **Hub-Spoke Version Compatibility:**
 
-| Hub Version | Spoke Version | ServiceAccountMapping Support |
-|-------------|---------------|------------------------------|
-| v0.11.0+    | v0.11.0+      | Full support                 |
+| Hub Version | Spoke Version | SubjectMapping Support |
+|-------------|---------------|------------------------|
+| v0.11.0+    | v0.11.0+      | Full support           |
 | v0.11.0+    | v0.10.x       | No support (graceful degradation) |
 | v0.10.x     | v0.11.0+      | No impact (feature not enabled) |
 
 **Behavior with Version Skew:**
-- If proxy-agent doesn't support ServiceAccountMapping, requests fail with clear error message
-- ServiceAccountMapping controller sets condition to indicate incompatible spoke versions
+- If proxy-agent doesn't support SubjectMapping, requests fail with clear error message
+- SubjectMapping controller sets condition to indicate incompatible spoke versions
 - Applications must ensure all target clusters have compatible proxy-agent versions
-- Recommendation: Upgrade spokes before enabling ServiceAccountMapping
+- Recommendation: Upgrade spokes before enabling SubjectMapping
 
 **Kubernetes Version Requirements:**
 - Hub: Kubernetes 1.20+ (stable TokenRequest API)
 - Managed Clusters: Kubernetes 1.20+ (stable TokenRequest API)
-- cluster-proxy: v0.11.0+ (ServiceAccountMapping support)
+- cluster-proxy: v0.11.0+ (SubjectMapping support)
 
 ## Implementation History
 
@@ -940,7 +893,7 @@ An alternative approach using an explicit, on-demand token generation API instea
 - **Manual token management**: Applications responsible for token refresh and expiration handling
 - **Less integration**: Doesn't leverage cluster-proxy's existing authentication flow
 
-SubjectMapping provides a superior user experience by eliminating code changes and providing transparent authentication for all subject types (ServiceAccount, User, Group) through the existing cluster-proxy infrastructure.
+SubjectMapping provides a superior user experience by eliminating code changes and providing transparent authentication for supported subject types (ServiceAccount, User) through the existing cluster-proxy infrastructure.
 
 ## Infrastructure Needed
 
