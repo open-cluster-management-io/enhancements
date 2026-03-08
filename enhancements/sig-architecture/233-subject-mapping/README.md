@@ -93,9 +93,7 @@ The following diagram illustrates the complete end-to-end flow:
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────┐  │
 │  │ 1. Admin Creates SubjectMapping                          │  │
-│  │    namespace: argocd                                     │  │
-│  │    hubServiceAccount: argocd-hub-sa                      │  │
-│  │    managedServiceAccount: argocd-spoke-sa                │  │
+│  │    argocd-hub-sa → argocd-sa-for-hub                     │  │
 │  └──────────────────────────────────────────────────────────┘  │
 │                              │                                   │
 │                              ▼                                   │
@@ -104,8 +102,8 @@ The following diagram illustrates the complete end-to-end flow:
 │  │    - Finds ManagedClusterSetBinding in argocd namespace  │  │
 │  │    - Discovers bound clusters (cluster1...cluster100)    │  │
 │  │    - Creates ManagedServiceAccount in each cluster NS:   │  │
-│  │      * cluster1/argocd-spoke-sa (MSA in cluster1 NS)    │  │
-│  │      * cluster2/argocd-spoke-sa (MSA in cluster2 NS)    │  │
+│  │      * cluster1/argocd-sa-for-hub (MSA in cluster1 NS)   │  │
+│  │      * cluster2/argocd-sa-for-hub (MSA in cluster2 NS)   │  │
 │  │      * ...                                                │  │
 │  └──────────────────────────────────────────────────────────┘  │
 │                                                                  │
@@ -133,11 +131,12 @@ The following diagram illustrates the complete end-to-end flow:
 │  │    - Receives request via tunnel                         │  │
 │  │    - Detects caller: argocd-hub-sa (from request auth)   │  │
 │  │    - Looks up mapping in local cache                     │  │
-│  │      argocd/argocd-hub-sa → argocd-spoke-sa             │  │
+│  │      argocd/argocd-hub-sa → argocd-sa-for-hub            │  │
 │  │    - Checks token cache (miss)                           │  │
 │  │    - Calls LOCAL TokenRequest API                        │  │
-│  │      POST /api/v1/namespaces/argocd/serviceaccounts/     │  │
-│  │           argocd-spoke-sa/token                          │  │
+│  │      POST /api/v1/namespaces/                            │  │
+│  │           open-cluster-management-agent-addon/           │  │
+│  │           serviceaccounts/argocd-sa-for-hub/token        │  │
 │  │    - Caches token (55 minutes)                           │  │
 │  │    - Injects token into Authorization header             │  │
 │  │    - Forwards to local API server                        │  │
@@ -146,7 +145,7 @@ The following diagram illustrates the complete end-to-end flow:
 │                     ▼                                            │
 │  ┌──────────────────────────────────────────────────────────┐  │
 │  │ 6. Kubernetes API Server                                 │  │
-│  │    - Receives request with argocd-spoke-sa token         │  │
+│  │    - Receives request with argocd-sa-for-hub token       │  │
 │  │    - Processes request                                   │  │
 │  │    - Returns response                                    │  │
 │  └──────────────────┬───────────────────────────────────────┘  │
@@ -189,12 +188,10 @@ spec:
       namespace: argocd
       name: argocd-application-controller
 
-  # Service account name to create on managed clusters
+  # Service account to create on managed clusters
   managedServiceAccount:
-    name: hub-argocd-sa
-
-  # Token expiration duration (default: 3600 seconds)
-  tokenExpirationSeconds: 3600
+    name: argocd-sa-for-hub
+    tokenExpirationSeconds: 3600  # Token expiration (default: 3600 seconds)
 ```
 
 **ManagedServiceAccount Creation**:
@@ -203,9 +200,9 @@ The SubjectMapping controller creates ManagedServiceAccount resources in **clust
 
 For this example with 3 bound clusters (via ManagedClusterSetBinding in `argocd` namespace):
 
-- ManagedServiceAccount `cluster1/hub-argocd-sa` → creates ServiceAccount on cluster1
-- ManagedServiceAccount `cluster2/hub-argocd-sa` → creates ServiceAccount on cluster2
-- ManagedServiceAccount `cluster3/hub-argocd-sa` → creates ServiceAccount on cluster3
+- ManagedServiceAccount `cluster1/argocd-sa-for-hub` → creates ServiceAccount `argocd-sa-for-hub` in `open-cluster-management-agent-addon` namespace on cluster1
+- ManagedServiceAccount `cluster2/argocd-sa-for-hub` → creates ServiceAccount `argocd-sa-for-hub` in `open-cluster-management-agent-addon` namespace on cluster2
+- ManagedServiceAccount `cluster3/argocd-sa-for-hub` → creates ServiceAccount `argocd-sa-for-hub` in `open-cluster-management-agent-addon` namespace on cluster3
 
 **Example 2: User Mapping with Placement (Future)**
 
@@ -223,13 +220,12 @@ spec:
       name: "admin@example.com"
 
   managedServiceAccount:
-    name: hub-admin-user
+    name: admin-sa-for-hub
+    tokenExpirationSeconds: 3600
 
   # Reference a Placement for cluster selection
   placementRef:
     name: production-clusters
-
-  tokenExpirationSeconds: 3600
 ---
 apiVersion: cluster.open-cluster-management.io/v1beta1
 kind: Placement
@@ -594,16 +590,6 @@ type SubjectMappingSpec struct {
     // Ignored for ServiceAccount subjects (uses ManagedClusterSetBinding instead).
     // +optional
     PlacementRef *PlacementRef `json:"placementRef,omitempty"`
-
-    // TokenExpirationSeconds represents the seconds of a token to expire.
-    // Default: 3600 (1 hour)
-    // Minimum: 600 (10 minutes)
-    // Maximum: 86400 (24 hours)
-    // +optional
-    // +kubebuilder:default=3600
-    // +kubebuilder:validation:Minimum=600
-    // +kubebuilder:validation:Maximum=86400
-    TokenExpirationSeconds int64 `json:"tokenExpirationSeconds,omitempty"`
 }
 
 // +kubebuilder:validation:XValidation:rule="self.kind == 'ServiceAccount' ? has(self.serviceAccount) : true",message="serviceAccount is required when kind is ServiceAccount"
@@ -662,6 +648,16 @@ type ManagedServiceAccountSpec struct {
     // +required
     // +kubebuilder:validation:MinLength=1
     Name string `json:"name"`
+
+    // TokenExpirationSeconds represents the seconds of a token to expire.
+    // Default: 3600 (1 hour)
+    // Minimum: 600 (10 minutes)
+    // Maximum: 86400 (24 hours)
+    // +optional
+    // +kubebuilder:default=3600
+    // +kubebuilder:validation:Minimum=600
+    // +kubebuilder:validation:Maximum=86400
+    TokenExpirationSeconds int64 `json:"tokenExpirationSeconds,omitempty"`
 }
 
 type SubjectMappingStatus struct {
