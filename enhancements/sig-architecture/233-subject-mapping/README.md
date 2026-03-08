@@ -41,7 +41,6 @@ These challenges become more pronounced as cluster count scales and security req
 
 - Replace ManagedServiceAccount API (both will coexist)
 - Support authentication methods other than service account tokens on managed clusters
-- Provide cross-namespace ServiceAccount mapping on the hub
 - Support managed clusters not using cluster-proxy
 - Support mapping to Users or Groups on managed clusters (only ServiceAccounts as targets)
 
@@ -69,9 +68,110 @@ As a platform operator, I want service account permissions to automatically exte
 
 As a cluster administrator, I want to grant my team members access to managed clusters through the hub without distributing individual kubeconfigs, so that I can centrally manage access and use short-lived credentials.
 
-### Implementation Details
+### Overview
 
-#### SubjectMapping CRD
+SubjectMapping enables transparent authentication by mapping hub subjects (ServiceAccounts or Users) to managed cluster service accounts. The feature eliminates the need for applications to manage tokens directly - tokens are generated on-demand by the proxy-agent on managed clusters and cached for performance.
+
+**Key Components:**
+- **SubjectMapping Controller** (hub): Creates ManagedServiceAccount resources for bound clusters
+- **proxy-agent** (spoke): Intercepts requests, validates hub tokens, generates managed cluster tokens, and injects them transparently
+
+**How It Works:**
+
+1. Administrator creates a SubjectMapping mapping a hub ServiceAccount to a managed cluster ServiceAccount name
+2. Controller discovers bound clusters (via ManagedClusterSetBinding or Placement) and creates ManagedServiceAccount resources
+3. When the hub ServiceAccount makes a request through cluster-proxy, the proxy-agent validates the token and generates a short-lived token for the mapped ServiceAccount on the managed cluster
+4. Token is cached and injected transparently - the application requires zero code changes
+
+#### Architecture Flow
+
+The following diagram illustrates the complete end-to-end flow:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         Hub Cluster                             │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ 1. Admin Creates SubjectMapping                          │  │
+│  │    namespace: argocd                                     │  │
+│  │    hubServiceAccount: argocd-hub-sa                      │  │
+│  │    managedServiceAccount: argocd-spoke-sa                │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                              │                                   │
+│                              ▼                                   │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ 2. Controller watches SubjectMapping                     │  │
+│  │    - Finds ManagedClusterSetBinding in argocd namespace  │  │
+│  │    - Discovers bound clusters (cluster1...cluster100)    │  │
+│  │    - Creates ManagedServiceAccount in each cluster NS:   │  │
+│  │      * cluster1/argocd-spoke-sa (MSA in cluster1 NS)    │  │
+│  │      * cluster2/argocd-spoke-sa (MSA in cluster2 NS)    │  │
+│  │      * ...                                                │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ 3. ArgoCD App (using argocd-hub-sa)                      │  │
+│  │    Makes request via cluster-proxy user-server           │  │
+│  └──────────────────┬───────────────────────────────────────┘  │
+│                     │                                            │
+│                     ▼                                            │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ 4. cluster-proxy user-server (HTTP proxy)                │  │
+│  │    - Receives HTTP request from ArgoCD                   │  │
+│  │    - Forwards through tunnel to proxy-agent              │  │
+│  └──────────────────┬───────────────────────────────────────┘  │
+│                     │                                            │
+└─────────────────────┼────────────────────────────────────────────┘
+                      │ cluster-proxy gRPC tunnel
+                      ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    Managed Cluster (cluster1)                   │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ 5. proxy-agent (spoke-side)                              │  │
+│  │    - Watches SubjectMapping on hub                      │  │
+│  │    - Receives request via tunnel                         │  │
+│  │    - Detects caller: argocd-hub-sa (from request auth)   │  │
+│  │    - Looks up mapping in local cache                     │  │
+│  │      argocd/argocd-hub-sa → argocd-spoke-sa             │  │
+│  │    - Checks token cache (miss)                           │  │
+│  │    - Calls LOCAL TokenRequest API                        │  │
+│  │      POST /api/v1/namespaces/argocd/serviceaccounts/     │  │
+│  │           argocd-spoke-sa/token                          │  │
+│  │    - Caches token (55 minutes)                           │  │
+│  │    - Injects token into Authorization header             │  │
+│  │    - Forwards to local API server                        │  │
+│  └──────────────────┬───────────────────────────────────────┘  │
+│                     │                                            │
+│                     ▼                                            │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ 6. Kubernetes API Server                                 │  │
+│  │    - Receives request with argocd-spoke-sa token         │  │
+│  │    - Processes request                                   │  │
+│  │    - Returns response                                    │  │
+│  └──────────────────┬───────────────────────────────────────┘  │
+│                     │                                            │
+│                     ▼                                            │
+│                  Response                                        │
+│                     │                                            │
+└─────────────────────┼────────────────────────────────────────────┘
+                      │ back through tunnel
+                      ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                         Hub Cluster                             │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ 7. ArgoCD App                                            │  │
+│  │    - Receives response from cluster1                     │  │
+│  │    - No token management code needed!                    │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+This diagram shows how SubjectMapping enables transparent authentication through automatic token resolution and caching within the cluster-proxy architecture.
+
+### API Design
 
 A new cluster-scoped custom resource that specifies the mapping configuration:
 
@@ -153,7 +253,11 @@ The SubjectMapping controller will:
 - Automatically create ManagedServiceAccount resources in each cluster's namespace (e.g., `cluster1/hub-argocd-sa`, `cluster2/hub-argocd-sa`)
 - Maintain status with creation progress and readiness conditions
 
-#### Architecture Components
+See [API Specification](#api-specification) section below for complete type definitions.
+
+### Architecture and Components
+
+#### Component Overview
 
 The SubjectMapping feature will be implemented in the **cluster-proxy** repository as it is fundamentally a transparent authentication feature built on top of cluster-proxy's existing proxy infrastructure.
 
@@ -285,93 +389,7 @@ cluster-proxy/
     └── addon-agent/main.go               # Integrate authentication module
 ```
 
-#### High-Level Architecture
-
-The following diagram illustrates the complete SubjectMapping flow for transparent authentication:
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Hub Cluster                             │
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │ 1. Admin Creates SubjectMapping                          │  │
-│  │    namespace: argocd                                     │  │
-│  │    hubServiceAccount: argocd-hub-sa                      │  │
-│  │    managedServiceAccount: argocd-spoke-sa                │  │
-│  └──────────────────────────────────────────────────────────┘  │
-│                              │                                   │
-│                              ▼                                   │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │ 2. Controller watches SubjectMapping                     │  │
-│  │    - Finds ManagedClusterSetBinding in argocd namespace  │  │
-│  │    - Discovers bound clusters (cluster1...cluster100)    │  │
-│  │    - Creates ManagedServiceAccount in each cluster NS:   │  │
-│  │      * cluster1/argocd-spoke-sa (MSA in cluster1 NS)    │  │
-│  │      * cluster2/argocd-spoke-sa (MSA in cluster2 NS)    │  │
-│  │      * ...                                                │  │
-│  └──────────────────────────────────────────────────────────┘  │
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │ 3. ArgoCD App (using argocd-hub-sa)                      │  │
-│  │    Makes request via cluster-proxy user-server           │  │
-│  └──────────────────┬───────────────────────────────────────┘  │
-│                     │                                            │
-│                     ▼                                            │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │ 4. cluster-proxy user-server (HTTP proxy)                │  │
-│  │    - Receives HTTP request from ArgoCD                   │  │
-│  │    - Forwards through tunnel to proxy-agent              │  │
-│  └──────────────────┬───────────────────────────────────────┘  │
-│                     │                                            │
-└─────────────────────┼────────────────────────────────────────────┘
-                      │ cluster-proxy gRPC tunnel
-                      ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Managed Cluster (cluster1)                   │
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │ 5. proxy-agent (spoke-side)                              │  │
-│  │    - Watches SubjectMapping on hub                      │  │
-│  │    - Receives request via tunnel                         │  │
-│  │    - Detects caller: argocd-hub-sa (from request auth)   │  │
-│  │    - Looks up mapping in local cache                     │  │
-│  │      argocd/argocd-hub-sa → argocd-spoke-sa             │  │
-│  │    - Checks token cache (miss)                           │  │
-│  │    - Calls LOCAL TokenRequest API                        │  │
-│  │      POST /api/v1/namespaces/argocd/serviceaccounts/     │  │
-│  │           argocd-spoke-sa/token                          │  │
-│  │    - Caches token (55 minutes)                           │  │
-│  │    - Injects token into Authorization header             │  │
-│  │    - Forwards to local API server                        │  │
-│  └──────────────────┬───────────────────────────────────────┘  │
-│                     │                                            │
-│                     ▼                                            │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │ 6. Kubernetes API Server                                 │  │
-│  │    - Receives request with argocd-spoke-sa token         │  │
-│  │    - Processes request                                   │  │
-│  │    - Returns response                                    │  │
-│  └──────────────────┬───────────────────────────────────────┘  │
-│                     │                                            │
-│                     ▼                                            │
-│                  Response                                        │
-│                     │                                            │
-└─────────────────────┼────────────────────────────────────────────┘
-                      │ back through tunnel
-                      ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                         Hub Cluster                             │
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │ 7. ArgoCD App                                            │  │
-│  │    - Receives response from cluster1                     │  │
-│  │    - No token management code needed!                    │  │
-│  └──────────────────────────────────────────────────────────┘  │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-This diagram shows how SubjectMapping enables transparent authentication through automatic token resolution and caching within the cluster-proxy architecture.
+### Implementation Details
 
 #### Authentication Flow
 
@@ -547,9 +565,7 @@ This approach leverages OCM's existing Placement API capabilities:
 | SubjectMapping misconfiguration | Low - wrong permissions granted | - Validation webhook<br>- Clear documentation<br>- RBAC examples |
 | Backward compatibility | High - breaking existing workflows | - Coexist with ManagedServiceAccount<br>- Clear migration guide<br>- No forced migration |
 
-## Design Details
-
-### API Changes
+### API Specification
 
 **New API Group**: `authentication.open-cluster-management.io/v1alpha1`
 
@@ -757,32 +773,32 @@ resources: ["serviceaccounts/token"]
 verbs: ["create"]
 ```
 
-### Test Plan
+## Test Plan
 
-#### Unit Tests
+### Unit Tests
 
 - SubjectMapping controller: cluster discovery, ManagedServiceAccount creation, finalizers
 - Cluster discovery: ManagedClusterSetBinding (ServiceAccount subjects), Placement (User subjects)
 - proxy-agent: token resolution, caching, cache invalidation, TokenReview integration
 - Conflict detection and resolution logic
 
-#### Integration Tests
+### Integration Tests
 
 - SubjectMapping lifecycle: creation, updates, deletion with cleanup
 - ManagedClusterSetBinding/PlacementDecision changes trigger reconciliation
 - Token generation, caching, and injection into requests
 - Conflict resolution: first-created wins with UID tiebreaker, status conditions
 
-#### E2E Tests
+### E2E Tests
 
 - Complete request flow: hub application/user → cluster-proxy → managed cluster
 - Token lifecycle: generation, caching, expiration, refresh
 - Multi-cluster scenarios (100+ clusters)
 - ArgoCD integration with ServiceAccount subjects
 
-### Graduation Criteria
+## Graduation Criteria
 
-#### Alpha (cluster-proxy v0.x.0) - ServiceAccount subjects only
+### Alpha (cluster-proxy v0.x.0) - ServiceAccount subjects only
 
 - [ ] **managed-serviceaccount addon enhancement** to honor `authentication.open-cluster-management.io/token-projection` annotation
   - [ ] Agent skips token sync when annotation value is `"none"`
@@ -800,7 +816,7 @@ verbs: ["create"]
 - [ ] Basic documentation and examples
 - [ ] Feature flag for gradual rollout (optional, can be enabled by default in alpha)
 
-#### Beta (cluster-proxy v0.x+1.0) - ServiceAccount subjects only
+### Beta (cluster-proxy v0.x+1.0) - ServiceAccount subjects only
 
 - [ ] E2E tests covering all ServiceAccount scenarios
 - [ ] Performance testing with 100+ clusters
@@ -811,7 +827,7 @@ verbs: ["create"]
 - [ ] Conflict resolution testing and documentation
 - [ ] ArgoCD integration example and guide
 
-#### GA (cluster-proxy v1.x.0) - ServiceAccount subjects
+### GA (cluster-proxy v1.x.0) - ServiceAccount subjects
 
 - [ ] Used in production by at least 2 organizations
 - [ ] No critical bugs in 2+ beta release cycles
@@ -820,14 +836,14 @@ verbs: ["create"]
 - [ ] Performance benchmarks published (compared to ManagedServiceAccount)
 - [ ] Stable API (move from v1alpha1 to v1)
 
-#### Future Enhancements - User subjects
+### Future Enhancements - User subjects
 
 - [ ] Placement-based cluster discovery for User subjects
 - [ ] User subject matching from TokenReview username
 - [ ] E2E tests for User subject mapping
 - [ ] kubectl integration examples
 
-### Upgrade / Downgrade Strategy
+## Upgrade / Downgrade Strategy
 
 **Upgrade:**
 - SubjectMapping is additive; existing ManagedServiceAccount workflows are unaffected
@@ -853,7 +869,7 @@ verbs: ["create"]
 - Applications need to manage tokens directly again (previous behavior)
 - No data loss; graceful degradation
 
-### Version Skew Strategy
+## Version Skew Strategy
 
 **Hub-Spoke Version Compatibility:**
 
