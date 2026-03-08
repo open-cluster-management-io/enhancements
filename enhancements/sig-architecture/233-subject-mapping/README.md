@@ -38,6 +38,7 @@ These challenges become more pronounced as cluster count scales and security req
 - Support authentication methods other than service account tokens on managed clusters
 - Support managed clusters not using cluster-proxy
 - Support mapping to Users or Groups on managed clusters (only ServiceAccounts as targets)
+- Support x509 client certificate authentication for User subjects (Alpha supports bearer tokens only: ServiceAccount tokens, OIDC tokens)
 
 ## Proposal
 
@@ -73,9 +74,9 @@ SubjectMapping enables transparent authentication by mapping hub subjects (Servi
 
 **How It Works:**
 
-1. Administrator creates a SubjectMapping mapping a hub ServiceAccount to a managed cluster ServiceAccount name
-2. Controller discovers bound clusters (via ManagedClusterSetBinding or Placement) and creates ManagedServiceAccount resources
-3. When the hub ServiceAccount makes a request through cluster-proxy, the proxy-agent validates the token and generates a short-lived token for the mapped ServiceAccount on the managed cluster
+1. Administrator creates a SubjectMapping mapping a hub subject (ServiceAccount or User) to a managed cluster ServiceAccount name
+2. Controller discovers bound clusters (via InferFromServiceAccount using ManagedClusterSetBinding, or explicit ClusterList) and creates ManagedServiceAccount resources
+3. When the hub subject makes a request through cluster-proxy, the proxy-agent validates the token and generates a short-lived token for the mapped ServiceAccount on the managed cluster
 4. Token is cached and injected transparently - the application requires zero code changes
 
 #### Architecture Flow
@@ -169,39 +170,32 @@ This diagram shows how SubjectMapping enables transparent authentication through
 
 A new cluster-scoped custom resource that specifies the mapping configuration:
 
-**Example 1: ServiceAccount Mapping**
+**Example 1: ServiceAccount Mapping (Automatic Discovery)**
 ```yaml
 apiVersion: authentication.open-cluster-management.io/v1alpha1
 kind: SubjectMapping
 metadata:
   name: argocd-cluster-access
 spec:
-  # Hub subject to map
   hubSubject:
     kind: ServiceAccount
     serviceAccount:
       namespace: argocd
-      name: argocd-application-controller
+      name: argocd-hub-sa
 
-  # Service account to create on managed clusters
   managedServiceAccount:
     name: argocd-sa-for-hub
-    tokenExpirationSeconds: 3600  # Token expiration (default: 3600 seconds)
+    tokenExpirationSeconds: 3600
+
+  # Optional: defaults to InferFromServiceAccount for ServiceAccount subjects
+  # clusters:
+  #   type: InferFromServiceAccount
+  #   # Discovers clusters via ManagedClusterSetBindings in the 'argocd' namespace
 ```
 
-**ManagedServiceAccount Creation**:
+For ServiceAccount subjects, the `clusters` field is **optional** and defaults to `InferFromServiceAccount`, which discovers clusters via ManagedClusterSetBindings in the ServiceAccount's namespace. For User subjects, the `clusters` field is **required** and must use `ClusterList` type.
 
-The SubjectMapping controller creates ManagedServiceAccount resources in **cluster namespaces** (e.g., `cluster1`, `cluster2`). This follows OCM's standard pattern where cluster-specific resources live in cluster namespaces.
-
-For this example with 2 bound clusters (via ManagedClusterSetBinding in `argocd` namespace):
-
-- ManagedServiceAccount `cluster1/argocd-sa-for-hub` → creates ServiceAccount `argocd-sa-for-hub` in `open-cluster-management-agent-addon` namespace on cluster1
-- ManagedServiceAccount `cluster2/argocd-sa-for-hub` → creates ServiceAccount `argocd-sa-for-hub` in `open-cluster-management-agent-addon` namespace on cluster2
-
-**Example 2: User Mapping with Placement (Future)**
-
-> **Note**: User subject support is planned for future releases. Alpha/Beta releases will focus on ServiceAccount subjects only.
-
+**Example 2: User Mapping (Explicit Cluster List)**
 ```yaml
 apiVersion: authentication.open-cluster-management.io/v1alpha1
 kind: SubjectMapping
@@ -217,33 +211,17 @@ spec:
     name: admin-sa-for-hub
     tokenExpirationSeconds: 3600
 
-  # Reference a Placement for cluster selection
-  placementRef:
-    name: production-clusters
----
-apiVersion: cluster.open-cluster-management.io/v1beta1
-kind: Placement
-metadata:
-  name: production-clusters
-spec:
-  clusterSets:
-    - production
-  predicates:
-    - requiredClusterSelector:
-        labelSelector:
-          matchLabels:
-            environment: production
+  # User subjects must specify clusters explicitly
+  clusters:
+    type: ClusterList
+    clusterList:
+      clusters:
+        - cluster1
+        - cluster2
+        - cluster3
 ```
 
-The SubjectMapping controller will:
-- Watch SubjectMapping resources
-- Discover target clusters based on subject type:
-  - **ServiceAccount subjects**: Via ManagedClusterSetBinding in the ServiceAccount's namespace
-  - **User subjects**: Via referenced Placement and its PlacementDecisions
-- Automatically create ManagedServiceAccount resources in each cluster's namespace (e.g., `cluster1/hub-argocd-sa`, `cluster2/hub-argocd-sa`)
-- Maintain status with creation progress and readiness conditions
-
-See [API Specification](#api-specification) section below for complete type definitions.
+The controller watches SubjectMappings, discovers clusters via the `clusters` field, and creates ManagedServiceAccount resources in each cluster's namespace. See [API Specification](#api-specification) for type definitions.
 
 ### Architecture and Components
 
@@ -258,10 +236,10 @@ The SubjectMapping feature will be implemented in the **cluster-proxy** reposito
 **Deployment**: Runs in the cluster-proxy addon-manager on the hub cluster
 
 **Responsibilities**:
-- Watch SubjectMapping CRs and referenced Placements/PlacementDecisions
-- Discover target clusters based on subject type (ServiceAccount or User)
+- Watch SubjectMapping CRs, ManagedClusterSetBindings, and ManagedClusters
+- Discover target clusters based on clusters field (InferFromServiceAccount or ClusterList)
 - Create and maintain ManagedServiceAccount resources for each bound cluster
-- Update SubjectMapping status conditions (Ready, PartiallyReady, Failed)
+- Update SubjectMapping status conditions (Ready, PartiallyReady, Failed, Conflicted)
 - Handle cluster binding/unbinding lifecycle
 
 #### 2. Authentication Module (Spoke-side)
@@ -366,84 +344,16 @@ This approach follows OCM patterns (consistent with ManifestWork, Placement, etc
 
 #### Cluster Discovery
 
-The controller determines which clusters should receive the mapped service account based on subject type:
+The controller discovers target clusters based on the `clusters` field:
 
-**For ServiceAccount Subjects:**
+- **InferFromServiceAccount** (default for ServiceAccount subjects): Lists ManagedClusterSetBindings in ServiceAccount's namespace, discovers all clusters in bound cluster sets
+- **ClusterList** (required for User subjects): Uses explicitly listed cluster names
 
-Uses ManagedClusterSetBinding in the ServiceAccount's namespace:
-
-1. List all ManagedClusterSetBindings in the ServiceAccount's namespace
-2. Extract ManagedClusterSet names from bindings
-3. List all ManagedClusters with matching `cluster.open-cluster-management.io/clusterset` labels
-4. Create/update ManagedServiceAccount for each discovered cluster
-
-Example:
-
-```yaml
-# In argocd namespace
-apiVersion: cluster.open-cluster-management.io/v1beta2
-kind: ManagedClusterSetBinding
-metadata:
-  name: production-clusters
-  namespace: argocd
-spec:
-  clusterSet: production
----
-# SubjectMapping will create ManagedServiceAccounts
-# for all clusters in the "production" clusterset
-```
-
-**For User Subjects:**
-
-Uses Placement API for cluster selection:
-
-```yaml
-apiVersion: authentication.open-cluster-management.io/v1alpha1
-kind: SubjectMapping
-metadata:
-  name: admin-user-access
-spec:
-  hubSubject:
-    kind: User
-    user:
-      name: "admin@example.com"
-
-  managedServiceAccount:
-    name: hub-admin-user
-
-  # Reference a Placement resource
-  placementRef:
-    name: admin-clusters
----
-apiVersion: cluster.open-cluster-management.io/v1beta1
-kind: Placement
-metadata:
-  name: admin-clusters
-spec:
-  clusterSets:
-    - production
-    - staging
-  predicates:
-    - requiredClusterSelector:
-        labelSelector:
-          matchExpressions:
-            - key: environment
-              operator: In
-              values: [production, staging]
-```
-
-The SubjectMapping controller:
-
-1. Watches the referenced Placement resource
-2. Reads PlacementDecisions created by the Placement controller
-3. Extracts the list of selected clusters from PlacementDecisions
-4. Creates/updates ManagedServiceAccount for each selected cluster
-
-This approach leverages OCM's existing Placement API capabilities (sophisticated cluster selection, dynamic updates, consistency with Policy and ManifestWork).
+For each discovered cluster, the controller creates/updates a ManagedServiceAccount in that cluster's namespace.
 
 #### Cluster Binding/Unbinding
 
-The controller continuously reconciles cluster membership via watches on ManagedClusterSetBinding, ManagedCluster labels, and PlacementDecision:
+The controller continuously reconciles cluster membership via watches on ManagedClusterSetBinding and ManagedCluster resources:
 
 - **Cluster Added**: Creates ManagedServiceAccount in new cluster's namespace, updates status
 - **Cluster Removed**: Deletes corresponding ManagedServiceAccount, updates status
@@ -452,28 +362,30 @@ The controller continuously reconciles cluster membership via watches on Managed
 #### Authentication Flow
 
 1. **Setup Phase:**
-   - Admin creates SubjectMapping on the hub
-   - For User subjects: Admin also creates a Placement resource (or references existing one)
-   - Controller discovers bound clusters via cluster discovery mechanism
+   - Admin creates SubjectMapping on the hub with appropriate `clusters` configuration
+   - Controller discovers bound clusters based on `clusters` field
    - ManagedServiceAccount resources are automatically created for each cluster
 
 2. **Request Phase:**
-   - Hub application (e.g., ArgoCD) makes request to managed cluster via cluster-proxy
-   - Request includes hub ServiceAccount token in Authorization header
+   - Hub subject (application or user) makes request to managed cluster via cluster-proxy
+   - Request includes bearer token in Authorization header
+     - ServiceAccount subjects: ServiceAccount token
+     - User subjects: OIDC token or other bearer token (x509 client certs not supported in Alpha)
    - cluster-proxy user-server forwards request through gRPC tunnel to proxy-agent
    - proxy-agent on managed cluster receives the request
 
 3. **Token Validation and Resolution Phase:**
-   - proxy-agent extracts token from Authorization header
+   - proxy-agent extracts bearer token from Authorization header
    - proxy-agent calls **hub apiserver TokenReview API** to validate the token:
 
      ```go
      POST /apis/authentication.k8s.io/v1/tokenreviews
-     Spec: {Token: "<hub-token>"}
+     Spec: {Token: "<bearer-token>"}
      ```
 
-   - Hub apiserver validates token and returns user identity:
+   - Hub apiserver validates token and returns user identity
 
+   - **For ServiceAccount subjects:**
      ```go
      Status: {
        Authenticated: true,
@@ -484,9 +396,21 @@ The controller continuously reconciles cluster membership via watches on Managed
      }
      ```
 
+   - **For User subjects** (example with OIDC token):
+     ```go
+     Status: {
+       Authenticated: true,
+       User: {
+         Username: "admin@example.com",
+         Groups: ["system:authenticated", "admins"]
+       }
+     }
+     ```
+
    - proxy-agent extracts subject identity from TokenReview response
    - proxy-agent looks up SubjectMapping to find the mapped service account name
    - For ServiceAccount subjects: match `username` against `system:serviceaccount:{namespace}:{name}` format
+   - For User subjects: match `username` against user name directly
 
 4. **Token Generation Phase:**
    - proxy-agent checks token cache (keyed by hub subject + managed SA name)
@@ -518,12 +442,12 @@ To optimize performance and reduce API server load:
   - **SubjectMapping changes** (detected via informer watch on hub):
     - Deletion: Invalidate all cached tokens for the mapped subject
     - Spec updates that affect token generation:
-      - `hubSubject.*` (kind, serviceAccount, user fields) → invalidate (different source subject)
+      - `hubSubject.*` → invalidate (different source subject)
       - `managedServiceAccount.name` → invalidate (different target SA)
       - `tokenExpirationSeconds` → invalidate (new expiration policy)
-      - `placementRef.*` (for User subjects) → invalidate (different cluster selection)
+      - `clusters.*` → invalidate (different cluster selection)
     - Spec updates that do NOT trigger invalidation:
-      - No changes or metadata-only updates (labels, annotations)
+      - Metadata-only updates (labels, annotations)
   - **Detection mechanism**: proxy-agent runs informer watching SubjectMapping resources on the hub cluster
 
 This distributed caching approach:
@@ -558,7 +482,8 @@ type SubjectMapping struct {
     Status SubjectMappingStatus `json:"status,omitempty"`
 }
 
-// +kubebuilder:validation:XValidation:rule="self.hubSubject.kind == 'ServiceAccount' ? !has(self.placementRef) : has(self.placementRef)",message="placementRef is required for User subjects and must not be set for ServiceAccount subjects"
+// +kubebuilder:validation:XValidation:rule="self.hubSubject.kind == 'User' ? has(self.clusters) : true",message="clusters is required for User subjects"
+// +kubebuilder:validation:XValidation:rule="has(self.clusters) && self.clusters.type == 'InferFromServiceAccount' ? self.hubSubject.kind == 'ServiceAccount' : true",message="InferFromServiceAccount type can only be used with ServiceAccount subjects"
 type SubjectMappingSpec struct {
     // HubSubject specifies the subject on the hub cluster to map
     // +required
@@ -568,11 +493,11 @@ type SubjectMappingSpec struct {
     // +required
     ManagedServiceAccount ManagedServiceAccountSpec `json:"managedServiceAccount"`
 
-    // PlacementRef references a Placement resource for cluster selection.
-    // Required for User subjects.
-    // Ignored for ServiceAccount subjects (uses ManagedClusterSetBinding instead).
+    // Clusters specifies how to discover target clusters.
+    // For ServiceAccount subjects: Optional, defaults to InferFromServiceAccount
+    // For User subjects: Required, must be ClusterList
     // +optional
-    PlacementRef *PlacementRef `json:"placementRef,omitempty"`
+    Clusters *Clusters `json:"clusters,omitempty"`
 }
 
 // +kubebuilder:validation:XValidation:rule="self.kind == 'ServiceAccount' ? has(self.serviceAccount) : true",message="serviceAccount is required when kind is ServiceAccount"
@@ -613,21 +538,31 @@ type UserSubject struct {
     Name string `json:"name"`
 }
 
-type PlacementRef struct {
-    // Name is the name of the Placement resource
+// +kubebuilder:validation:XValidation:rule="self.type == 'InferFromServiceAccount' ? !has(self.clusterList) : true",message="InferFromServiceAccount type must not have clusterList field"
+// +kubebuilder:validation:XValidation:rule="self.type == 'ClusterList' ? has(self.clusterList) : true",message="clusterList is required when type is ClusterList"
+type Clusters struct {
+    // Type specifies the cluster discovery method
     // +required
-    // +kubebuilder:validation:MinLength=1
-    Name string `json:"name"`
+    // +kubebuilder:validation:Enum=InferFromServiceAccount;ClusterList
+    Type string `json:"type"`
 
-    // Namespace is the namespace of the Placement resource
-    // Required since multiple Placements with the same name can exist in different namespaces
+    // ClusterList specifies an explicit list of cluster names
+    // Required when Type is ClusterList
+    // +optional
+    ClusterList *ClusterListReference `json:"clusterList,omitempty"`
+}
+
+type ClusterListReference struct {
+    // Clusters is an explicit list of ManagedCluster names
     // +required
-    // +kubebuilder:validation:MinLength=1
-    Namespace string `json:"namespace"`
+    // +kubebuilder:validation:MinItems=1
+    Clusters []string `json:"clusters"`
 }
 
 type ManagedServiceAccountSpec struct {
-    // Name of the service account to create on managed clusters
+    // Name of the service account to create on managed clusters.
+    // The ServiceAccount will be created in the namespace where the managed-serviceaccount
+    // addon agent is running on the managed cluster (typically 'open-cluster-management-agent-addon').
     // +required
     // +kubebuilder:validation:MinLength=1
     Name string `json:"name"`
@@ -665,7 +600,7 @@ type SubjectMappingStatus struct {
 **Condition Types:**
 - `Ready`: All bound clusters have successfully created ManagedServiceAccounts
 - `PartiallyReady`: Some clusters have created ManagedServiceAccounts, others pending or failed
-- `Failed`: Unable to create ManagedServiceAccounts for any cluster
+- `Failed`: Unable to create ManagedServiceAccounts for any cluster, or no clusters discovered (e.g., InferFromServiceAccount finds no ManagedClusterSetBindings)
 - `Conflicted`: Multiple SubjectMappings reference the same hub subject (see Conflict Resolution below)
 
 ### Subject Matching and Conflict Resolution
@@ -686,10 +621,15 @@ proxy-agent validates hub tokens using the existing cluster-proxy TokenReview pa
 
 When multiple SubjectMappings map the same hub subject:
 
-1. **Controller Detection**: Marks all conflicting mappings with `Conflicted` status condition indicating duplicate subjects
+1. **Controller Detection**:
+   - Winner (first-created): Gets `Ready` condition when all clusters are ready
+   - Losers (later-created): Get `Conflicted` status condition with message identifying the winning SubjectMapping by name and creation timestamp
 2. **Runtime Resolution**: proxy-agent selects the first created SubjectMapping using deterministic ordering:
    - Sort by `creationTimestamp` (earliest wins)
    - Tiebreaker: `metadata.uid` (lexicographically smaller)
+   - First-created SubjectMapping wins **globally across all clusters**
+   - All ManagedServiceAccounts from the winner take effect; all from losers are ignored
+   - Even if losers target non-overlapping clusters, they are completely ignored
    - Prevents name-based hijacking
    - Admin must delete first mapping to change it
 3. **No Webhook Required**: Conflicts detected asynchronously via status conditions
@@ -757,14 +697,14 @@ verbs: ["create"]
 ### Unit Tests
 
 - SubjectMapping controller: cluster discovery, ManagedServiceAccount creation, finalizers
-- Cluster discovery: ManagedClusterSetBinding (ServiceAccount subjects), Placement (User subjects)
+- Cluster discovery: InferFromServiceAccount (ManagedClusterSetBinding), ClusterList
 - proxy-agent: token resolution, caching, cache invalidation, TokenReview integration
 - Conflict detection and resolution logic
 
 ### Integration Tests
 
 - SubjectMapping lifecycle: creation, updates, deletion with cleanup
-- ManagedClusterSetBinding/PlacementDecision changes trigger reconciliation
+- ManagedClusterSetBinding changes trigger reconciliation for InferFromServiceAccount
 - Token generation, caching, and injection into requests
 - Conflict resolution: first-created wins with UID tiebreaker, status conditions
 
@@ -815,11 +755,18 @@ verbs: ["create"]
 - [ ] Performance benchmarks published (compared to ManagedServiceAccount)
 - [ ] Stable API (move from v1alpha1 to v1)
 
-### Future Enhancements - User subjects
+### Future Enhancements
 
-- [ ] Placement-based cluster discovery for User subjects
-- [ ] User subject matching from TokenReview username
-- [ ] E2E tests for User subject mapping
+**Additional cluster discovery types:**
+- [ ] ManagedClusterSet type: Reference cluster-scoped ManagedClusterSets
+- [ ] ClusterSelector type: Label-based cluster selection (more flexible than ClusterList)
+- [ ] Placement type: Advanced cluster selection with priorities, spreading, etc.
+
+**User subject enhancements:**
+- [ ] x509 client certificate authentication support for User subjects (Alpha supports bearer tokens only)
+
+**Other enhancements:**
+- [ ] Group subject support (map entire user groups)
 - [ ] kubectl integration examples
 
 ## Upgrade / Downgrade Strategy
@@ -923,8 +870,7 @@ The SubjectMapping feature will be implemented in the **cluster-proxy** reposito
 
 2. **API Imports**:
    - Imports `ManagedServiceAccount` API from `open-cluster-management.io/managed-serviceaccount`
-   - Imports `Placement` and `PlacementDecision` APIs from `open-cluster-management.io/api`
-   - Imports `ManagedClusterSetBinding` API from `open-cluster-management.io/api`
+   - Imports `ManagedClusterSetBinding` and `ManagedCluster` APIs from `open-cluster-management.io/api`
 
 ### Additional Infrastructure
 
