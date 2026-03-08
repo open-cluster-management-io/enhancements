@@ -12,11 +12,6 @@
 
 This enhancement proposes a SubjectMapping API that enables transparent authentication for hub subjects accessing managed clusters. By mapping hub subjects to managed cluster service account names, applications and users can access managed clusters without managing tokens directly. The enhancement eliminates token storage on the hub, simplifies RBAC, and requires zero code changes to existing applications while maintaining security through short-lived tokens generated on-demand.
 
-**Implementation Phases:**
-
-- **Alpha/Beta**: ServiceAccount subject mapping (primary implementation)
-- **Future**: User subject mapping (designed but not implemented initially)
-
 ## Motivation
 
 The current ManagedServiceAccount implementation presents two significant challenges:
@@ -88,15 +83,15 @@ SubjectMapping enables transparent authentication by mapping hub subjects (Servi
 The following diagram illustrates the complete end-to-end flow:
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Hub Cluster                             │
-│                                                                  │
+┌────────────────────────────────────────────────────────────────┐
+│                         Hub Cluster                            │
+│                                                                │
 │  ┌──────────────────────────────────────────────────────────┐  │
 │  │ 1. Admin Creates SubjectMapping                          │  │
 │  │    argocd-hub-sa → argocd-sa-for-hub                     │  │
 │  └──────────────────────────────────────────────────────────┘  │
-│                              │                                   │
-│                              ▼                                   │
+│                              │                                 │
+│                              ▼                                 │
 │  ┌──────────────────────────────────────────────────────────┐  │
 │  │ 2. Controller watches SubjectMapping                     │  │
 │  │    - Finds ManagedClusterSetBinding in argocd namespace  │  │
@@ -104,30 +99,30 @@ The following diagram illustrates the complete end-to-end flow:
 │  │    - Creates ManagedServiceAccount in each cluster NS:   │  │
 │  │      * cluster1/argocd-sa-for-hub (MSA in cluster1 NS)   │  │
 │  │      * cluster2/argocd-sa-for-hub (MSA in cluster2 NS)   │  │
-│  │      * ...                                                │  │
+│  │      * ...                                               │  │
 │  └──────────────────────────────────────────────────────────┘  │
-│                                                                  │
+│                                                                │
 │  ┌──────────────────────────────────────────────────────────┐  │
 │  │ 3. ArgoCD App (using argocd-hub-sa)                      │  │
 │  │    Makes request via cluster-proxy user-server           │  │
 │  └──────────────────┬───────────────────────────────────────┘  │
-│                     │                                            │
-│                     ▼                                            │
+│                     │                                          │
+│                     ▼                                          │
 │  ┌──────────────────────────────────────────────────────────┐  │
 │  │ 4. cluster-proxy user-server (HTTP proxy)                │  │
 │  │    - Receives HTTP request from ArgoCD                   │  │
 │  │    - Forwards through tunnel to proxy-agent              │  │
 │  └──────────────────┬───────────────────────────────────────┘  │
-│                     │                                            │
-└─────────────────────┼────────────────────────────────────────────┘
+│                     │                                          │
+└─────────────────────┼──────────────────────────────────────────┘
                       │ cluster-proxy gRPC tunnel
                       ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Managed Cluster (cluster1)                   │
-│                                                                  │
+┌────────────────────────────────────────────────────────────────┐
+│                    Managed Cluster (cluster1)                  │
+│                                                                │
 │  ┌──────────────────────────────────────────────────────────┐  │
 │  │ 5. proxy-agent (spoke-side)                              │  │
-│  │    - Watches SubjectMapping on hub                      │  │
+│  │    - Watches SubjectMapping on hub                       │  │
 │  │    - Receives request via tunnel                         │  │
 │  │    - Detects caller: argocd-hub-sa (from request auth)   │  │
 │  │    - Looks up mapping in local cache                     │  │
@@ -141,31 +136,31 @@ The following diagram illustrates the complete end-to-end flow:
 │  │    - Injects token into Authorization header             │  │
 │  │    - Forwards to local API server                        │  │
 │  └──────────────────┬───────────────────────────────────────┘  │
-│                     │                                            │
-│                     ▼                                            │
+│                     │                                          │
+│                     ▼                                          │
 │  ┌──────────────────────────────────────────────────────────┐  │
 │  │ 6. Kubernetes API Server                                 │  │
 │  │    - Receives request with argocd-sa-for-hub token       │  │
 │  │    - Processes request                                   │  │
 │  │    - Returns response                                    │  │
 │  └──────────────────┬───────────────────────────────────────┘  │
-│                     │                                            │
-│                     ▼                                            │
-│                  Response                                        │
-│                     │                                            │
-└─────────────────────┼────────────────────────────────────────────┘
+│                     │                                          │
+│                     ▼                                          │
+│                  Response                                      │
+│                     │                                          │
+└─────────────────────┼──────────────────────────────────────────┘
                       │ back through tunnel
                       ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                         Hub Cluster                             │
-│                                                                  │
+┌────────────────────────────────────────────────────────────────┐
+│                         Hub Cluster                            │
+│                                                                │
 │  ┌──────────────────────────────────────────────────────────┐  │
 │  │ 7. ArgoCD App                                            │  │
 │  │    - Receives response from cluster1                     │  │
 │  │    - No token management code needed!                    │  │
 │  └──────────────────────────────────────────────────────────┘  │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+│                                                                │
+└────────────────────────────────────────────────────────────────┘
 ```
 
 This diagram shows how SubjectMapping enables transparent authentication through automatic token resolution and caching within the cluster-proxy architecture.
@@ -196,13 +191,12 @@ spec:
 
 **ManagedServiceAccount Creation**:
 
-The SubjectMapping controller creates ManagedServiceAccount resources in **cluster namespaces** (e.g., `cluster1`, `cluster2`), not in the subject's namespace. This follows OCM's standard pattern where cluster-specific resources live in cluster namespaces.
+The SubjectMapping controller creates ManagedServiceAccount resources in **cluster namespaces** (e.g., `cluster1`, `cluster2`). This follows OCM's standard pattern where cluster-specific resources live in cluster namespaces.
 
-For this example with 3 bound clusters (via ManagedClusterSetBinding in `argocd` namespace):
+For this example with 2 bound clusters (via ManagedClusterSetBinding in `argocd` namespace):
 
 - ManagedServiceAccount `cluster1/argocd-sa-for-hub` → creates ServiceAccount `argocd-sa-for-hub` in `open-cluster-management-agent-addon` namespace on cluster1
 - ManagedServiceAccount `cluster2/argocd-sa-for-hub` → creates ServiceAccount `argocd-sa-for-hub` in `open-cluster-management-agent-addon` namespace on cluster2
-- ManagedServiceAccount `cluster3/argocd-sa-for-hub` → creates ServiceAccount `argocd-sa-for-hub` in `open-cluster-management-agent-addon` namespace on cluster3
 
 **Example 2: User Mapping with Placement (Future)**
 
@@ -253,30 +247,64 @@ See [API Specification](#api-specification) section below for complete type defi
 
 ### Architecture and Components
 
-#### Component Overview
-
 The SubjectMapping feature will be implemented in the **cluster-proxy** repository as it is fundamentally a transparent authentication feature built on top of cluster-proxy's existing proxy infrastructure.
 
 **Implementation Location**: `open-cluster-management.io/cluster-proxy`
 
-**1. SubjectMapping Controller (Hub-side)**
+#### 1. SubjectMapping Controller (Hub-side)
 
 **Location**: `pkg/proxyserver/controllers/subjectmapping_controller.go`
 
 **Deployment**: Runs in the cluster-proxy addon-manager on the hub cluster
 
-Responsibilities:
+**Responsibilities**:
 - Watch SubjectMapping CRs and referenced Placements/PlacementDecisions
-- Discover target clusters based on subject type:
-  - **ServiceAccount**: Via ManagedClusterSetBinding in the ServiceAccount's namespace
-  - **User**: Via referenced Placement's PlacementDecisions
-- Create and maintain ManagedServiceAccount resources for each bound cluster with annotation to disable token sync
-- Update status conditions (Ready, PartiallyReady, Failed)
-- Handle cluster binding/unbinding events (ManagedClusterSetBinding changes or PlacementDecision updates)
+- Discover target clusters based on subject type (ServiceAccount or User)
+- Create and maintain ManagedServiceAccount resources for each bound cluster
+- Update SubjectMapping status conditions (Ready, PartiallyReady, Failed)
+- Handle cluster binding/unbinding lifecycle
 
-**ManagedServiceAccount Creation**:
+#### 2. Authentication Module (Spoke-side)
 
-SubjectMapping controller creates ManagedServiceAccount resources with a special annotation to prevent token synchronization to the hub:
+**Location**: `pkg/proxyagent/authentication/`
+
+**Deployment**: Runs in the proxy-agent on each managed cluster
+
+**Responsibilities**:
+- Watch SubjectMapping CRs on the hub via informer
+- Intercept requests from mapped hub subjects
+- Validate hub tokens via TokenReview API
+- Resolve hub subjects to managed cluster ServiceAccount names
+- Generate tokens via local TokenRequest API
+- Cache tokens for performance optimization
+- Inject tokens into request Authorization headers
+
+#### Repository Structure
+
+```
+cluster-proxy/
+├── pkg/
+│   ├── apis/
+│   │   └── authentication/v1alpha1/      # NEW: SubjectMapping API
+│   │       ├── subjectmapping_types.go
+│   │       ├── groupversion_info.go
+│   │       └── zz_generated.deepcopy.go
+│   ├── proxyserver/controllers/
+│   │   └── subjectmapping_controller.go  # NEW: SubjectMapping controller
+│   └── proxyagent/authentication/        # NEW: Authentication module
+│       ├── resolver.go                   # Subject → ServiceAccount mapping
+│       ├── cache.go                      # Token caching
+│       └── tokenrequest.go               # TokenRequest API client
+└── cmd/
+    ├── addon-manager/main.go             # Register SubjectMapping controller
+    └── addon-agent/main.go               # Integrate authentication module
+```
+
+### Implementation Details
+
+#### ManagedServiceAccount Creation
+
+The SubjectMapping controller creates ManagedServiceAccount resources with a special annotation to prevent token synchronization to the hub:
 
 ```go
 const (
@@ -319,23 +347,101 @@ The managed-serviceaccount addon agent honors this annotation:
 - **Missing annotation or `"secret"`**: Sync token to hub as Secret (default, backward compatible)
 - **`"none"`**: Create ServiceAccount on managed cluster only, don't sync token to hub
 
-**Lifecycle Management**:
-
-Since SubjectMapping is cluster-scoped and ManagedServiceAccount is namespaced (in cluster namespaces), owner references cannot be used. The controller uses:
-
-- **Finalizers** on SubjectMapping to ensure cleanup of all associated ManagedServiceAccounts before deletion
-- **Labels** on ManagedServiceAccounts (see example above) to track which SubjectMapping created them
-- On SubjectMapping deletion, the controller deletes all ManagedServiceAccounts with matching labels across all cluster namespaces
-
 This approach:
 
 - Requires **no ManagedServiceAccount API changes**
 - Is **fully backward compatible** (existing ManagedServiceAccounts continue working)
 - Eliminates token storage on hub for SubjectMapping use case
 - Allows managed-serviceaccount addon to support both use cases simultaneously
-- Follows OCM patterns (consistent with ManifestWork, Placement, etc.)
 
-**Cluster Binding/Unbinding**:
+#### Lifecycle Management
+
+Since SubjectMapping is cluster-scoped and ManagedServiceAccount is namespaced (in cluster namespaces), owner references cannot be used. The controller uses:
+
+- **Finalizers** on SubjectMapping to ensure cleanup of all associated ManagedServiceAccounts before deletion
+- **Labels** on ManagedServiceAccounts (see code example above) to track which SubjectMapping created them
+- On SubjectMapping deletion, the controller deletes all ManagedServiceAccounts with matching labels across all cluster namespaces
+
+This approach follows OCM patterns (consistent with ManifestWork, Placement, etc.).
+
+#### Cluster Discovery
+
+The controller determines which clusters should receive the mapped service account based on subject type:
+
+**For ServiceAccount Subjects:**
+
+Uses ManagedClusterSetBinding in the ServiceAccount's namespace:
+
+1. List all ManagedClusterSetBindings in the ServiceAccount's namespace
+2. Extract ManagedClusterSet names from bindings
+3. List all ManagedClusters with matching `cluster.open-cluster-management.io/clusterset` labels
+4. Create/update ManagedServiceAccount for each discovered cluster
+
+Example:
+
+```yaml
+# In argocd namespace
+apiVersion: cluster.open-cluster-management.io/v1beta2
+kind: ManagedClusterSetBinding
+metadata:
+  name: production-clusters
+  namespace: argocd
+spec:
+  clusterSet: production
+---
+# SubjectMapping will create ManagedServiceAccounts
+# for all clusters in the "production" clusterset
+```
+
+**For User Subjects:**
+
+Uses Placement API for cluster selection:
+
+```yaml
+apiVersion: authentication.open-cluster-management.io/v1alpha1
+kind: SubjectMapping
+metadata:
+  name: admin-user-access
+spec:
+  hubSubject:
+    kind: User
+    user:
+      name: "admin@example.com"
+
+  managedServiceAccount:
+    name: hub-admin-user
+
+  # Reference a Placement resource
+  placementRef:
+    name: admin-clusters
+---
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Placement
+metadata:
+  name: admin-clusters
+spec:
+  clusterSets:
+    - production
+    - staging
+  predicates:
+    - requiredClusterSelector:
+        labelSelector:
+          matchExpressions:
+            - key: environment
+              operator: In
+              values: [production, staging]
+```
+
+The SubjectMapping controller:
+
+1. Watches the referenced Placement resource
+2. Reads PlacementDecisions created by the Placement controller
+3. Extracts the list of selected clusters from PlacementDecisions
+4. Creates/updates ManagedServiceAccount for each selected cluster
+
+This approach leverages OCM's existing Placement API capabilities (sophisticated cluster selection, dynamic updates, consistency with Policy and ManifestWork).
+
+#### Cluster Binding/Unbinding
 
 The controller continuously reconciles cluster membership via watches on ManagedClusterSetBinding, ManagedCluster labels, and PlacementDecision:
 
@@ -343,58 +449,12 @@ The controller continuously reconciles cluster membership via watches on Managed
 - **Cluster Removed**: Deletes corresponding ManagedServiceAccount, updates status
 - **Cleanup**: Orphaned resources removed during reconciliation
 
-**2. Authentication Module (Spoke-side)**
-
-**Location**: `pkg/proxyagent/authentication/`
-
-**Deployment**: Runs in the proxy-agent on each managed cluster
-
-The proxy-agent component will be enhanced with an authentication module to:
-
-- Watch SubjectMapping CRs on the hub (via informer) for create/update/delete events
-  - On update: Invalidate cached tokens if spec fields affecting token generation changed
-  - On delete: Invalidate all cached tokens for the subject
-- Intercept requests from mapped hub subjects
-- Extract subject information from request authentication:
-  - **ServiceAccount**: Extract from `system:serviceaccount:<namespace>:<name>` user
-  - **User**: Extract from user identity (e.g., `admin@example.com`)
-- Resolve hub subject to managed cluster service account names via SubjectMapping lookup
-- Request tokens from the local TokenRequest API
-- Cache tokens for performance (keyed by hub subject + managed SA name)
-  - Automatic invalidation on time expiration and SubjectMapping changes
-- Inject tokens transparently into Authorization headers
-- Forward authenticated requests to the managed cluster API server
-
-**Repository Structure**:
-```
-cluster-proxy/
-├── pkg/
-│   ├── apis/
-│   │   └── authentication/v1alpha1/      # NEW: SubjectMapping API
-│   │       ├── subjectmapping_types.go
-│   │       ├── groupversion_info.go
-│   │       └── zz_generated.deepcopy.go
-│   ├── proxyserver/controllers/
-│   │   └── subjectmapping_controller.go  # NEW: SubjectMapping controller
-│   └── proxyagent/authentication/        # NEW: Authentication module
-│       ├── resolver.go                   # Subject → ServiceAccount mapping
-│       ├── cache.go                      # Token caching
-│       └── tokenrequest.go               # TokenRequest API client
-└── cmd/
-    ├── addon-manager/main.go             # Register SubjectMapping controller
-    └── addon-agent/main.go               # Integrate authentication module
-```
-
-### Implementation Details
-
 #### Authentication Flow
 
 1. **Setup Phase:**
    - Admin creates SubjectMapping on the hub
    - For User subjects: Admin also creates a Placement resource (or references existing one)
-   - Controller discovers bound clusters:
-     - ServiceAccount: via ManagedClusterSetBinding in the ServiceAccount's namespace
-     - User: via Placement's PlacementDecisions
+   - Controller discovers bound clusters via cluster discovery mechanism
    - ManagedServiceAccount resources are automatically created for each cluster
 
 2. **Request Phase:**
@@ -467,89 +527,12 @@ To optimize performance and reduce API server load:
   - **Detection mechanism**: proxy-agent runs informer watching SubjectMapping resources on the hub cluster
 
 This distributed caching approach:
+
 - Scales horizontally (each spoke caches independently)
 - Reduces managed cluster API server load
 - Maintains security through short-lived tokens
 - Provides fast request handling after initial token generation
 - Supports multiple subject types transparently
-
-#### Cluster Discovery
-
-The controller determines which clusters should receive the mapped service account based on subject type:
-
-**For ServiceAccount Subjects:**
-
-Uses ManagedClusterSetBinding in the ServiceAccount's namespace:
-
-1. List all ManagedClusterSetBindings in the ServiceAccount's namespace
-2. Extract ManagedClusterSet names from bindings
-3. List all ManagedClusters with matching `cluster.open-cluster-management.io/clusterset` labels
-4. Create/update ManagedServiceAccount for each discovered cluster
-
-Example:
-```yaml
-# In argocd namespace
-apiVersion: cluster.open-cluster-management.io/v1beta2
-kind: ManagedClusterSetBinding
-metadata:
-  name: production-clusters
-  namespace: argocd
-spec:
-  clusterSet: production
----
-# SubjectMapping will create ManagedServiceAccounts
-# for all clusters in the "production" clusterset
-```
-
-**For User Subjects:**
-
-Uses Placement API for cluster selection:
-
-```yaml
-apiVersion: authentication.open-cluster-management.io/v1alpha1
-kind: SubjectMapping
-metadata:
-  name: admin-user-access
-spec:
-  hubSubject:
-    kind: User
-    user:
-      name: "admin@example.com"
-
-  managedServiceAccount:
-    name: hub-admin-user
-
-  # Reference a Placement resource
-  placementRef:
-    name: admin-clusters
----
-apiVersion: cluster.open-cluster-management.io/v1beta1
-kind: Placement
-metadata:
-  name: admin-clusters
-spec:
-  clusterSets:
-    - production
-    - staging
-  predicates:
-    - requiredClusterSelector:
-        labelSelector:
-          matchExpressions:
-            - key: environment
-              operator: In
-              values: [production, staging]
-```
-
-The SubjectMapping controller:
-1. Watches the referenced Placement resource
-2. Reads PlacementDecisions created by the Placement controller
-3. Extracts the list of selected clusters from PlacementDecisions
-4. Creates/updates ManagedServiceAccount for each selected cluster
-
-This approach leverages OCM's existing Placement API capabilities:
-- Sophisticated cluster selection with predicates and priorities
-- Dynamic cluster selection as PlacementDecisions update
-- Consistent with Policy, ManifestWork, and other OCM resources
 
 ### Risks and Mitigation
 
