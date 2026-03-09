@@ -67,6 +67,8 @@ type PlacementSpec struct {
   // ScoreRateLimit sets maximum rate of updates to recorded scores in placement decisions.
   // Score changes that do not change the selected set of clusters in the placement will
   // not be reflected in decisions more often than the given duration.
+  // +kubebuilder:validation:Pattern="^[0-9]+[h|m|s]$"
+  // +kubebuilder:default:="1m"
   // +optional
   ScoreRateLimit string `json:"scoreRateLimit,omitempty"`
 }
