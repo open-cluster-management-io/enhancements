@@ -20,6 +20,8 @@ The current ManagedServiceAccount implementation presents two significant challe
 
 2. **RBAC Complexity**: Hub components need Secret read permissions across multiple cluster namespaces. For example, ArgoCD accessing 100 managed clusters requires Secret read permissions in 100 namespaces, creating operational overhead and potential security gaps.
 
+3. **ClusterProfile Plugin Limitations**: While OCM supports the [ClusterProfile credentials plugin](https://github.com/kubernetes/enhancements/tree/master/keps/sig-multicluster/5339-clusterprofile-plugin-credentials) ([issue #1163](https://github.com/open-cluster-management-io/ocm/issues/1163)) which provides exec-based credential retrieval, it actually exacerbates the token storage security risk by copying token Secrets from cluster namespaces to the ClusterProfile namespace, creating additional copies of long-lived credentials on the hub. Additionally, applications must install and configure exec plugins, and still require Secret read permissions in the ClusterProfile namespace, adding operational complexity.
+
 These challenges become more pronounced as cluster count scales and security requirements tighten.
 
 ### Goals
@@ -623,19 +625,21 @@ resources: ["subjectmappings"]
 verbs: ["create", "update", "delete"]
 ```
 
-Hub proxy-agent (TokenReview):
+proxy-agent on hub (TokenReview):
 
 ```yaml
 # Already exists in cluster-proxy
+# proxy-agent needs this on the hub to validate hub ServiceAccount tokens
 apiGroups: ["authentication.k8s.io"]
 resources: ["tokenreviews"]
 verbs: ["create"]
 ```
 
-Hub proxy-agent (ManagedServiceAccount lookup):
+proxy-agent on hub (ManagedServiceAccount lookup):
 
 ```yaml
-# Role (not ClusterRole!) - only in proxy-agent's own cluster namespace
+# Role (not ClusterRole!) - only in proxy-agent's own cluster namespace on hub
+# proxy-agent needs this to find ManagedServiceAccounts with hub SA identity annotations
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -647,7 +651,7 @@ rules:
   verbs: ["list", "get", "watch"]  # watch for cache invalidation
 ```
 
-Managed cluster proxy-agent (TokenRequest):
+proxy-agent on managed cluster (TokenRequest):
 
 ```yaml
 apiGroups: [""]
