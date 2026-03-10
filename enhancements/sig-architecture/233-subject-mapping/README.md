@@ -186,7 +186,11 @@ spec:
     tokenExpirationSeconds: 3600
 ```
 
-The SubjectMapping name must match the ServiceAccount name specified in `hubSubject.serviceAccount.name` (enforced by CEL validation). The controller automatically discovers clusters via ManagedClusterSetBindings in the SubjectMapping's namespace and creates ManagedServiceAccount resources in each cluster's namespace. See [API Specification](#api-specification) for type definitions.
+The SubjectMapping name must match the ServiceAccount name specified in `hubSubject.serviceAccount.name` (enforced by CEL validation). The controller automatically discovers clusters via ManagedClusterSetBindings in the SubjectMapping's namespace and creates mapping records in each cluster's namespace.
+
+**Multiple SubjectMappings (from the same or different namespaces) can reference the same managed ServiceAccount name**, enabling shared service accounts. Access control is enforced via ValidatingAdmissionPolicy checking RBAC on the virtual subresource `subjectmappings/managedserviceaccounts` (see [Virtual Subresource for Access Control](#virtual-subresource-for-access-control)).
+
+See [API Specification](#api-specification) for type definitions.
 
 ### Architecture and Components
 
@@ -245,60 +249,199 @@ cluster-proxy/
 
 ### Implementation Details
 
-#### ManagedServiceAccount Creation
+#### Virtual Subresource for Access Control
 
-The SubjectMapping controller creates ManagedServiceAccount resources with a special annotation to prevent token synchronization to the hub:
+To control which managed ServiceAccount names a SubjectMapping can use, we introduce a virtual subresource with a custom verb:
+
+**Virtual Subresource**: `subjectmappings/managedserviceaccounts`
+**Custom Verb**: `use`
+
+Administrators can grant RBAC permissions to control which namespaces can use specific managed ServiceAccount names:
+
+```yaml
+# Example: Allow argocd namespace to use specific managed SA names
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: argocd-managed-sa-usage
+  namespace: argocd
+rules:
+- apiGroups: ["authentication.open-cluster-management.io"]
+  resources: ["subjectmappings/managedserviceaccounts"]
+  verbs: ["use"]
+  resourceNames: ["argocd-prod", "argocd-staging", "shared-admin"]
+```
+
+A ValidatingAdmissionPolicy enforces this permission when SubjectMapping is created or updated (requires Kubernetes 1.28+):
+
+```yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: subjectmapping-managed-sa-authorization
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: ["authentication.open-cluster-management.io"]
+      apiVersions: ["v1alpha1"]
+      operations: ["CREATE", "UPDATE"]
+      resources: ["subjectmappings"]
+  validations:
+  - expression: |
+      authorizer.group('authentication.open-cluster-management.io')
+        .resource('subjectmappings')
+        .subresource('managedserviceaccounts')
+        .name(object.spec.managedServiceAccount.name)
+        .namespace(object.metadata.namespace)
+        .check('use').allowed()
+    message: "User does not have 'use' permission for managed ServiceAccount name"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: subjectmapping-managed-sa-authorization-binding
+spec:
+  policyName: subjectmapping-managed-sa-authorization
+  validationActions: [Deny]
+```
+
+This uses CEL's `authorizer` function to check RBAC permissions declaratively, without requiring a webhook deployment. It enables fine-grained control over managed ServiceAccount name usage while allowing multiple SubjectMappings to reference the same name when authorized.
+
+#### ManagedServiceAccount Creation with Multiple Hub Identities
+
+The SubjectMapping controller creates or updates ManagedServiceAccount resources to store multiple hub identity mappings in an annotation. Multiple SubjectMappings can reference the same managed ServiceAccount name, with each maintaining its own token expiration setting.
 
 ```go
 const (
     // Annotations for SubjectMapping feature
     AnnotationTokenProjection = "authentication.open-cluster-management.io/token-projection"
-    AnnotationHubNamespace    = "authentication.open-cluster-management.io/hub-namespace"
-    AnnotationHubSAName       = "authentication.open-cluster-management.io/hub-serviceaccount-name"
+    AnnotationHubIdentities   = "authentication.open-cluster-management.io/hub-identities"
 
     TokenProjectionNone   = "none"   // Don't sync token to hub
     TokenProjectionSecret = "secret" // Sync token to hub (default)
 )
 
-// Example ManagedServiceAccount created by SubjectMapping controller
-// IMPORTANT: ManagedServiceAccount is created in the cluster namespace (e.g., "cluster1"),
-// NOT the subject's namespace. This follows OCM's standard pattern where cluster-specific
-// resources live in cluster namespaces.
-//
-// The annotations store hub ServiceAccount identity so proxy-agent can look up the mapping
-// by listing ManagedServiceAccounts in its own cluster namespace only.
-msa := &authv1beta1.ManagedServiceAccount{
-    ObjectMeta: metav1.ObjectMeta{
-        Name:      managedServiceAccountName,  // From spec.managedServiceAccount.name
-        Namespace: clusterName,                // Cluster namespace (e.g., "cluster1", "cluster2")
-        Annotations: map[string]string{
-            AnnotationTokenProjection: TokenProjectionNone,
-            AnnotationHubNamespace:    "argocd",           // Hub ServiceAccount namespace
-            AnnotationHubSAName:       "argocd-hub-sa",    // Hub ServiceAccount name
-        },
-        Labels: map[string]string{
-            // Track which SubjectMapping created this MSA for lifecycle management
-            "authentication.open-cluster-management.io/subject-mapping": subjectMappingName,
-            "authentication.open-cluster-management.io/managed-by":      "subject-mapping-controller",
-        },
-    },
-    Spec: authv1beta1.ManagedServiceAccountSpec{
-        Rotation: authv1beta1.ManagedServiceAccountRotation{
-            Validity: metav1.Duration{
-                Duration: time.Duration(tokenExpirationSeconds) * time.Second,
+// HubIdentity represents a single hub ServiceAccount mapping
+type HubIdentity struct {
+    Namespace          string `json:"namespace"`
+    Name               string `json:"name"`
+    TokenExpiration    int64  `json:"tokenExpiration"`
+}
+
+// Controller logic to add/update hub identity in ManagedServiceAccount
+func (c *Controller) reconcileManagedServiceAccount(sm *authv1alpha1.SubjectMapping, clusterName string) error {
+    msaName := sm.Spec.ManagedServiceAccount.Name
+
+    // Get or create ManagedServiceAccount
+    msa := &authv1beta1.ManagedServiceAccount{}
+    err := c.client.Get(ctx, types.NamespacedName{
+        Namespace: clusterName,
+        Name:      msaName,
+    }, msa)
+
+    if apierrors.IsNotFound(err) {
+        // Create new ManagedServiceAccount
+        // Note: spec.rotation.validity is NOT set because token-projection: "none"
+        // means no token Secret is created. proxy-agent generates tokens on-demand
+        // using per-identity tokenExpiration from hub-identities annotation.
+        msa = &authv1beta1.ManagedServiceAccount{
+            ObjectMeta: metav1.ObjectMeta{
+                Name:      msaName,
+                Namespace: clusterName,
+                Annotations: map[string]string{
+                    AnnotationTokenProjection: TokenProjectionNone,
+                },
+                Labels: map[string]string{
+                    "authentication.open-cluster-management.io/managed-by": "subject-mapping-controller",
+                },
             },
-        },
-    },
+        }
+    }
+
+    // Parse existing hub identities from annotation
+    var hubIdentities []HubIdentity
+    if existing := msa.Annotations[AnnotationHubIdentities]; existing != "" {
+        json.Unmarshal([]byte(existing), &hubIdentities)
+    }
+
+    // Add or update this SubjectMapping's hub identity
+    newIdentity := HubIdentity{
+        Namespace:       sm.Namespace,
+        Name:            sm.Spec.HubSubject.ServiceAccount.Name,
+        TokenExpiration: sm.Spec.ManagedServiceAccount.TokenExpirationSeconds,
+    }
+
+    found := false
+    for i, identity := range hubIdentities {
+        if identity.Namespace == newIdentity.Namespace && identity.Name == newIdentity.Name {
+            hubIdentities[i] = newIdentity
+            found = true
+            break
+        }
+    }
+    if !found {
+        hubIdentities = append(hubIdentities, newIdentity)
+    }
+
+    // Serialize back to annotation
+    data, _ := json.Marshal(hubIdentities)
+    msa.Annotations[AnnotationHubIdentities] = string(data)
+
+    // Add label to track this SubjectMapping references this MSA
+    labelKey := fmt.Sprintf("authentication.open-cluster-management.io/mapping-%s-%s",
+        sm.Namespace, sm.Name)
+    msa.Labels[labelKey] = "true"
+
+    // Create or update
+    if err == nil {
+        return c.client.Update(ctx, msa)
+    }
+    return c.client.Create(ctx, msa)
 }
 ```
 
-The managed-serviceaccount addon agent honors this annotation:
+**Example ManagedServiceAccount with multiple hub identities:**
+
+```yaml
+apiVersion: authentication.open-cluster-management.io/v1beta1
+kind: ManagedServiceAccount
+metadata:
+  name: shared-admin
+  namespace: cluster1
+  annotations:
+    authentication.open-cluster-management.io/token-projection: "none"
+    authentication.open-cluster-management.io/hub-identities: |
+      [
+        {"namespace":"argocd","name":"argocd-hub-sa","tokenExpiration":3600},
+        {"namespace":"gitops","name":"gitops-sa","tokenExpiration":7200}
+      ]
+  labels:
+    authentication.open-cluster-management.io/managed-by: subject-mapping-controller
+    # Track which SubjectMappings reference this MSA
+    authentication.open-cluster-management.io/mapping-argocd-argocd-hub-sa: "true"
+    authentication.open-cluster-management.io/mapping-gitops-gitops-sa: "true"
+```
+
+**How proxy-agent uses this:**
+
+When proxy-agent receives a request from a hub ServiceAccount, it:
+
+1. Validates the hub token via TokenReview and gets the hub ServiceAccount identity (namespace + name)
+2. Lists ManagedServiceAccounts in its cluster namespace
+3. For each ManagedServiceAccount, parses the `hub-identities` annotation
+4. Finds the matching hub identity in the JSON array
+5. Uses that identity's `tokenExpiration` when generating the token via TokenRequest API
+
+The managed-serviceaccount addon agent honors the `token-projection` annotation:
 
 - **Missing annotation or `"secret"`**: Sync token to hub as Secret (default, backward compatible)
 - **`"none"`**: Create ServiceAccount on managed cluster only, don't sync token to hub
 
 This approach:
 
+- **Supports multiple hub identities** mapping to the same managed SA name
+- **Each SubjectMapping maintains independent token expiration** settings
 - Requires **no ManagedServiceAccount API changes**
 - Is **fully backward compatible** (existing ManagedServiceAccounts continue working)
 - Eliminates token storage on hub for SubjectMapping use case
@@ -306,13 +449,59 @@ This approach:
 
 #### Lifecycle Management
 
-Since SubjectMapping is namespace-scoped and ManagedServiceAccount is namespaced in different namespaces (SubjectMapping in hub ServiceAccount namespace, ManagedServiceAccount in cluster namespaces), owner references cannot be used. The controller uses:
+Since SubjectMapping is namespace-scoped and ManagedServiceAccount is namespaced in different namespaces (SubjectMapping in hub ServiceAccount namespace, ManagedServiceAccount in cluster namespaces), owner references cannot be used for automatic cleanup. The controller uses:
 
-- **Finalizers** on SubjectMapping to ensure cleanup of all associated ManagedServiceAccounts before deletion
-- **Labels** on ManagedServiceAccounts (see code example above) to track which SubjectMapping created them
-- On SubjectMapping deletion, the controller deletes all ManagedServiceAccounts with matching labels across all cluster namespaces
+- **Finalizers** on SubjectMapping to ensure proper cleanup before deletion
+- **Labels** on ManagedServiceAccounts to track which SubjectMappings reference them
+  - Label format: `authentication.open-cluster-management.io/mapping-{namespace}-{name}: "true"`
+  - Example: `authentication.open-cluster-management.io/mapping-argocd-argocd-hub-sa: "true"`
 
-This approach follows OCM patterns (consistent with ManifestWork, Placement, etc.).
+**Cleanup Process on SubjectMapping Deletion:**
+
+1. Controller lists all ManagedServiceAccounts with the SubjectMapping's tracking label
+2. For each ManagedServiceAccount:
+   - Parse the `hub-identities` annotation JSON array
+   - Remove the hub identity entry matching this SubjectMapping's namespace/name
+   - Remove the tracking label for this SubjectMapping
+   - If `hub-identities` array is now empty:
+     - Delete the ManagedServiceAccount (no SubjectMappings reference it)
+   - Otherwise:
+     - Update the ManagedServiceAccount with the modified annotation and labels
+3. Remove finalizer from SubjectMapping
+
+**Example cleanup:**
+
+```go
+func (c *Controller) cleanupManagedServiceAccount(sm *authv1alpha1.SubjectMapping, msa *authv1beta1.ManagedServiceAccount) error {
+    // Parse hub identities
+    var hubIdentities []HubIdentity
+    json.Unmarshal([]byte(msa.Annotations[AnnotationHubIdentities]), &hubIdentities)
+
+    // Remove this SubjectMapping's identity
+    filtered := []HubIdentity{}
+    for _, identity := range hubIdentities {
+        if identity.Namespace != sm.Namespace || identity.Name != sm.Name {
+            filtered = append(filtered, identity)
+        }
+    }
+
+    // Remove tracking label
+    labelKey := fmt.Sprintf("authentication.open-cluster-management.io/mapping-%s-%s",
+        sm.Namespace, sm.Name)
+    delete(msa.Labels, labelKey)
+
+    // If no more identities, delete MSA; otherwise update
+    if len(filtered) == 0 {
+        return c.client.Delete(ctx, msa)
+    }
+
+    data, _ := json.Marshal(filtered)
+    msa.Annotations[AnnotationHubIdentities] = string(data)
+    return c.client.Update(ctx, msa)
+}
+```
+
+This approach follows OCM patterns (consistent with ManifestWork, Placement, etc.) and supports shared ManagedServiceAccounts across multiple SubjectMappings.
 
 #### Cluster Discovery
 
@@ -416,7 +605,7 @@ This distributed caching approach:
 | cluster-proxy complexity | Medium - adds authentication logic | - Isolated authentication module<br>- Comprehensive unit tests<br>- Feature flag for gradual rollout |
 | Token cache memory usage | Low - distributed across spokes | - 55-minute expiration<br>- LRU eviction if needed<br>- Monitoring and alerts |
 | Token request failures | Medium - temporary access disruption | - Retry with exponential backoff<br>- Fallback to synchronous token request<br>- Error logging and metrics |
-| SubjectMapping misconfiguration | Low - wrong permissions granted | - Validation webhook<br>- Clear documentation<br>- RBAC examples |
+| SubjectMapping misconfiguration | Low - wrong permissions granted | - ValidatingAdmissionPolicy enforcement<br>- CEL validation rules<br>- Clear documentation<br>- RBAC examples |
 | Backward compatibility | High - breaking existing workflows | - Coexist with ManagedServiceAccount<br>- Clear migration guide<br>- No forced migration |
 
 ### API Specification
@@ -524,17 +713,44 @@ Groups: ["system:serviceaccounts", "system:authenticated"]
 **ManagedServiceAccount Lookup:**
 
 1. proxy-agent extracts namespace and name from TokenReview username (`system:serviceaccount:{namespace}:{name}` format)
-2. proxy-agent lists ManagedServiceAccounts in **its own cluster namespace** with matching annotations:
-   ```go
-   // Lists only in cluster namespace (e.g., "cluster1")
-   msaList := List ManagedServiceAccounts where:
-     annotations["authentication.open-cluster-management.io/hub-namespace"] == "argocd"
-     annotations["authentication.open-cluster-management.io/hub-serviceaccount-name"] == "argocd-hub-sa"
-   ```
-3. If found, proxy-agent reads the ManagedServiceAccount name (e.g., `argocd-sa-for-hub`)
-4. proxy-agent generates a token for that ServiceAccount on the managed cluster
+2. proxy-agent lists ManagedServiceAccounts in **its own cluster namespace**
+3. For each ManagedServiceAccount, proxy-agent:
+   - Parses the `authentication.open-cluster-management.io/hub-identities` annotation as JSON array
+   - Searches for an entry matching the hub ServiceAccount namespace and name
+   - If found, returns the ManagedServiceAccount name and token expiration from the matched identity
 
-Since SubjectMapping is namespace-scoped with CEL validation requiring name matching, no conflict resolution is needed (see [Duplicate Prevention](#security-considerations)).
+   ```go
+   // Example lookup logic in proxy-agent
+   func (a *Authenticator) findManagedServiceAccount(hubNamespace, hubSAName string) (string, int64, error) {
+       msaList := &authv1beta1.ManagedServiceAccountList{}
+       if err := a.client.List(ctx, msaList, client.InNamespace(a.clusterNamespace)); err != nil {
+           return "", 0, err
+       }
+
+       for _, msa := range msaList.Items {
+           identitiesJSON := msa.Annotations[AnnotationHubIdentities]
+           if identitiesJSON == "" {
+               continue
+           }
+
+           var hubIdentities []HubIdentity
+           if err := json.Unmarshal([]byte(identitiesJSON), &hubIdentities); err != nil {
+               continue
+           }
+
+           // Find matching hub identity
+           for _, identity := range hubIdentities {
+               if identity.Namespace == hubNamespace && identity.Name == hubSAName {
+                   return msa.Name, identity.TokenExpiration, nil
+               }
+           }
+       }
+
+       return "", 0, fmt.Errorf("no mapping found for %s/%s", hubNamespace, hubSAName)
+   }
+   ```
+
+4. proxy-agent generates a token for that ServiceAccount with the specified expiration
 
 ### User Access Workaround
 
@@ -585,6 +801,78 @@ If there is strong demand for native User subject support, the main challenge to
 - **Design Impact**: Would need to add back conflict resolution logic, `Conflicted` status condition, and potentially namespace field to User subject spec
 
 The current ServiceAccount-only design avoids this complexity entirely while still enabling user access through the ServiceAccount workaround.
+
+### Granting Permissions on Managed Clusters
+
+SubjectMapping creates ServiceAccounts on managed clusters, but **does not grant any permissions**. Organizations can grant permissions using their preferred operational pattern. Common approaches include:
+
+#### Hub-Driven via ManifestWork
+
+Hub administrators can use ManifestWork to deploy RoleBindings:
+
+```yaml
+apiVersion: work.open-cluster-management.io/v1
+kind: ManifestWork
+metadata:
+  name: argocd-rbac
+  namespace: cluster1
+spec:
+  workload:
+    manifests:
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: argocd-prod-admin
+      roleRef:
+        kind: ClusterRole
+        name: admin
+      subjects:
+      - kind: ServiceAccount
+        name: argocd-prod  # Must match SubjectMapping's managedServiceAccount.name
+        namespace: open-cluster-management-agent-addon
+```
+
+#### Hub-Driven via ClusterPermission API
+
+Use OCM's ClusterPermission API for declarative permission management (if available):
+
+```yaml
+apiVersion: rbac.open-cluster-management.io/v1alpha1
+kind: ClusterPermission
+metadata:
+  name: argocd-permissions
+spec:
+  clusterSelector:
+    matchLabels:
+      environment: production
+  roleRef:
+    kind: ClusterRole
+    name: admin
+  subjects:
+  - kind: ServiceAccount
+    name: argocd-prod  # Must match SubjectMapping's managedServiceAccount.name
+    namespace: open-cluster-management-agent-addon
+```
+
+#### Spoke-Driven via Direct RBAC
+
+Managed cluster administrators can create RoleBindings directly:
+
+```bash
+kubectl create clusterrolebinding argocd-prod-admin \
+  --clusterrole=admin \
+  --serviceaccount=open-cluster-management-agent-addon:argocd-prod
+```
+
+#### Coordination and Naming
+
+User-specified `managedServiceAccount.name` enables coordination between hub and spoke administrators:
+
+- Hub admin creates SubjectMapping with predictable name (e.g., `argocd-prod`, `shared-admin`)
+- Permissions are granted via organization's chosen approach referencing that name
+- Access control enforced by ValidatingAdmissionPolicy checking RBAC on virtual subresource `subjectmappings/managedserviceaccounts` with `use` verb
+
+**Naming conventions**: `{application}-{environment}` (e.g., `argocd-prod`, `flux-staging`) or shared names (e.g., `shared-admin`, `dev-team`)
 
 ### Security Considerations
 
@@ -673,6 +961,7 @@ verbs: ["create"]
 - ManagedClusterSetBinding changes trigger reconciliation
 - Token generation, caching, and injection into requests
 - CEL validation prevents mismatched names
+- ValidatingAdmissionPolicy enforces virtual subresource permissions
 
 ### E2E Tests
 
@@ -692,6 +981,8 @@ verbs: ["create"]
 - [ ] SubjectMapping CRD in cluster-proxy repository (`pkg/apis/authentication/v1alpha1`)
   - [ ] Namespace-scoped API
   - [ ] CEL validation: metadata.name == hubSubject.serviceAccount.name
+- [ ] ValidatingAdmissionPolicy for virtual subresource access control
+  - [ ] Requires Kubernetes 1.28+
 - [ ] SubjectMapping controller implementation in addon-manager
   - [ ] Creates ManagedServiceAccount with `token-projection: none` annotation
   - [ ] ManagedClusterSetBinding-based cluster discovery
@@ -768,7 +1059,8 @@ verbs: ["create"]
 - Recommendation: Upgrade spokes before enabling SubjectMapping
 
 **Kubernetes Version Requirements:**
-- Hub: Kubernetes 1.20+ (stable TokenRequest API)
+
+- Hub: Kubernetes 1.28+ (ValidatingAdmissionPolicy with CEL authorizer, stable TokenRequest API)
 - Managed Clusters: Kubernetes 1.20+ (stable TokenRequest API)
 - cluster-proxy: v0.11.0+ (SubjectMapping support)
 
