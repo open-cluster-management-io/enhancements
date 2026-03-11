@@ -16,7 +16,7 @@ This enhancement proposes a SubjectMapping API that enables transparent authenti
 
 The current ManagedServiceAccount implementation presents two significant challenges:
 
-1. **Token Storage Security Risk**: Service account tokens are synchronized from managed clusters to the hub as Secrets, creating a centralized attack surface with long-lived credentials (360 days). This violates security best practices by concentrating high-value credentials in a single location.
+1. **Token Storage Security Risk**: Service account tokens are synchronized from managed clusters to the hub as Secrets, creating a centralized attack surface with long-lived credentials. This violates security best practices by concentrating high-value credentials in a single location.
 
 2. **RBAC Complexity**: Hub components need Secret read permissions across multiple cluster namespaces. For example, ArgoCD accessing 100 managed clusters requires Secret read permissions in 100 namespaces, creating operational overhead and potential security gaps.
 
@@ -874,6 +874,37 @@ User-specified `managedServiceAccount.name` enables coordination between hub and
 
 **Naming conventions**: `{application}-{environment}` (e.g., `argocd-prod`, `flux-staging`) or shared names (e.g., `shared-admin`, `dev-team`)
 
+### ClusterProfile Integration
+
+ClusterProfile provides cluster discovery and metadata (API endpoints, CA certificates) plus a credentials plugin system. Currently, the `managedserviceaccount` credentials plugin synchronizes long-lived tokens to Secrets, then copies them to ClusterProfile namespaces - creating multiple credential copies on the hub.
+
+**With SubjectMapping:**
+
+- Applications can still use ClusterProfile for cluster discovery
+- The credentials plugin becomes unnecessary - applications access clusters directly through cluster-proxy using their hub ServiceAccount
+- Transparent authentication eliminates token storage entirely
+
+**Security benefits:** No Secrets on hub, short-lived tokens (1 hour default) vs long-lived tokens, no Secret read permissions needed.
+
+**Example:**
+
+```yaml
+apiVersion: authentication.open-cluster-management.io/v1alpha1
+kind: SubjectMapping
+metadata:
+  name: my-app-sa
+  namespace: my-app
+spec:
+  hubSubject:
+    kind: ServiceAccount
+    serviceAccount:
+      name: my-app-sa
+  managedServiceAccount:
+    name: my-app-on-clusters
+```
+
+Application accesses clusters via cluster-proxy using its hub ServiceAccount token - no exec plugin or Secret reading required.
+
 ### Security Considerations
 
 **Authentication:**
@@ -1072,10 +1103,9 @@ verbs: ["create"]
 
 1. **Increased cluster-proxy Complexity**: Adds authentication logic to proxy-agent, increasing maintenance burden
 2. **Kubernetes Version Dependency**: Requires Kubernetes 1.20+ for stable TokenRequest API
-3. **cluster-proxy Dependency**: Only works with clusters using cluster-proxy for hub communication
-4. **Token Lifetime Trade-offs**: Short-lived tokens increase token generation overhead
-5. **Debugging Complexity**: Transparent token injection may complicate troubleshooting authentication issues
-6. **Cache Memory Usage**: Token caching consumes memory on proxy-agent (mitigated by distributed caching)
+3. **Token Lifetime Trade-offs**: Short-lived tokens increase token generation overhead
+4. **Debugging Complexity**: Transparent token injection may complicate troubleshooting authentication issues
+5. **Cache Memory Usage**: Token caching consumes memory on proxy-agent (mitigated by distributed caching)
 
 ## Alternatives
 
