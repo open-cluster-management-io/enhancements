@@ -312,6 +312,21 @@ This uses CEL's `authorizer` function to check RBAC permissions declaratively, w
 
 The SubjectMapping controller creates or updates ManagedServiceAccount resources to store multiple hub identity mappings in an annotation. Multiple SubjectMappings can reference the same managed ServiceAccount name, with each maintaining its own token expiration setting.
 
+**Annotation Format Choice:**
+
+The `hub-identities` annotation uses a newline-separated format (`namespace:name:tokenExpiration`) instead of JSON for a critical reason: **ValidatingAdmissionPolicy's CEL environment does not support JSON parsing** (`json.decode()` is not available). Since we need ValidatingAdmissionPolicy to enforce RBAC on this annotation (preventing security bypass attacks), we must use a format that CEL can parse with its available string functions (`split()`).
+
+Format: `namespace:name:tokenExpiration` (one per line)
+
+Example:
+
+```text
+argocd:argocd-hub-sa:3600
+gitops:gitops-sa:7200
+```
+
+**Future Consideration:** Adding a proper `spec.hubIdentities` field to the ManagedServiceAccount API would be the ideal long-term solution, enabling type-safe validation and cleaner CEL expressions. However, this requires API changes to the managed-serviceaccount addon.
+
 ```go
 const (
     // Annotations for SubjectMapping feature
@@ -322,11 +337,49 @@ const (
     TokenProjectionSecret = "secret" // Sync token to hub (default)
 )
 
+// Format: newline-separated "namespace:name:tokenExpiration"
+// Example: "argocd:argocd-hub-sa:3600\ngitops:gitops-sa:7200"
+// Note: Using newline-separated format instead of JSON because ValidatingAdmissionPolicy
+// CEL does not support json.decode(). This format can be parsed with split() functions.
+
 // HubIdentity represents a single hub ServiceAccount mapping
 type HubIdentity struct {
-    Namespace          string `json:"namespace"`
-    Name               string `json:"name"`
-    TokenExpiration    int64  `json:"tokenExpiration"`
+    Namespace       string
+    Name            string
+    TokenExpiration int64
+}
+
+// parseHubIdentities parses the newline-separated hub-identities annotation
+func parseHubIdentities(annotation string) []HubIdentity {
+    var identities []HubIdentity
+    lines := strings.Split(strings.TrimSpace(annotation), "\n")
+    for _, line := range lines {
+        line = strings.TrimSpace(line)
+        if line == "" {
+            continue
+        }
+        parts := strings.Split(line, ":")
+        if len(parts) != 3 {
+            continue // Skip invalid lines
+        }
+        expiration, _ := strconv.ParseInt(parts[2], 10, 64)
+        identities = append(identities, HubIdentity{
+            Namespace:       parts[0],
+            Name:            parts[1],
+            TokenExpiration: expiration,
+        })
+    }
+    return identities
+}
+
+// formatHubIdentities converts hub identities to newline-separated format
+func formatHubIdentities(identities []HubIdentity) string {
+    var lines []string
+    for _, identity := range identities {
+        line := fmt.Sprintf("%s:%s:%d", identity.Namespace, identity.Name, identity.TokenExpiration)
+        lines = append(lines, line)
+    }
+    return strings.Join(lines, "\n")
 }
 
 // Controller logic to add/update hub identity in ManagedServiceAccount
@@ -360,10 +413,7 @@ func (c *Controller) reconcileManagedServiceAccount(sm *authv1alpha1.SubjectMapp
     }
 
     // Parse existing hub identities from annotation
-    var hubIdentities []HubIdentity
-    if existing := msa.Annotations[AnnotationHubIdentities]; existing != "" {
-        json.Unmarshal([]byte(existing), &hubIdentities)
-    }
+    hubIdentities := parseHubIdentities(msa.Annotations[AnnotationHubIdentities])
 
     // Add or update this SubjectMapping's hub identity
     newIdentity := HubIdentity{
@@ -385,8 +435,7 @@ func (c *Controller) reconcileManagedServiceAccount(sm *authv1alpha1.SubjectMapp
     }
 
     // Serialize back to annotation
-    data, _ := json.Marshal(hubIdentities)
-    msa.Annotations[AnnotationHubIdentities] = string(data)
+    msa.Annotations[AnnotationHubIdentities] = formatHubIdentities(hubIdentities)
 
     // Add label to track this SubjectMapping references this MSA
     labelKey := fmt.Sprintf("authentication.open-cluster-management.io/mapping-%s-%s",
@@ -412,10 +461,8 @@ metadata:
   annotations:
     authentication.open-cluster-management.io/token-projection: "none"
     authentication.open-cluster-management.io/hub-identities: |
-      [
-        {"namespace":"argocd","name":"argocd-hub-sa","tokenExpiration":3600},
-        {"namespace":"gitops","name":"gitops-sa","tokenExpiration":7200}
-      ]
+      argocd:argocd-hub-sa:3600
+      gitops:gitops-sa:7200
   labels:
     authentication.open-cluster-management.io/managed-by: subject-mapping-controller
     # Track which SubjectMappings reference this MSA
@@ -429,8 +476,8 @@ When proxy-agent receives a request from a hub ServiceAccount, it:
 
 1. Validates the hub token via TokenReview and gets the hub ServiceAccount identity (namespace + name)
 2. Lists ManagedServiceAccounts in its cluster namespace
-3. For each ManagedServiceAccount, parses the `hub-identities` annotation
-4. Finds the matching hub identity in the JSON array
+3. For each ManagedServiceAccount, parses the `hub-identities` annotation (newline-separated format)
+4. Finds the matching hub identity by comparing namespace and name
 5. Uses that identity's `tokenExpiration` when generating the token via TokenRequest API
 
 The managed-serviceaccount addon agent honors the `token-projection` annotation:
@@ -474,8 +521,7 @@ Since SubjectMapping is namespace-scoped and ManagedServiceAccount is namespaced
 ```go
 func (c *Controller) cleanupManagedServiceAccount(sm *authv1alpha1.SubjectMapping, msa *authv1beta1.ManagedServiceAccount) error {
     // Parse hub identities
-    var hubIdentities []HubIdentity
-    json.Unmarshal([]byte(msa.Annotations[AnnotationHubIdentities]), &hubIdentities)
+    hubIdentities := parseHubIdentities(msa.Annotations[AnnotationHubIdentities])
 
     // Remove this SubjectMapping's identity
     filtered := []HubIdentity{}
@@ -495,8 +541,7 @@ func (c *Controller) cleanupManagedServiceAccount(sm *authv1alpha1.SubjectMappin
         return c.client.Delete(ctx, msa)
     }
 
-    data, _ := json.Marshal(filtered)
-    msa.Annotations[AnnotationHubIdentities] = string(data)
+    msa.Annotations[AnnotationHubIdentities] = formatHubIdentities(filtered)
     return c.client.Update(ctx, msa)
 }
 ```
@@ -728,15 +773,13 @@ Groups: ["system:serviceaccounts", "system:authenticated"]
        }
 
        for _, msa := range msaList.Items {
-           identitiesJSON := msa.Annotations[AnnotationHubIdentities]
-           if identitiesJSON == "" {
+           identitiesStr := msa.Annotations[AnnotationHubIdentities]
+           if identitiesStr == "" {
                continue
            }
 
-           var hubIdentities []HubIdentity
-           if err := json.Unmarshal([]byte(identitiesJSON), &hubIdentities); err != nil {
-               continue
-           }
+           // Parse newline-separated format: "namespace:name:tokenExpiration"
+           hubIdentities := parseHubIdentities(identitiesStr)
 
            // Find matching hub identity
            for _, identity := range hubIdentities {
@@ -933,6 +976,60 @@ Application accesses clusters via cluster-proxy using its hub ServiceAccount tok
 - Kubernetes enforces unique namespace/name combinations
 - No webhook required - simpler operations, no single point of failure
 
+**ManagedServiceAccount Annotation Protection:**
+
+The `hub-identities` annotation on ManagedServiceAccount resources grants hub ServiceAccounts access to managed clusters. Without protection, users could bypass SubjectMapping RBAC by directly creating/modifying ManagedServiceAccount resources with this annotation.
+
+Protection is enforced via ValidatingAdmissionPolicy that validates users have proper SubjectMapping permissions:
+
+```yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: managedserviceaccount-hub-identities-protection
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: ["authentication.open-cluster-management.io"]
+      apiVersions: ["v1beta1"]
+      operations: ["CREATE", "UPDATE"]
+      resources: ["managedserviceaccounts"]
+  validations:
+  - expression: |
+      (has(request.userInfo.username) &&
+       request.userInfo.username == 'system:serviceaccount:open-cluster-management:subjectmapping-controller') ||
+      !has(object.metadata.annotations) ||
+      !('authentication.open-cluster-management.io/hub-identities' in object.metadata.annotations) ||
+      object.metadata.annotations['authentication.open-cluster-management.io/hub-identities'] == '' ||
+      object.metadata.annotations['authentication.open-cluster-management.io/hub-identities']
+        .split('\n')
+        .all(line, line == '' || (
+          line.split(':').size() == 3 &&
+          authorizer.group('authentication.open-cluster-management.io')
+            .resource('subjectmappings/managedserviceaccounts')
+            .namespace(line.split(':')[0])
+            .name(object.metadata.name)
+            .check('use').allowed()
+        ))
+    message: "Setting hub-identities annotation requires 'use' permission on subjectmappings/managedserviceaccounts for the managed ServiceAccount name in each hub ServiceAccount namespace"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: managedserviceaccount-hub-identities-protection-binding
+spec:
+  policyName: managedserviceaccount-hub-identities-protection
+  validationActions: [Deny]
+```
+
+This ensures:
+
+- SubjectMapping controller can always set the annotation (for reconciliation)
+- Users must have 'use' permission on the virtual `subjectmappings/managedserviceaccounts` subresource for each hub ServiceAccount in the annotation
+- No bypass of SubjectMapping RBAC by directly modifying ManagedServiceAccount resources
+- Cluster admins with broad permissions can still modify resources for debugging
+
 **Required RBAC:**
 
 Hub (SubjectMapping creation):
@@ -983,7 +1080,9 @@ verbs: ["create"]
 ### Unit Tests
 
 - SubjectMapping controller: cluster discovery via ManagedClusterSetBinding, ManagedServiceAccount creation, finalizers
+- SubjectMapping controller: hub-identities annotation parsing and formatting (newline-separated format)
 - proxy-agent: ServiceAccount token resolution, caching, cache invalidation, TokenReview integration
+- proxy-agent: hub-identities annotation parsing from newline-separated format
 - CEL validation: metadata.name must match hubSubject.serviceAccount.name
 
 ### Integration Tests
@@ -992,7 +1091,12 @@ verbs: ["create"]
 - ManagedClusterSetBinding changes trigger reconciliation
 - Token generation, caching, and injection into requests
 - CEL validation prevents mismatched names
-- ValidatingAdmissionPolicy enforces virtual subresource permissions
+- ValidatingAdmissionPolicy enforces virtual subresource permissions:
+  - SubjectMapping: requires 'use' permission on managed SA name in the hub SA's namespace
+  - ManagedServiceAccount: prevents bypass by validating 'use' permission for each hub identity in annotation
+  - Controller bypass: controller ServiceAccount can always set annotations
+  - User with proper RBAC can create/modify resources
+  - User without proper RBAC is blocked
 
 ### E2E Tests
 
