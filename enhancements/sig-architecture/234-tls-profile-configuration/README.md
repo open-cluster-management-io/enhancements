@@ -194,7 +194,16 @@ data:
 **Field Specifications:**
 
 - **`minTLSVersion`** (required): Minimum TLS version. Valid values: `VersionTLS10`, `VersionTLS11`, `VersionTLS12`, `VersionTLS13`
-- **`cipherSuites`** (optional): Comma-separated list of cipher suite names as defined by Go's `crypto/tls` package
+- **`cipherSuites`** (optional): Comma-separated list of cipher suite names in **IANA format** (e.g., `TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256`), as defined by Go's `crypto/tls` package
+
+**Why IANA Names:**
+
+The `cipherSuites` field uses IANA cipher suite names as the canonical format because:
+
+- Go's `crypto/tls` package uses IANA names for its [constants](https://pkg.go.dev/crypto/tls#pkg-constants)
+- Kubernetes `--tls-cipher-suites` flag on kube-apiserver, kubelet, and other components uses the same [IANA names](https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/)
+
+This keeps upstream OCM code free of format conversion logic. Platforms that use OpenSSL-style names (e.g., `ECDHE-RSA-AES128-GCM-SHA256`) are responsible for converting to IANA names before writing to the ConfigMap (e.g., `ECDHE-RSA-AES128-GCM-SHA256` → `TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256`).
 
 **Important TLS 1.3 Behavior:**
 
@@ -289,7 +298,7 @@ All OCM components with TLS servers support these standard flags:
     (default: VersionTLS12)
 
 --tls-cipher-suites string
-    Comma-separated cipher suite list (ignored when minVersion is VersionTLS13)
+    Comma-separated IANA cipher suite names (ignored when minVersion is VersionTLS13)
     Example: TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
 ```
 
@@ -396,7 +405,7 @@ data:
   # Required: Minimum TLS version
   minTLSVersion: "VersionTLS12"  # or VersionTLS10, VersionTLS11, VersionTLS13
 
-  # Optional: Comma-separated cipher suite names (ignored for TLS 1.3)
+  # Optional: Comma-separated IANA cipher suite names (ignored for TLS 1.3)
   cipherSuites: "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
 ```
 
