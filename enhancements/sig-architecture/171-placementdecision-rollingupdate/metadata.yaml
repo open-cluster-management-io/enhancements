@@ -1,0 +1,15 @@
+title: placementdecision-rollingupdate
+authors:
+  - "@haoqing0110"
+reviewers:
+  - "@qiujian16"
+  - "@elgnay"
+approvers:
+  - "@qiujian16"
+  - "@elgnay"
+creation-date: 2026-01-29
+last-updated: 2026-01-29
+status: provisional
+see-also:
+  - "/enhancements/sig-architecture/6-placements"
+  - "/enhancements/sig-architecture/64-placementStrategy"
