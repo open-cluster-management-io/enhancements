@@ -1,0 +1,13 @@
+title: tls-profile-configuration
+authors:
+  - "@zhujian7"
+reviewers:
+  - "@qiujian16"
+  - "@elgnay"
+approvers:
+  - "@qiujian16"
+creation-date: 2026-03-17
+last-updated: 2026-03-17
+status: provisional
+see-also:
+  - "https://github.com/openshift/enhancements/blob/master/enhancements/security/centralized-tls-config.md"
