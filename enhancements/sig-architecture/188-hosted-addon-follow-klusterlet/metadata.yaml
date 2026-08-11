@@ -1,0 +1,16 @@
+title: hosted-addon-discover-hosting-cluster
+authors:
+  - "@mikeshng"
+reviewers:
+  - "@kahirokunn"
+  - "@qiujian16"
+  - "@tesshuflower"
+approvers:
+  - "@qiujian16"
+creation-date: 2026-08-11
+last-updated: 2026-08-13
+status: provisional
+see-also:
+  - "/enhancements/sig-architecture/33-hosted-deploy-mode"
+  - "/enhancements/sig-architecture/63-hosted-addon"
+  - "/enhancements/sig-architecture/4-cluster-claims"
