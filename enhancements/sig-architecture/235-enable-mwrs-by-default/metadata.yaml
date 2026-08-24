@@ -1,0 +1,14 @@
+title: enable-manifestworkreplicaset-by-default
+authors:
+  - "@augustrh"
+reviewers:
+  - TBD
+  - "@mikeshng"
+approvers:
+  - TBD
+creation-date: 2026-05-13
+last-updated: 2026-05-13
+status: provisional
+see-also:
+  - "/enhancements/sig-architecture/229-manifestworkreplicaset-rollback/README.md"
+  - "/enhancements/sig-architecture/231-manifestworkreplicaset-rollout-plugin/README.md"
