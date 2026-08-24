@@ -1,0 +1,13 @@
+title: addon-template-clusterrolebinding
+authors:
+  - "@bhperry"
+reviewers:
+  - "@qiujian16"
+  - "@haoqing0110"
+  - "@zhujian7"
+approvers:
+  - "@qiujian16"
+  - "@haoqing0110"
+creation-date: 2026-03-25
+last-updated: 2026-03-25
+status: provisional
