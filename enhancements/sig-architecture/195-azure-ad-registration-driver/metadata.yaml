@@ -1,0 +1,12 @@
+title: azure-ad-registration-driver
+authors:
+  - "@ssijbabu"
+reviewers:
+  - TBD
+approvers:
+  - TBD
+creation-date: 2026-09-05
+last-updated: 2026-09-05
+status: provisional
+see-also:
+  - "/enhancements/sig-architecture/105-aws-iam-registration"
