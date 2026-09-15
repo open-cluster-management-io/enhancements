@@ -1,0 +1,17 @@
+title: hosted-addon-managed-cluster-credentials
+authors:
+  - "@mikeshng"
+reviewers:
+  - "@kahirokunn"
+  - "@qiujian16"
+  - "@tesshuflower"
+approvers:
+  - "@qiujian16"
+creation-date: 2026-09-14
+last-updated: 2026-09-14
+status: provisional
+see-also:
+  - "/enhancements/sig-architecture/19-projected-serviceaccount-token"
+  - "/enhancements/sig-architecture/63-hosted-addon"
+  - "/enhancements/sig-architecture/188-hosted-addon-follow-klusterlet"
+  - "/enhancements/sig-architecture/191-hosted-addon-runtime-namespace"

@@ -1,0 +1,17 @@
+title: hosted-addon-cluster-scoped-resources
+authors:
+  - "@mikeshng"
+reviewers:
+  - "@kahirokunn"
+  - "@qiujian16"
+  - "@tesshuflower"
+approvers:
+  - "@qiujian16"
+creation-date: 2026-09-14
+last-updated: 2026-09-14
+status: provisional
+see-also:
+  - "/enhancements/sig-architecture/33-hosted-deploy-mode"
+  - "/enhancements/sig-architecture/47-manifestwork-updatestrategy"
+  - "/enhancements/sig-architecture/63-hosted-addon"
+  - "/enhancements/sig-architecture/191-hosted-addon-runtime-namespace"

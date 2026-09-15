@@ -1,0 +1,18 @@
+title: hosted-addon-runtime-namespace
+authors:
+  - "@mikeshng"
+reviewers:
+  - "@kahirokunn"
+  - "@qiujian16"
+  - "@tesshuflower"
+approvers:
+  - "@qiujian16"
+creation-date: 2026-09-14
+last-updated: 2026-09-14
+status: provisional
+see-also:
+  - "/enhancements/sig-architecture/33-hosted-deploy-mode"
+  - "/enhancements/sig-architecture/63-hosted-addon"
+  - "/enhancements/sig-architecture/188-hosted-addon-follow-klusterlet"
+  - "/enhancements/sig-architecture/190-hosted-addon-managed-cluster-credentials"
+  - "/enhancements/sig-architecture/192-hosted-addon-cluster-scoped-resources"
