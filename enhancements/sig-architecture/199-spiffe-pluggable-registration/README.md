@@ -152,7 +152,7 @@ flowchart LR
       direction TB
       AG["agent container<br/>built-in: hub · memory · k8s-psat"]
       AP[["provider container (optional)<br/>e.g. pkcs11 KeyStore · aws-iid Attestor · spire SVIDSource"]]
-      AG <-- "provider protocol<br/>Unix socket (emptyDir)" --> AP
+      AG <-- "provider protocol (gRPC)<br/>private Unix socket, peer UID checked" --> AP
     end
   end
   subgraph HUB["Hub"]
@@ -160,7 +160,7 @@ flowchart LR
       direction TB
       GS["grpc-server container<br/>CertificateService + CloudEvents<br/>built-in: k8s-psat · secret · builtin"]
       HP[["provider container (optional)<br/>e.g. kms CAKeyManager · aws-iid Verifier · spire BundleSource"]]
-      GS <-- "provider protocol<br/>Unix socket (emptyDir)" --> HP
+      GS <-- "provider protocol (gRPC)<br/>private Unix socket, peer UID checked" --> HP
     end
     MCR[("ManagedCluster<br/>hubAcceptsClient + attestation policy")]
     GS --- MCR
@@ -170,7 +170,9 @@ flowchart LR
 
 Each provider slot is filled either by a built-in provider inside the OCM container, or by an
 external provider container in the same pod. Double-bordered boxes are external provider
-containers, which are present only when the configuration names one.
+containers, which are present only when the configuration names one. Each external provider gets
+its own socket, which only it and the OCM container can reach, and both ends check who is on the
+other side (see [Securing the provider channel](#securing-the-provider-channel)).
 
 ### Flow
 
@@ -729,6 +731,7 @@ type GRPCAgentRegistrationConfig struct {
 }
 
 // +kubebuilder:validation:XValidation:rule="[self.svidSource, self.keyStore, self.attestor].all(p, !has(p.external) || self.externalProviders.exists(e, e.name == p.external))",message="a slot references an external provider that is not listed in externalProviders"
+// +kubebuilder:validation:XValidation:rule="!has(self.externalProviders) || self.externalProviders.all(e, !has(e.volumes) || e.volumes.all(v, !has(v.projected) || v.projected.sources.all(s, !has(s.serviceAccountToken) || s.serviceAccountToken.audience != self.tokenAudience)))",message="a provider must not be given a token with the hub audience"
 type SPIFFEAgentConfig struct {
 	// tokenAudience is the audience requested for the projected token used by the k8s-psat
 	// attestor. It must equal the hub's spiffe.tokenAudience.
@@ -856,12 +859,17 @@ type SPIFFEExternalProvider struct {
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 
 	// volumes are added to the pod and mounted only into this container, for example an HSM client
-	// configuration or the SPIRE agent socket.
+	// configuration or the SPIRE agent socket. Only configMap, secret, projected, emptyDir, and csi
+	// volumes are allowed. A projected serviceAccountToken must set an explicit audience.
+	// +kubebuilder:validation:XValidation:rule="self.all(v, [has(v.configMap), has(v.secret), has(v.projected), has(v.emptyDir), has(v.csi)].exists(b, b))",message="provider volumes may only be configMap, secret, projected, emptyDir, or csi"
+	// +kubebuilder:validation:XValidation:rule="self.all(v, !has(v.projected) || v.projected.sources.all(s, !has(s.serviceAccountToken) || (has(s.serviceAccountToken.audience) && size(s.serviceAccountToken.audience) > 0)))",message="a projected serviceAccountToken in a provider volume must set an explicit audience"
 	// +optional
 	Volumes []SPIFFEProviderVolume `json:"volumes,omitempty"`
 
-	// securityContext replaces the restricted default. It is needed only for device access, such
-	// as a TPM.
+	// securityContext is merged onto the restricted default. It may not leave the restricted Pod
+	// Security Standard, and may not set runAsUser, which the operator chooses. HSM and TPM devices
+	// are reached through a device plugin in resources, not through privileged access.
+	// +kubebuilder:validation:XValidation:rule="!has(self.runAsUser) && (!has(self.runAsNonRoot) || self.runAsNonRoot) && (!has(self.privileged) || !self.privileged) && (!has(self.allowPrivilegeEscalation) || !self.allowPrivilegeEscalation) && (!has(self.capabilities) || !has(self.capabilities.add) || size(self.capabilities.add) == 0) && (!has(self.readOnlyRootFilesystem) || self.readOnlyRootFilesystem) && (!has(self.seccompProfile) || self.seccompProfile.type != 'Unconfined')",message="securityContext must stay within the restricted Pod Security Standard and must not set runAsUser"
 	// +optional
 	SecurityContext *corev1.SecurityContext `json:"securityContext,omitempty"`
 
@@ -902,14 +910,105 @@ it.
     goes to the webhook pod;
 - adds it as a native sidecar container (an init container with `restartPolicy: Always`), so it
   starts before the OCM container and stops after it;
-- mounts a shared `emptyDir` at `/var/run/ocm/providers` into both containers. The provider listens
-  on `/var/run/ocm/providers/<name>.sock`, and the path is passed in `OCM_PROVIDER_SOCKET`;
-- applies a restricted security context (non-root, read-only root filesystem, all capabilities
-  dropped, no privilege escalation) unless the entry sets `securityContext`.
+- creates one `emptyDir` volume for that provider alone, and mounts it into the provider at
+  `/var/run/ocm/provider` and into the OCM container at `/var/run/ocm/providers/<name>`. The
+  provider listens on `provider.sock` in that directory, and the path is passed in
+  `OCM_PROVIDER_SOCKET`;
+- applies the security settings in [Securing the provider channel](#securing-the-provider-channel).
 
 One container may serve several slots, for example a `tpm` `KeyStore` and a `tpm-devid`
-`Attestor`. Two slots that name the same entry share one container, and each slot gets its own
-handshake.
+`Attestor`. Two slots that name the same entry share one container and one socket, and each slot
+gets its own handshake.
+
+<a id="securing-the-provider-channel"></a>**Securing the provider channel.** The provider channel carries the most sensitive calls in the
+design: signatures by the hub CA key, signatures by the agent key, and, in Mode 4, the agent's
+private key. The channel is secured against three things:
+
+- other containers in the same pod, including other providers;
+- other pods and processes on the same node;
+- a provider that tries to do more than its slot allows.
+
+The node itself is out of scope. That covers root on the node, the container runtime, and anyone
+who can `exec` into the pod. Each of them can already read the OCM container's memory, so no
+channel protection could stop them.
+
+The operator and the `sdk-go` provider runtime apply these controls, so provider authors do not
+implement them. They are not configurable, and none of them can be turned off:
+
+1. **One private socket per provider.** Each provider's `emptyDir` is mounted only into that
+   provider and the OCM container. Because no two providers share a volume, an external
+   `Verifier` cannot connect to the `CAKeyManager`'s socket and ask for a signature. The volume uses
+   `medium: Memory` with a 1Mi `sizeLimit`, so it never reaches the node's disk. The directory has
+   mode `0770` and the socket has mode `0660`. Nothing is ever placed under a `hostPath`.
+2. **Filesystem sockets only.** All containers in a pod share one network namespace. Anything
+   listening on TCP, on loopback, or on an abstract-namespace Unix socket can therefore be reached
+   by every container in the pod. `provider.Serve` listens only on the socket path. The OCM
+   container dials only that path. Before dialing, it uses `lstat` to confirm the path is a socket,
+   not a symlink, owned by the provider's UID. The conformance suite fails a provider that opens
+   any other listener.
+3. **Both ends check the peer's identity.** The operator runs the OCM container and every provider
+   container under different non-root UIDs, which it chooses itself. It sets `runAsUser` and
+   `runAsGroup` explicitly and never relies on the image. On each new connection, both ends read
+   the peer's UID from the kernel (`SO_PEERCRED`) and close the connection unless it is the UID they
+   expect. The expected UIDs are passed in `OCM_PROVIDER_PEER_UID`. The check is a gRPC
+   `TransportCredentials` in `sdk-go`, used by both the client adapters and `provider.Serve`. It runs
+   before any RPC, the handshake included.
+4. **No TLS on the socket.** Controls 1 to 3 leave exactly two kernel-authenticated endpoints, and
+   the bytes never leave the kernel. TLS would add a key that has to be delivered into the pod, which
+   is the kind of stored credential this design removes. The Kubernetes KMS v2 plugin, CSI drivers,
+   and the SPIFFE Workload API use the same model for the same kinds of secrets.
+5. **No shared process namespace.** The operator sets `shareProcessNamespace: false` explicitly.
+   This stops a provider from reading the agent key or the SVID out of the OCM container's memory
+   through `/proc`, and stops OCM from reading a provider's memory.
+6. **Each container gets only its own credentials.** The operator sets
+   `automountServiceAccountToken: false` on the pod. It mounts the hub-audience projected token and
+   the Kubernetes API token only into the OCM container. A provider gets no ServiceAccount token
+   unless its `volumes` declare a projected one. In that case, CEL validation requires an explicit
+   `audience` that differs from `tokenAudience`. The operator also rejects the cluster's own API
+   audience. Both rules stop a provider from holding the agent's hub identity or its Kubernetes
+   permissions. Each Secret named in a provider's `env` or `volumes` is mounted only into that
+   provider.
+7. **A restricted container.** Provider containers meet the Kubernetes `restricted` Pod Security
+   Standard:
+   - non-root, with the operator-chosen UID;
+   - all capabilities dropped and no privilege escalation;
+   - a read-only root filesystem;
+   - the `RuntimeDefault` seccomp profile.
+
+   The OCM container gets the same settings. `securityContext` on an entry is merged onto these
+   defaults. CEL validation rejects any value that leaves the `restricted` profile, and any
+   `runAsUser`. Provider `volumes` may only be `configMap`, `secret`, `projected`, `emptyDir`, or
+   `csi` volumes (`csi`, for example, for the SPIFFE CSI driver). HSM and TPM devices are reached
+   through a device plugin, requested in `resources`. A privileged container or a `hostPath` volume
+   is never used.
+8. **Bounded calls on both ends.** Every call from the OCM container has a deadline:
+   - `Sign`: 2s;
+   - `GetEvidence`, `Verify`, `ValidatePolicy`, and `Rotate`: 10s;
+   - `Handshake`: `startupTimeout`.
+
+   Messages are limited to 64KiB, except the `WatchX509SVID` and `WatchBundle` streams, which allow
+   4MiB. The OCM container also caps how many calls are in flight to each provider. On the provider
+   side, `provider.Serve` applies the same message limits, serves no gRPC reflection, and serves
+   `grpc.health.v1` only on the socket. The kubelet probes it there through a small `exec` probe in
+   the SDK.
+9. **The OCM container checks every result before using it.**
+   - **`KeyStore`**: the public key from `Generate` must use the requested algorithm. The CSR's
+     signature must verify against that key.
+   - **`CAKeyManager`**: core code builds the full `TBSCertificate`, and the provider returns only a
+     signature over its digest. Core code verifies that signature against the CA public key in the
+     CA `ConfigMap` before it returns a certificate. A provider can therefore not change a
+     certificate's contents.
+   - **`SVIDSource`**: the leaf's URI SAN must equal the expected SPIFFE ID, the chain must verify to
+     the bundle, and the private key must match the leaf. The key is kept only in memory and is
+     never logged.
+   - **`BundleSource`**: an empty bundle is rejected, and so is an update that removes the CA of the
+     hub's current serving certificate.
+   - **`Verifier`**: claims are logged and never used to derive identity (see
+     [Provider interfaces](#provider-interfaces)).
+
+A rejected peer or a failed result check counts as a provider failure. Like every other provider
+failure, it fails closed (see below), and it is counted in
+`ocm_spiffe_provider_rejected_total{provider,slot,reason}`.
 
 **Provider protocol.** The protocol is the Go interfaces above mapped onto gRPC, in the versioned
 package `ocm.spiffe.provider.v1alpha1` in `sdk-go`. A provider serves `Provider` plus the services
@@ -1028,7 +1127,8 @@ not serve, with a message that names the provider and the cause, in any of these
 - the provider socket does not appear within `startupTimeout`;
 - the handshake fails, there is no common protocol version, or the provider reports a different
   type;
-- the provider does not serve the service for its slot.
+- the provider does not serve the service for its slot;
+- the socket is not a socket owned by the provider's UID, or the peer UID check fails.
 
 If a provider container exits later, calls through it fail until it restarts. The agent keeps its
 current SVID until expiry and retries with backoff. It never falls back to a built-in provider.
@@ -1171,8 +1271,13 @@ certificate to revoke and no Secret to delete on the managed cluster.
 | **The agent re-pins its cluster to an attacker-controlled issuer.** | Changing the policy annotation requires `managedclusters/accept`, which agents never have. `RotateTrust` cannot change the issuer or subjects. |
 | **A compromised managed-cluster apiserver mints tokens for the agent ServiceAccount.** | Out of scope: whoever controls that apiserver already controls the agent pod and could read today's Secret. The compromise does not reach other clusters, because each cluster's JWKS is pinned separately. |
 | **The unauthenticated `CreateCertificate` endpoint is abused.** | Unaccepted clusters and clusters without a policy are rejected before any signature work. Requests are rate-limited per cluster name and per peer. The endpoint never creates hub objects. |
-| **A faulty or malicious external provider.** | Signer policy, acceptance, and the SPIFFE ID are enforced in core code, so a provider cannot widen what is issued. The image comes from a registry the administrator chooses and is pinned by digest. It runs in its own container, with a restricted security context by default, and does not share the OCM container's filesystem or process. |
-| **Another workload reaches a provider socket.** | The socket lives in a pod-local `emptyDir`, not a `hostPath`, so only containers in the same pod can connect. |
+| **A faulty or malicious external provider.** | Signer policy, acceptance, and the SPIFFE ID are enforced in core code, so a provider cannot widen what is issued. The image comes from a registry the administrator chooses and is pinned by digest. It runs in its own container under its own UID, with the `restricted` security context enforced, and it shares neither the OCM container's filesystem, nor its process namespace, nor its tokens. Every result it returns is checked (see [Securing the provider channel](#securing-the-provider-channel)). |
+| **Another workload reaches a provider socket.** | Each provider's socket is in its own memory-backed `emptyDir`, never a `hostPath`, mounted only into that provider and the OCM container. Providers never listen on TCP, loopback, or abstract sockets, which every container in the pod could reach. |
+| **One provider calls another, for example a `Verifier` asking the `CAKeyManager` to sign.** | No two providers share a socket volume. Even if a socket were reachable, both ends check the peer's UID with `SO_PEERCRED`, and every container runs under its own operator-chosen UID. |
+| **Something other than the intended provider listens on the socket.** | Only the provider container has the socket's volume mounted. Before dialing, the OCM container confirms that the socket is owned by the provider's UID, and it then checks the peer UID on the connection. |
+| **A provider reads the agent key, the SVID, or the hub token from the OCM container.** | `shareProcessNamespace: false`, so `/proc` of the OCM container is not visible. `automountServiceAccountToken: false`, and the hub-audience token is mounted only into the OCM container. CEL validation rejects a provider token with the hub audience. |
+| **A provider returns a tampered result.** | Core code verifies every CA signature against the CA public key and every CSR signature against the key's public key. It checks an `SVIDSource`'s SAN, chain, and key match, and it rejects empty bundles. A tampered result fails closed. |
+| **A provider escalates to the node.** | The `restricted` Pod Security Standard is enforced by CEL validation, and it cannot be overridden. There are no privileged containers and no `hostPath` volumes. Devices are reached through device plugins. |
 | **A silent downgrade to a weaker mode.** | Every provider failure is fail-closed, and the code has no fallback path. A slot that names an external provider never falls back to a built-in one. |
 | **Restart storms, since every restart attests again.** | Per-cluster and per-IP rate limits. A warning event on the `ManagedCluster`, and `ocm_spiffe_reattestation_total{cluster,changed_claims}`, when the claims differ from the previous issuance. |
 | **The hub CA key is compromised.** | Rotation with an overlap window. Mode 2 moves the key into a non-exportable KMS or HSM. |
@@ -1203,13 +1308,25 @@ maintain.
   - CEL validation rejects a type that is not built in without `external`, an `external` name with
     no matching `externalProviders` entry, and an image that is not pinned by digest.
   - The operator renders provider containers into the right pods for each slot and each klusterlet
-    mode, with the shared socket volume and the restricted security context.
+    mode. Each provider has its own socket volume, and no two providers share one. Every container
+    has its own UID and the restricted security context, the pod sets
+    `shareProcessNamespace: false` and `automountServiceAccountToken: false`, and no provider
+    container mounts the hub-audience token.
+  - CEL validation rejects a `securityContext` that leaves the `restricted` profile or sets
+    `runAsUser`, a `hostPath` volume, and a provider token with no audience or with the hub audience.
+  - The peer-credential `TransportCredentials` rejects a connection from an unexpected UID on both
+    ends, and the OCM side refuses a socket path that is a symlink or has the wrong owner.
+  - Result checks reject a bad CA signature, a CSR signature that does not match, an SVID with the
+    wrong SAN or a mismatched key, and an empty bundle.
 - Provider conformance suite in `sdk-go`, run against every built-in provider through the protocol
   adapter, and required for every external provider:
   - `KeyStore` never exposes key bytes and generates a distinct key each time.
   - A `Verifier` rejects evidence for another cluster, expired evidence, and replayed evidence.
   - A `CAKeyManager` signs with the requested key ID.
   - The handshake rejects a type mismatch and a protocol version with no overlap.
+  - The provider rejects a peer with an unexpected UID, and opens no TCP, loopback, or
+    abstract-namespace listener.
+  - The provider enforces the message size limits and serves no gRPC reflection.
 - Integration tests:
   - `CreateCertificate` against an in-process gRPC server, with a fake issuer that signs tokens
     with test keys, and a fake verifier that exercises the provider error paths.
@@ -1217,7 +1334,8 @@ maintain.
     policies.
   - CA rotation with overlapping bundles.
   - The client adapters against a fake provider serving each protocol service, including a provider
-    that exits, hangs, or returns errors.
+    that exits, hangs, returns errors, runs under the wrong UID, or returns a tampered signature or
+    SVID.
 - e2e tests on kind, for each of `Default`, `Singleton`, `Hosted`, and `SingletonHosted`:
   - Join, accept, and register.
   - A real `ManifestWork` applied on the managed cluster.
@@ -1318,6 +1436,11 @@ proposed separately.
 - **Providers as a separate Deployment reached over the network.** This is closer to how an addon
   runs, but signing requests and, in Mode 4, SVID private keys would cross the network, and the
   channel would need its own authentication. A pod-local socket needs neither.
+- **mTLS on the provider socket.** This would authenticate the two ends with certificates instead
+  of kernel peer credentials. However, the certificates and keys would have to be issued and
+  delivered into the pod, either as Secrets or through a bootstrap channel of their own. That
+  reintroduces the stored credentials this design removes. It adds nothing against the node, which
+  is out of scope, and nothing beyond private volumes and `SO_PEERCRED` against other containers.
 - **Compiling every provider into OCM.** This is simpler to operate, but every HSM, cloud, or
   in-house attestor would need a change to OCM and an OCM release, and OCM's dependencies would
   grow with each one.
