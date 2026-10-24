@@ -46,10 +46,10 @@ This proposal implements Mode 1 and the external provider mechanism: the provide
 sidecar container injection, a Go SDK, and a conformance suite. Providers for Modes 2 to 4 are built
 later as provider images.
 
-Every SVID also carries today's Kubernetes subject: CN
-`system:open-cluster-management:<cluster>:<agent>`, with O set to the cluster's groups. Hub RBAC,
-the hub-side `CreatePermissions`/`Cleanup` path, and the gRPC server's SubjectAccessReview
-authorization therefore keep working unchanged.
+Every SVID also carries a Kubernetes subject in today's form: CN
+`system:open-cluster-management:<cluster>:<agent-role>`, with O set to the cluster's groups. Hub
+RBAC binds those groups, so the hub-side `CreatePermissions`/`Cleanup` path and the gRPC server's
+SubjectAccessReview authorization keep working unchanged.
 
 ## Motivation
 
@@ -133,7 +133,7 @@ becomes a provider rather than a driver.
 | istiod's CA, `IstioCertificateService/CreateCertificate` | Hub gRPC server, new `CertificateService/CreateCertificate` |
 | ztunnel generates the key in memory and sends a CSR | Registration and work agents generate keys in the `memory` `KeyStore` |
 | ztunnel authenticates with its projected SA token, and istiod validates it with a TokenReview | The agent authenticates with its projected SA token (`k8s-psat` `Attestor`). The hub validates it as a JWT against the JWKS pinned for the agent's cluster (`k8s-psat` `Verifier`) |
-| SPIFFE ID `spiffe://<td>/ns/<ns>/sa/<sa>` | `spiffe://<td>/cluster/<cluster>/agent/<agent>` |
+| SPIFFE ID `spiffe://<td>/ns/<ns>/sa/<sa>` | `spiffe://<td>/cluster/<cluster>/agent/<agent-role>`, where the role is mapped from the verified ServiceAccount |
 | Short-lived certificates, rotated at about half their lifetime | Same |
 | CA key in `cacerts`, or a plugged-in external CA | CA key behind `CAKeyManager`: a Secret now, an HSM or KMS in Mode 2 |
 
@@ -165,7 +165,8 @@ flowchart LR
     MCR[("ManagedCluster<br/>hubAcceptsClient + attestation policy")]
     GS --- MCR
   end
-  AG <-- "CreateCertificate, then CloudEvents over mTLS" --> GS
+  AG -- "CreateCertificate<br/>bootstrap listener, server-authenticated TLS" --> GS
+  AG <-- "CloudEvents and RotateTrust<br/>main listener, mTLS with the SVID" --> GS
 ```
 
 Each provider slot is filled either by a built-in provider inside the OCM container, or by an
@@ -189,8 +190,8 @@ sequenceDiagram
     loop on start, and at ~50% of SVID TTL
         KL->>K: projected SA token (aud = hub audience, <= 1h)
         K->>K: KeyStore.Generate (in memory), build CSR
-        K->>G: CreateCertificate(CSR, evidence{type: k8s-psat, token})
-        G->>G: Verifier.Verify against pinned policy, check signer policy
+        K->>G: CreateCertificate(CSR, agent role, evidence{type: k8s-psat, token})
+        G->>G: Verifier.Verify against pinned policy, map subject to role, check signer policy
         G-->>K: X.509-SVID chain (24h) + trust bundle
     end
     K->>G: CloudEvents over mTLS with the in-memory SVID
@@ -230,7 +231,9 @@ KMS, the administrator lists the provider image in `externalProviders` and point
 ```
 
 There is no `--hub-token`. The agent receives only the gRPC server address and the server CA
-certificate. Both are public, so they are stored in a `ConfigMap`.
+certificate. Both are public, so they are stored in a `ConfigMap`. The agent calls
+`CreateCertificate` on the hub's bootstrap listener, which is on the same host, port 8091 by
+default. `--grpc-certificate-server` overrides that address.
 
 `clusteradm join` uses its kube context on the cluster that will run the agent. That is the managed
 cluster in `Default` and `Singleton` modes, and the hosting cluster in `Hosted` and
@@ -262,8 +265,8 @@ acceptance.
 This command:
 
 1. creates the `ManagedCluster` if it does not exist;
-2. writes the attestation policy (attestor type, issuer, JWKS, and allowed ServiceAccount subjects)
-   to the `ManagedCluster`;
+2. writes the attestation policy to the `ManagedCluster`: the attestor type, the issuer, the JWKS,
+   and the map from each agent ServiceAccount to its agent role;
 3. sets `hubAcceptsClient: true`.
 
 The trust file is not secret, because it holds only public keys. The hub administrator should still
@@ -285,15 +288,18 @@ SubjectAccessReview and the bindings are gone.
 
 #### Story 5 - Managed cluster permission isolation on hub
 
-The SVID carries the same user and groups that a certificate-mode agent gets today:
+The SVID carries the same groups that a certificate-mode agent gets today, and a user in the same
+form:
 
-- user `system:open-cluster-management:<cluster>:<agent>`;
+- user `system:open-cluster-management:<cluster>:<agent-role>`;
 - groups `system:open-cluster-management:<cluster>` and
   `system:open-cluster-management:managed-clusters`.
 
-Per-cluster RBAC and isolation are therefore unchanged. The hub issues an SVID only for the
-cluster whose pinned policy verified the evidence, so one cluster's token cannot mint another
-cluster's identity.
+The per-cluster `ClusterRoleBinding`s bind the groups, not the user, so per-cluster RBAC and
+isolation are unchanged. The hub issues an SVID only for the cluster whose pinned policy verified
+the evidence, and only for the agent role that policy maps the verified ServiceAccount to. A
+cluster's token therefore cannot mint another cluster's identity, and one agent's token cannot mint
+another agent's identity (see [Binding the request to the evidence](#binding-the-request-to-the-evidence)).
 
 #### Story 6 - An organization plugs in its own provider
 
@@ -338,17 +344,29 @@ change.
 
 #### Identity
 
-- **SPIFFE ID:** `spiffe://<trustDomain>/cluster/<clusterName>/agent/<agentName>`.
+- **SPIFFE ID:** `spiffe://<trustDomain>/cluster/<clusterName>/agent/<agentRole>`.
+- **Agent roles.** The role is `registration` or `work` in `Default` and `Hosted` modes, and
+  `singleton` in `Singleton` and `SingletonHosted` modes. Unlike the generated agent name of
+  certificate mode, a role does not change when the klusterlet is reinstalled. SPIRE registration
+  entries (Mode 4) can therefore be written once.
 - **The hub sets every identity field.** It ignores the subject and extensions in the agent's CSR
-  and uses the CSR only for its public key.
+  and uses the CSR only for its public key. It takes the agent role from the attestation policy, as
+  described in [Binding the request to the evidence](#binding-the-request-to-the-evidence), never
+  from the request alone.
 - **SAN and Subject.** The SVID carries the SPIFFE ID as its only URI SAN, as the X.509-SVID
-  specification requires. It also carries today's Subject: `CN=system:open-cluster-management:<cluster>:<agent>`
-  and `O=` the two groups above. This keeps the existing `MtlsAuthenticator` and every
-  SubjectAccessReview working unchanged.
+  specification requires. It also carries a Subject in today's form:
+  `CN=system:open-cluster-management:<cluster>:<agentRole>` and `O=` the two groups above. This
+  keeps the existing `MtlsAuthenticator` and every SubjectAccessReview working unchanged.
 - **`SpiffeAuthenticator`.** A new authenticator in `sdk-go` is registered ahead of
-  `MtlsAuthenticator`. For a peer certificate that chains to a CA from the `BundleSource`, it
-  derives the user and groups from the URI SAN. If the certificate has a Subject, the Subject must
-  agree with the URI SAN, or the certificate is rejected. SPIRE-issued SVIDs (Mode 4) may have no
+  `MtlsAuthenticator`. It accepts a peer certificate only if all of these hold:
+  - the certificate chains to a CA from the `BundleSource`;
+  - it has exactly one URI SAN;
+  - the SAN's trust domain equals the configured `trustDomain` exactly;
+  - the SAN's path has the form `/cluster/<cluster>/agent/<agentRole>`, with a valid cluster name
+    and a known role.
+
+  It then derives the user and groups from the SAN. If the certificate has a Subject, the Subject
+  must agree with the SAN, or the certificate is rejected. SPIRE-issued SVIDs (Mode 4) may have no
   Subject at all.
 
 #### Provider interfaces
@@ -437,14 +455,17 @@ type Verifier interface {
 	// False for k8s-psat, whose token is bound to the hub audience and expires within an hour.
 	NeedsChallenge() bool
 	// ValidatePolicy rejects a malformed policy. The ManagedCluster webhook calls it at write time.
-	ValidatePolicy(policy []byte) error
-	// Verify returns the verified claims, or an error that names the failed check.
+	// It returns the policy's bindings: one opaque string for each combination of trust material and
+	// subject that the policy accepts. Two different evidence sources must never produce the same
+	// binding. For k8s-psat, each binding is "<issuer>|<JWK thumbprint (RFC 7638)>|<subject>".
+	ValidatePolicy(policy []byte) (bindings []string, err error)
+	// Verify returns the verified claims, or an error with a ReasonCode.
 	Verify(ctx context.Context, req VerifyRequest) (*Claims, error)
 }
 
 type VerifyRequest struct {
 	ClusterName string
-	AgentName   string
+	AgentRole   string
 	Evidence    *Evidence
 	// Policy is the raw attestation policy from the ManagedCluster, already checked by ValidatePolicy.
 	Policy []byte
@@ -454,12 +475,19 @@ type VerifyRequest struct {
 	Challenge []byte
 }
 
-// Claims are logged and recorded with each issuance. Core code never derives identity from them:
-// the SPIFFE ID always comes from the cluster and agent names in the request.
+// Claims are the verified result. Subject is the verified subject of the evidence, for example the
+// ServiceAccount of a k8s-psat token. Core code looks Subject up in the policy's agents map to get
+// the agent role, and issues nothing if it is missing or differs from the requested role.
+// Attributes are only logged and recorded with each issuance.
 type Claims struct {
 	Subject    string
 	Attributes map[string]string
 }
+
+// ReasonCode is the fixed, bounded set of reasons a Verifier or any other provider reports a
+// failure with. Core code uses only the code in metrics labels, conditions' reasons, and the
+// status returned to the agent.
+type ReasonCode string
 
 // PolicyRotator is optionally implemented by a Verifier whose pinned material can rotate, such as
 // a ServiceAccount JWKS. Core code calls it from the RotateTrust RPC.
@@ -515,19 +543,24 @@ do depends on its slot:
 
 #### Changes required on the hub
 
-**`CertificateService`** is a new unary gRPC service on the existing gRPC server, next to the
-CloudEvents service. It is deliberately not a CloudEvents resource type. Issuance is synchronous and
-creates no Kubernetes `CertificateSigningRequest` object, so no CSR approval loop is involved.
+**`CertificateService`** is a new unary gRPC service in the existing gRPC server process. It is
+deliberately not a CloudEvents resource type. Issuance is synchronous and creates no Kubernetes
+`CertificateSigningRequest` object, so no CSR approval loop is involved.
 
 ```protobuf
+// Served on the bootstrap listener, without a client certificate.
 service CertificateService {
   rpc CreateCertificate(CreateCertificateRequest) returns (CreateCertificateResponse);
-  // RotateTrust replaces the cluster's pinned attestation policy. The caller must present its
-  // current SVID over mTLS. Served only for verifiers that implement PolicyRotator.
-  rpc RotateTrust(RotateTrustRequest) returns (RotateTrustResponse);
   // Challenge returns a nonce for verifiers with NeedsChallenge. It returns FailedPrecondition
   // when the cluster's policy names a verifier that does not need one.
   rpc Challenge(ChallengeRequest) returns (ChallengeResponse);
+}
+
+// Served on the main listener, which requires an authenticated peer.
+service TrustService {
+  // RotateTrust replaces the cluster's pinned attestation policy. The caller must present its
+  // current SVID over mTLS. Served only for verifiers that implement PolicyRotator.
+  rpc RotateTrust(RotateTrustRequest) returns (RotateTrustResponse);
 }
 
 message Evidence {
@@ -536,9 +569,12 @@ message Evidence {
   bytes challenge = 3;  // empty unless the verifier needs a challenge
 }
 
+// Field limits, enforced by the handler before any other work: cluster_name at most 253 bytes,
+// agent_role one of the known roles, csr at most 8 KiB, evidence.payload at most 64 KiB,
+// evidence.challenge at most 256 bytes, proposed_policy at most 64 KiB.
 message CreateCertificateRequest {
   string cluster_name = 1;
-  string agent_name = 2;
+  string agent_role = 2;           // "registration", "work", or "singleton"; must match the policy
   bytes csr = 3;                   // PEM, PKCS#10
   Evidence evidence = 4;
 }
@@ -560,45 +596,89 @@ message ChallengeRequest { string cluster_name = 1; }
 message ChallengeResponse { bytes challenge = 1; }
 ```
 
+**Two listeners.** The first `CreateCertificate` call has no client certificate, because the agent
+holds only the server CA. The gRPC server therefore serves two listeners in the same process:
+
+- **The bootstrap listener** (port 8091 by default, a second port on the existing gRPC `Service`)
+  serves only `CertificateService`. It uses server-authenticated TLS 1.3 and requests no client
+  certificate. It sets `MaxRecvMsgSize` to 128 KiB, so an unauthenticated client cannot make the
+  server receive or parse a larger message. It also sets a low `MaxConcurrentStreams` and short
+  keepalive and idle timeouts. A `grpc.InTapHandle` applies the per-peer rate limit before a
+  stream is accepted. No CloudEvents or other service is registered on it.
+- **The main listener** keeps today's configuration and serves CloudEvents and `TrustService`. Its
+  authentication interceptor accepts no call without an authenticated peer. No method on it is
+  exempt, and `CertificateService` is not registered on it.
+
 `CreateCertificate` does its own authentication rather than using the server's global authenticator
 chain. The existing `TokenAuthenticator` would send the token to the hub kube-apiserver's
 TokenReview, which cannot validate a managed cluster's token. The handler runs these steps in
 order, so that cheap rejections happen first:
 
-1. Rate-limit per cluster name and per peer address.
-2. Load the `ManagedCluster` named in the request. If it is missing, not accepted, or has no
-   policy, return `FailedPrecondition` with a message saying which.
+1. Check the field limits in `CreateCertificateRequest`, then rate-limit per cluster name.
+2. Load the `ManagedCluster` named in the request. It must exist with `hubAcceptsClient: true` and a
+   policy. Otherwise, return `FailedPrecondition` with reason `ClusterNotReady`. The same reason is
+   used in all three cases, so an unauthenticated caller cannot tell whether a cluster exists.
 3. Check that `evidence.type` equals the policy's `type` and is one of the hub's enabled verifiers.
-   Otherwise, return `PermissionDenied` with a message naming the type that was expected.
-4. Call `Verifier.Verify`. On error, return `PermissionDenied` with the name of the failed check
-   (for example `token issuer "https://x" does not match pinned issuer "https://y"`).
-5. Check the CSR's public key.
-6. Sign through `CAKeyManager.Signer` under the signer policy.
-7. Record the outcome in metrics (`ocm_spiffe_svid_issued_total{attestor}`,
+   Otherwise, return `PermissionDenied` with reason `AttestorTypeNotEnabled`.
+4. Call `Verifier.Verify`. On error, return `PermissionDenied` with the verifier's reason code, for
+   example `EvidenceIssuerMismatch`.
+5. Look up `Claims.Subject` in the policy's `agents` map. If it is missing, or maps to a role other
+   than `agent_role`, return `PermissionDenied` with reason `AgentNotBound`.
+6. Check the CSR's public key.
+7. Sign through `CAKeyManager.Signer` under the signer policy.
+8. Record the outcome in metrics (`ocm_spiffe_svid_issued_total{attestor}`,
    `ocm_spiffe_svid_rejected_total{attestor,reason}`). Log it with `klog`, including the cluster,
-   agent, claims subject, and certificate serial.
+   agent role, claims subject, certificate serial, and, on failure, the detail described in
+   [Reason codes](#reason-codes).
+
+The status returned to the caller carries only the reason code and a fixed message for that code.
+Details such as the pinned issuer go only to the hub's logs, because the caller is not yet
+authenticated.
+
+<a id="binding-the-request-to-the-evidence"></a>**Binding the request to the evidence.** The cluster
+and the agent role in the request are only claims. The hub issues an SVID for them only when
+verified evidence binds to both:
+
+- **Agent.** The policy maps each accepted subject to exactly one agent role (step 5). A valid token
+  for the work agent's ServiceAccount can therefore mint only the `work` identity, never the
+  `registration` identity.
+- **Cluster.** A policy's bindings, as returned by `Verifier.ValidatePolicy`, must be unique across
+  all `ManagedCluster`s. The webhook rejects a policy that shares a binding with another cluster's
+  policy. Evidence that verifies against one cluster's policy therefore cannot verify against
+  another's.
+
+  For `k8s-psat`, a binding is the issuer, a JWK thumbprint, and a subject. Two ordinary clusters
+  never share a signing key, so they never collide, even when both use the default issuer
+  URL. Clusters that do share a key, such as several klusterlets on one hosting cluster in
+  `Hosted` mode, stay distinct because their ServiceAccounts are in different namespaces. A policy
+  with `"jwksSource": "discovery"` binds the issuer URL itself, so two such policies cannot use the
+  same issuer.
 
 Challenges are stateless: each is an HMAC-signed `(cluster, expiry, random)` tuple, so they work
 across gRPC server replicas. A short-lived replay cache enforces single use. The built-in
 `k8s-psat` verifier does not use them, but an external verifier may.
 
-**SPIFFE CA trust.** The gRPC server's client CA bundle includes the certificates from the
+**SPIFFE CA trust.** The main listener's client CA bundle includes the certificates from the
 `BundleSource`, alongside the existing gRPC signer CA.
 
 **Hub driver.** `GRPCHubDriver` gains the SPIFFE settings. `CreatePermissions` and `Cleanup` are
-unchanged: they bind the same user and groups as today. The CA rotation controller runs in the gRPC
+unchanged: they bind the same groups as today, and the bindings name groups, not users. The CA rotation controller runs in the gRPC
 server, with leader election, so the `CAKeyManager` is needed only in that pod.
 
 **ManagedCluster webhook.** The validating webhook protects every annotation with the
 `spiffe.open-cluster-management.io/` prefix, the same way it protects `hubAcceptsClient`: changing
 them requires `update` on the `managedclusters/accept` subresource. It also calls the verifier's
-`ValidatePolicy`, so the operator adds external verifier containers to the webhook pod as well. As
-a result, the agent's own hub identity cannot re-pin its cluster to a different issuer.
+`ValidatePolicy`, so the operator adds external verifier containers to the webhook pod as well. It
+rejects a policy whose bindings overlap another `ManagedCluster`'s, using an index of bindings kept
+by the webhook's informer. It also rejects an `agents` map that names an unknown role or maps two
+roles to one subject. As a result, the agent's own hub identity cannot re-pin its cluster to a
+different issuer, and no admin can accidentally pin two clusters to the same evidence.
 
 #### Attestation policy on ManagedCluster
 
-The policy is a single JSON annotation. Core code reads only `type`, and the matching verifier
-interprets the rest. This keeps Mode 3 policies out of the API.
+The policy is a single JSON annotation. Core code reads only `type` and `agents`, and the matching
+verifier interprets the rest. This keeps Mode 3 policies out of the API. `agents` maps each subject
+that the verifier can return in `Claims.Subject` to an agent role.
 
 ```yaml
 apiVersion: cluster.open-cluster-management.io/v1
@@ -611,10 +691,10 @@ metadata:
         "type": "k8s-psat",
         "issuer": "https://kubernetes.default.svc.cluster.local",
         "jwks": {"keys": [ ... ]},
-        "subjects": [
-          "system:serviceaccount:open-cluster-management-agent:klusterlet-registration-sa",
-          "system:serviceaccount:open-cluster-management-agent:klusterlet-work-sa"
-        ]
+        "agents": {
+          "system:serviceaccount:open-cluster-management-agent:klusterlet-registration-sa": "registration",
+          "system:serviceaccount:open-cluster-management-agent:klusterlet-work-sa": "work"
+        }
       }
 spec:
   hubAcceptsClient: true
@@ -625,10 +705,10 @@ The `k8s-psat` verifier:
 - checks the JWT signature against `jwks`;
 - checks that `iss` equals `issuer`, that `aud` contains the hub's token audience, and that `exp`
   and `nbf` hold, with 60s leeway;
-- checks that `sub` is in `subjects`.
+- checks that `sub` is a key of `agents`, and returns it as `Claims.Subject`.
 
 In `Singleton` and `SingletonHosted` modes there is a single agent ServiceAccount
-(`<klusterlet-name>-work-sa`). In `Hosted` and `SingletonHosted` modes, the issuer, JWKS, and
+(`<klusterlet-name>-work-sa`), mapped to the `singleton` role. In `Hosted` and `SingletonHosted` modes, the issuer, JWKS, and
 namespace are the **hosting** cluster's, because the agent pod and its token come from there.
 
 **JWKS rotation.** Kubernetes distributions, including managed services, can rotate the
@@ -637,9 +717,11 @@ ServiceAccount signing key. `k8s-psat` implements `PolicyRotator` to handle this
 - **Detecting rotation.** The agent watches its own cluster's JWKS. When the key set changes, it
   calls `RotateTrust` with the new policy and a fresh token. The call is authenticated with its
   current, valid SVID over mTLS.
-- **Accepting the update.** The hub accepts the new policy only if three things hold: the caller's
-  SVID belongs to the same cluster, the issuer and subjects are unchanged, and the fresh token
-  verifies against the new JWKS.
+- **Accepting the update.** The hub accepts the new policy only if four things hold:
+  - the caller's SVID belongs to the same cluster;
+  - the issuer and `agents` are unchanged;
+  - the fresh token verifies against the new JWKS;
+  - the new bindings do not overlap another cluster's.
 - **Fallback.** If the SVID expires before the rotation is pushed, the hub administrator re-runs
   `clusteradm accept` with a fresh trust file.
 
@@ -690,7 +772,9 @@ is not used, because the gRPC config holds no credential paths.
 
 **Each agent mints its own SVID.** In `Default` and `Hosted` modes, the work agent runs in a
 separate pod and can no longer read the registration agent's Secret. It runs the same SVID source
-with its own ServiceAccount token. Both agents receive the same user, so RBAC is unchanged.
+with its own ServiceAccount token. Each agent receives the user for its own role
+(`...:registration` or `...:work`), and both receive the same groups. Hub RBAC binds the groups, so
+it is unchanged.
 
 **Projected token.** The operator adds a projected `serviceAccountToken` volume to each agent
 Deployment, with `audience` set to the hub's token audience and `expirationSeconds: 3600`.
@@ -769,6 +853,7 @@ type SPIFFEAgentConfig struct {
 
 // ClusterManager: spec.registrationConfiguration.registrationDrivers[authType=grpc].grpc.spiffe
 // +kubebuilder:validation:XValidation:rule="([self.caKeyManager, self.bundleSource] + self.verifiers).all(p, !has(p.external) || self.externalProviders.exists(e, e.name == p.external))",message="a slot references an external provider that is not listed in externalProviders"
+// +kubebuilder:validation:XValidation:rule="!has(self.externalProviders) || self.externalProviders.all(e, !has(e.volumes) || e.volumes.all(v, !has(v.projected) || v.projected.sources.all(s, !has(s.serviceAccountToken) || s.serviceAccountToken.audience != self.tokenAudience)))",message="a provider must not be given a token with the hub audience"
 type SPIFFEHubConfig struct {
 	// trustDomain is the SPIFFE trust domain of SVIDs this hub issues or accepts.
 	// +required
@@ -869,7 +954,7 @@ type SPIFFEExternalProvider struct {
 	// securityContext is merged onto the restricted default. It may not leave the restricted Pod
 	// Security Standard, and may not set runAsUser, which the operator chooses. HSM and TPM devices
 	// are reached through a device plugin in resources, not through privileged access.
-	// +kubebuilder:validation:XValidation:rule="!has(self.runAsUser) && (!has(self.runAsNonRoot) || self.runAsNonRoot) && (!has(self.privileged) || !self.privileged) && (!has(self.allowPrivilegeEscalation) || !self.allowPrivilegeEscalation) && (!has(self.capabilities) || !has(self.capabilities.add) || size(self.capabilities.add) == 0) && (!has(self.readOnlyRootFilesystem) || self.readOnlyRootFilesystem) && (!has(self.seccompProfile) || self.seccompProfile.type != 'Unconfined')",message="securityContext must stay within the restricted Pod Security Standard and must not set runAsUser"
+	// +kubebuilder:validation:XValidation:rule="!has(self.runAsUser) && (!has(self.runAsNonRoot) || self.runAsNonRoot) && (!has(self.privileged) || !self.privileged) && (!has(self.allowPrivilegeEscalation) || !self.allowPrivilegeEscalation) && (!has(self.capabilities) || !has(self.capabilities.add) || size(self.capabilities.add) == 0) && (!has(self.capabilities) || !has(self.capabilities.drop) || self.capabilities.drop.exists(c, c == 'ALL')) && (!has(self.readOnlyRootFilesystem) || self.readOnlyRootFilesystem) && (!has(self.seccompProfile) || self.seccompProfile.type != 'Unconfined')",message="securityContext must stay within the restricted Pod Security Standard (capabilities.drop must include ALL) and must not set runAsUser"
 	// +optional
 	SecurityContext *corev1.SecurityContext `json:"securityContext,omitempty"`
 
@@ -938,14 +1023,23 @@ implement them. They are not configurable, and none of them can be turned off:
 1. **One private socket per provider.** Each provider's `emptyDir` is mounted only into that
    provider and the OCM container. Because no two providers share a volume, an external
    `Verifier` cannot connect to the `CAKeyManager`'s socket and ask for a signature. The volume uses
-   `medium: Memory` with a 1Mi `sizeLimit`, so it never reaches the node's disk. The directory has
-   mode `0770` and the socket has mode `0660`. Nothing is ever placed under a `hostPath`.
+   `medium: Memory` with a 1Mi `sizeLimit`, so it never reaches the node's disk. Nothing is ever
+   placed under a `hostPath`.
+
+   The containers run under different UIDs (control 3), so they share access through a group. The
+   operator sets a pod-level `fsGroup` and `fsGroupChangePolicy: OnRootMismatch`. The kubelet then
+   gives each `emptyDir` group ownership by `fsGroup`, with mode `2770`, where the setgid bit makes
+   new files inherit the group. Both containers have `fsGroup` as a supplementary group. After
+   binding, `provider.Serve` sets the socket to mode `0660`, so the socket is owned by the
+   provider's UID and the `fsGroup` group. Only the provider and the OCM container can traverse the
+   directory and connect, and only because the volume is mounted into them. `fsGroup` is shared by
+   the whole pod, so isolation between providers comes from the mounts, not from the group.
 2. **Filesystem sockets only.** All containers in a pod share one network namespace. Anything
    listening on TCP, on loopback, or on an abstract-namespace Unix socket can therefore be reached
    by every container in the pod. `provider.Serve` listens only on the socket path. The OCM
    container dials only that path. Before dialing, it uses `lstat` to confirm the path is a socket,
-   not a symlink, owned by the provider's UID. The conformance suite fails a provider that opens
-   any other listener.
+   not a symlink, owned by the provider's UID and the `fsGroup` group. The conformance suite fails a
+   provider that opens any other listener.
 3. **Both ends check the peer's identity.** The operator runs the OCM container and every provider
    container under different non-root UIDs, which it chooses itself. It sets `runAsUser` and
    `runAsGroup` explicitly and never relies on the image. On each new connection, both ends read
@@ -963,9 +1057,17 @@ implement them. They are not configurable, and none of them can be turned off:
 6. **Each container gets only its own credentials.** The operator sets
    `automountServiceAccountToken: false` on the pod. It mounts the hub-audience projected token and
    the Kubernetes API token only into the OCM container. A provider gets no ServiceAccount token
-   unless its `volumes` declare a projected one. In that case, CEL validation requires an explicit
-   `audience` that differs from `tokenAudience`. The operator also rejects the cluster's own API
-   audience. Both rules stop a provider from holding the agent's hub identity or its Kubernetes
+   unless its `volumes` declare a projected one. In that case, CEL validation on both
+   `SPIFFEAgentConfig` and `SPIFFEHubConfig` requires an explicit `audience` that differs from
+   `tokenAudience`.
+
+   CEL cannot know which audiences the cluster's own kube-apiserver accepts, so the operator checks
+   that at reconcile time. For each provider token audience, it requests a short-lived token for its
+   own ServiceAccount with that audience and submits it to its own cluster's `TokenReview`. If the
+   apiserver authenticates the token, the audience is an API audience. The operator then sets
+   `Degraded` with reason `ProviderTokenAudienceRejected` and does not render the pod.
+
+   Together these rules stop a provider from holding the agent's hub identity or its Kubernetes
    permissions. Each Secret named in a provider's `env` or `volumes` is mounted only into that
    provider.
 7. **A restricted container.** Provider containers meet the Kubernetes `restricted` Pod Security
@@ -976,8 +1078,15 @@ implement them. They are not configurable, and none of them can be turned off:
    - the `RuntimeDefault` seccomp profile.
 
    The OCM container gets the same settings. `securityContext` on an entry is merged onto these
-   defaults. CEL validation rejects any value that leaves the `restricted` profile, and any
-   `runAsUser`. Provider `volumes` may only be `configMap`, `secret`, `projected`, `emptyDir`, or
+   defaults field by field, with fixed rules:
+   - `capabilities.drop` is always `[ALL]`, whatever the entry sets;
+   - `capabilities.add` must be empty;
+   - `runAsUser` comes from the operator and cannot be set;
+   - any other field the entry sets replaces the default only if the value stays within the
+     `restricted` profile.
+
+   CEL validation rejects an entry that sets `runAsUser`, adds capabilities, sets a `drop` list
+   without `ALL`, or leaves the profile in any other way. Provider `volumes` may only be `configMap`, `secret`, `projected`, `emptyDir`, or
    `csi` volumes (`csi`, for example, for the SPIFFE CSI driver). HSM and TPM devices are reached
    through a device plugin, requested in `resources`. A privileged container or a `hostPath` volume
    is never used.
@@ -1003,8 +1112,10 @@ implement them. They are not configurable, and none of them can be turned off:
      never logged.
    - **`BundleSource`**: an empty bundle is rejected, and so is an update that removes the CA of the
      hub's current serving certificate.
-   - **`Verifier`**: claims are logged and never used to derive identity (see
-     [Provider interfaces](#provider-interfaces)).
+   - **`Verifier`**: `Claims.Subject` is used only as a key into the pinned policy's `agents` map.
+     A subject that is not in the map issues nothing (see
+     [Binding the request to the evidence](#binding-the-request-to-the-evidence)). `Attributes` are
+     only logged.
 
 A rejected peer or a failed result check counts as a provider failure. Like every other provider
 failure, it fails closed (see below), and it is counted in
@@ -1074,10 +1185,10 @@ service Verifier {
   rpc Rotate(RotateRequest) returns (RotateResponse);
 }
 message ValidatePolicyRequest { bytes policy = 1; }
-message ValidatePolicyResponse {}
+message ValidatePolicyResponse { repeated string bindings = 1; }
 message VerifyRequest {
   string cluster_name = 1;
-  string agent_name = 2;
+  string agent_role = 2;
   Evidence evidence = 3;
   bytes policy = 4;
   string audience = 5;
@@ -1105,9 +1216,31 @@ message WatchBundleRequest {}
 message BundleUpdate { repeated bytes ca_certificates = 1; }
 ```
 
-A provider rejects a request with a gRPC status whose message names the failed check. Core code
-puts that message in its logs, metrics labels (as the reason code), and conditions, so an operator
-can see why, for example, verification failed.
+<a id="reason-codes"></a>**Reason codes.** A provider rejects a request with a gRPC status that carries a
+`google.rpc.ErrorInfo` detail. The detail's `reason` is taken from a fixed list defined in the
+protocol package. For example:
+
+- `EvidenceSignatureInvalid`, `EvidenceIssuerMismatch`, `EvidenceAudienceMismatch`,
+  `EvidenceExpired`, and `EvidenceReplayed`;
+- `PolicyInvalid`;
+- `KeyNotFound` and `KeyAlgorithmUnsupported`;
+- `BackendUnavailable`.
+
+Core code has codes of its own as well, for example:
+
+- `ClusterNotReady`, `AttestorTypeNotEnabled`, `AgentNotBound`, `CSRKeyRejected`, and `RateLimited`;
+- `ProviderUnavailable`, `ProviderPeerRejected`, `ProviderResultInvalid`, `ProviderHandshakeFailed`,
+  and `ProviderDeadlineExceeded`.
+
+A reason that is not on the list is recorded as `ProviderOther`. Only reason codes are used as
+metric label values and as condition reasons, so the number of label values is bounded. The
+`attestor` label is also bounded: it takes only the hub's enabled verifier types, and any other
+value from a request becomes `other`.
+
+The status message is free text controlled by the provider. Core code truncates it to 256 bytes
+and strips it of control and non-printable characters. It then appears only in hub or agent logs
+and in a condition's message, never in a metric label. For `CreateCertificate`, it is never
+returned to the caller.
 
 **Writing a provider.** `sdk-go` provides:
 
@@ -1211,7 +1344,7 @@ identifies the agent pod rather than whatever else runs on the node.
   `CertificateService` is not served. The provider fetches the bundle from the configured SPIRE
   bundle endpoint (`https_spiffe` profile) and streams it through `WatchBundle`.
 - **Authorization.** SPIRE registration entries must map each cluster's agents to
-  `spiffe://<td>/cluster/<cluster>/agent/<agent>`. `SpiffeAuthenticator` derives the user from the
+  `spiffe://<td>/cluster/<cluster>/agent/<agent-role>`. `SpiffeAuthenticator` derives the user from the
   URI SAN. The hub still requires the `ManagedCluster` to exist with `hubAcceptsClient: true`, and
   every request still passes a SubjectAccessReview.
 
@@ -1268,9 +1401,12 @@ certificate to revoke and no Secret to delete on the managed cluster.
 | Risk | Mitigation |
 |---|---|
 | **A stolen projected token is used to mint an SVID.** | The token's audience is the hub, so it is useless against the managed cluster's own apiserver or any other service. It expires in 1h, and an SVID minted from it expires within `svidTTL`. Revocation is immediate through RBAC (Story 4). Compared with a stolen `tls.key` today, the exposure window falls from the certificate lifetime to at most 1h plus `svidTTL`. |
-| **The agent re-pins its cluster to an attacker-controlled issuer.** | Changing the policy annotation requires `managedclusters/accept`, which agents never have. `RotateTrust` cannot change the issuer or subjects. |
+| **The agent re-pins its cluster to an attacker-controlled issuer.** | Changing the policy annotation requires `managedclusters/accept`, which agents never have. `RotateTrust` cannot change the issuer or `agents`. |
+| **A token for one agent is used to mint another agent's or another cluster's identity.** | The hub takes the agent role from the verified subject through the pinned `agents` map, not from the request. The webhook rejects a policy whose bindings (issuer, key thumbprint, subject) overlap any other cluster's, so a piece of evidence verifies for at most one cluster. |
+| **A forged SVID from another trust domain.** | `SpiffeAuthenticator` requires an exact match on the configured trust domain and a well-formed path, in addition to a chain to the `BundleSource`. |
 | **A compromised managed-cluster apiserver mints tokens for the agent ServiceAccount.** | Out of scope: whoever controls that apiserver already controls the agent pod and could read today's Secret. The compromise does not reach other clusters, because each cluster's JWKS is pinned separately. |
-| **The unauthenticated `CreateCertificate` endpoint is abused.** | Unaccepted clusters and clusters without a policy are rejected before any signature work. Requests are rate-limited per cluster name and per peer. The endpoint never creates hub objects. |
+| **The unauthenticated `CreateCertificate` endpoint is abused.** | It is served on its own bootstrap listener: 128 KiB receive limit, field limits, low stream limits, and a per-peer rate limit applied before a stream is accepted. That listener serves nothing else, and the main listener has no unauthenticated methods. Unaccepted clusters and clusters without a policy are rejected before any signature work, with one reason that does not reveal whether the cluster exists. The endpoint never creates hub objects. |
+| **Unbounded metric cardinality or log injection from provider messages.** | Metrics and condition reasons use only the fixed reason codes. Provider messages are truncated, sanitized, and kept out of metric labels and out of responses to unauthenticated callers. |
 | **A faulty or malicious external provider.** | Signer policy, acceptance, and the SPIFFE ID are enforced in core code, so a provider cannot widen what is issued. The image comes from a registry the administrator chooses and is pinned by digest. It runs in its own container under its own UID, with the `restricted` security context enforced, and it shares neither the OCM container's filesystem, nor its process namespace, nor its tokens. Every result it returns is checked (see [Securing the provider channel](#securing-the-provider-channel)). |
 | **Another workload reaches a provider socket.** | Each provider's socket is in its own memory-backed `emptyDir`, never a `hostPath`, mounted only into that provider and the OCM container. Providers never listen on TCP, loopback, or abstract sockets, which every container in the pod could reach. |
 | **One provider calls another, for example a `Verifier` asking the `CAKeyManager` to sign.** | No two providers share a socket volume. Even if a socket were reachable, both ends check the peer's UID with `SO_PEERCRED`, and every container runs under its own operator-chosen UID. |
@@ -1299,12 +1435,25 @@ maintain.
     for an unaccepted cluster or one with no policy.
   - Certificate construction: the hub sets the URI SAN, Subject, and EKU, and ignores any identity
     the CSR supplies.
-  - `SpiffeAuthenticator` rejects a URI SAN that disagrees with the Subject, and accepts an SVID
-    with no Subject.
+  - `SpiffeAuthenticator` rejects:
+    - a URI SAN that disagrees with the Subject;
+    - a SAN from another trust domain, even when it chains to a trusted CA;
+    - a malformed path or an unknown role.
+
+    It accepts an SVID with no Subject.
+  - `CreateCertificate` rejects a request whose `agent_role` differs from the role mapped from the
+    verified subject, and a subject missing from `agents`. It rejects a request that exceeds any
+    field limit. It returns the same `ClusterNotReady` status for a missing, unaccepted, and
+    unpinned cluster.
+  - The webhook rejects a policy whose bindings overlap another cluster's. It accepts two Hosted
+    klusterlets on one hosting cluster, which share keys but have different subjects.
+  - Provider failures map to the fixed reason codes, and an unknown reason maps to `ProviderOther`.
+    Provider messages are truncated and sanitized, and never appear in metric labels or in a
+    `CreateCertificate` response.
   - The renewer renews at 50%, keeps retrying after expiry, reads a fresh token on every mint, and
     generates a new key on every mint.
-  - `RotateTrust` rejects an issuer or subject change, and a token that does not verify against the
-    new JWKS.
+  - `RotateTrust` rejects an `issuer` or `agents` change, a token that does not verify against the
+    new JWKS, and new bindings that overlap another cluster's.
   - CEL validation rejects a type that is not built in without `external`, an `external` name with
     no matching `externalProviders` entry, and an image that is not pinned by digest.
   - The operator renders provider containers into the right pods for each slot and each klusterlet
@@ -1312,8 +1461,16 @@ maintain.
     has its own UID and the restricted security context, the pod sets
     `shareProcessNamespace: false` and `automountServiceAccountToken: false`, and no provider
     container mounts the hub-audience token.
-  - CEL validation rejects a `securityContext` that leaves the `restricted` profile or sets
-    `runAsUser`, a `hostPath` volume, and a provider token with no audience or with the hub audience.
+  - The pod sets an `fsGroup`, and the provider socket has mode `0660` with the `fsGroup` group, so
+    the OCM container and the provider can connect despite having different UIDs. The operator
+    always renders `capabilities.drop: [ALL]`.
+  - CEL validation, on both the agent and hub configs, rejects:
+    - a `securityContext` that leaves the `restricted` profile, sets `runAsUser`, adds
+      capabilities, or has a `drop` list without `ALL`;
+    - a `hostPath` volume;
+    - a provider token with no audience or with the hub audience.
+  - The operator sets `Degraded` when a provider token's audience is accepted by its own cluster's
+    `TokenReview`.
   - The peer-credential `TransportCredentials` rejects a connection from an unexpected UID on both
     ends, and the OCM side refuses a socket path that is a symlink or has the wrong owner.
   - Result checks reject a bad CA signature, a CSR signature that does not match, an SVID with the
@@ -1330,6 +1487,9 @@ maintain.
 - Integration tests:
   - `CreateCertificate` against an in-process gRPC server, with a fake issuer that signs tokens
     with test keys, and a fake verifier that exercises the provider error paths.
+  - The bootstrap listener serves only `CertificateService` and rejects a message over its receive
+    limit. The main listener rejects every call without an authenticated peer and does not serve
+    `CertificateService`.
   - The webhook blocks agent identities from changing the policy annotation and rejects malformed
     policies.
   - CA rotation with overlapping bundles.
@@ -1338,6 +1498,8 @@ maintain.
     SVID.
 - e2e tests on kind, for each of `Default`, `Singleton`, `Hosted`, and `SingletonHosted`:
   - Join, accept, and register.
+  - Each agent role is authorized for its own calls through the group bindings, and a token for
+    one role cannot mint another role's SVID.
   - A real `ManifestWork` applied on the managed cluster.
   - An agent restart mints again.
   - `hubAcceptsClient: false` revokes access.
@@ -1470,9 +1632,6 @@ proposed separately.
 - **Annotation or typed API for the attestation policy.** A typed field on `ManagedCluster`, or a
   separate hub-only resource, would be more explicit, at the cost of an API change. The annotation
   keeps Mode 3 policies opaque to the API.
-- **SPIFFE ID path.** Should it include the agent name? The agent name changes when the klusterlet
-  is reinstalled, so the path could use the agent role (`registration`, `work`) instead. This also
-  affects how SPIRE registration entries are written in Mode 4.
 - **AWS IID replay (Mode 3).** The AWS Instance Identity Document is static and cannot be bound to
   a challenge. Should `aws-iid` be dropped in favor of `oidc-federation` (EKS Pod Identity or IRSA),
   or combined with a once-per-instance rule like SPIRE's default?
