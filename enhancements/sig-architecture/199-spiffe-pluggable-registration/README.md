@@ -1,4 +1,4 @@
-# Pluggable SPIFFE Identity for Cluster Registration
+# Pluggable SPIFFE Identity for Hub and Klusterlet Communication
 
 ## Release Signoff Checklist
 
@@ -10,138 +10,140 @@
 
 ## Summary
 
-OCM's gRPC registration driver authenticates the klusterlet with an X.509 client certificate. The
-private key for that certificate is stored in the `hub-kubeconfig-secret` on the managed cluster,
-and the certificate is bootstrapped with a shared token kept in the bootstrap Secret. This
-enhancement adds a `SPIFFE` identity mode to the gRPC driver. It follows the way Istio ambient's
-ztunnel gets workload certificates from istiod:
+This enhancement makes the cluster-manager (hub) and the klusterlet (agents) authenticate each
+other with [SPIFFE][spiffe] identities: short-lived [X.509-SVIDs][x509-svid] that are presented
+in mutual TLS on the gRPC registration transport. No bootstrap token, client certificate, or
+private key is stored in a `Secret` on the managed cluster.
 
-1. The agent generates its private key in memory.
-2. It proves who it is with its own projected ServiceAccount token.
-3. It receives a short-lived [X.509-SVID][x509-svid] (a SPIFFE certificate) from the hub's gRPC
-   server through a synchronous `CreateCertificate` RPC.
+The design covers four ways for a cluster to get its identity:
 
-No hub credential (bootstrap token, client certificate, or private key) is ever written to a
-Kubernetes `Secret` on the managed cluster, and no SPIRE server or agent is required.
+| Use case | How it works | Vendor code in OCM |
+|---|---|---|
+| **SPIFFE between hub and klusterlet, with no extra server** | The hub issues SVIDs itself. An agent proves who it is with its Kubernetes ServiceAccount token, and the hub returns a short-lived SVID. | None |
+| **Identity from SPIRE** (or any SPIFFE issuer) | The agent reads its SVID through the standard [SPIFFE Workload API][workload-api], or from files a helper keeps current. The hub trusts the issuer's bundle. | None |
+| **Identity from Entra ID, Okta, Keycloak, Google** (or any OIDC provider) | The agent gets a token from the provider through standard OAuth 2.0 ([RFC 7523][rfc7523], [RFC 8693][rfc8693]). The hub verifies it as a standard OIDC token and issues the SVID. | None |
+| **Custom attestation**, such as TPM or cloud instance documents | The organization builds an `Attestor` plugin for the agent and a `Verifier` plugin for the hub. The hub issues the SVID once the plugin's evidence is verified. | None |
 
-The external dependencies of this mode sit behind four provider interfaces: where the agent key
-lives, where the hub CA key lives, how a cluster proves its identity, and who issues the SVID. Each
-interface has one built-in provider, compiled into OCM. Every other provider is an **external
-provider**: a container image that implements a versioned gRPC provider protocol and runs as an
-additional container in the OCM component's pod, reached over a pod-local Unix socket.
+In every case, the hub's gRPC server also has an SVID, so each side checks the other's SPIFFE ID.
 
-External providers work like addons. An organization builds its own provider image, for example an
-attestor for its own hardware or a client for its own HSM, and names it in the `Klusterlet` or
-`ClusterManager` configuration. The operator adds the container to the pod. No change to OCM is
-needed.
+The design is vendor agnostic. Standard protocols are supported directly, so the first three use
+cases need no plugin. Everything else uses one extension mechanism: a **plugin** is a container
+image that an organization builds. It implements a small, versioned gRPC protocol and runs next to
+the OCM container in the same pod, reached over a private Unix socket. Plugins are not part of OCM:
+OCM does not build, ship, or support them, and its code does not depend on them. An organization
+integrates its own systems without changing OCM.
 
-| Mode | Provider slot | Decides | In this proposal |
-|---|---|---|---|
-| **1. Memory** | Built-in: `KeyStore: memory`, `Attestor: k8s-psat`, `SVIDSource: hub`, `CAKeyManager: secret`, `BundleSource: builtin` | The agent key exists only in process memory, and the agent attests with a projected ServiceAccount token | **Implemented** |
-| **2. External HSM** | External `KeyStore` / `CAKeyManager`, for example `pkcs11`, `tpm`, `kmip`, `kms` | The agent key or the hub CA key is held in an HSM or KMS | Interface defined; providers built later |
-| **3. Cloud attestor** | External `Attestor` + `Verifier`, for example `aws-iid`, `gcp-iit`, `azure-imds`, `oidc-federation`, `tpm-devid` | The cluster proves its identity with a document signed by its cloud provider or its TPM | Interface defined; providers built later |
-| **4. SPIRE** | External `SVIDSource` / `BundleSource`, for example `spire` | SPIRE issues the identities, using SPIRE's own node attestors | Interface defined; providers built later |
+The design defines two profiles. The **Development** profile works with no external dependency.
+The **Production** profile enforces the controls a production fleet needs, such as pod-bound
+tokens and an admission policy on the agent cluster. The operators refuse to run a Production
+configuration that does not meet them.
 
-This proposal implements Mode 1 and the external provider mechanism: the provider protocol, the
-sidecar container injection, a Go SDK, and a conformance suite. Providers for Modes 2 to 4 are built
-later as provider images.
-
-Every SVID also carries a Kubernetes subject in today's form: CN
-`system:open-cluster-management:<cluster>:<agent-role>`, with O set to the cluster's groups. Hub
-RBAC binds those groups, so the hub-side `CreatePermissions`/`Cleanup` path and the gRPC server's
-SubjectAccessReview authorization keep working unchanged.
+Keeping the hub CA key in an HSM or KMS is out of scope for this proposal. Signing stays behind an
+internal interface, so that a follow-up proposal can add it as another plugin kind.
 
 ## Motivation
 
-The gRPC driver ([141-grpc-based-registration](../141-grpc-based-registration/README.md)) already
-makes the hub its own certificate authority: the hub signs agent CSRs with the
-`open-cluster-management.io/grpc` signer and serves agents over mTLS. The problem is what it stores
-on the managed cluster:
+The gRPC registration driver ([141-grpc-based-registration][kep-141]) already makes the hub a
+certificate authority for agents. What it stores on the managed cluster is the problem:
 
-- **The bootstrap Secret** holds a token that can create `ManagedCluster`s and CSRs on the hub. One
-  token is shared by every cluster joined with it, and it is usually long-lived.
-- **The `hub-kubeconfig-secret`** holds `tls.key` and `tls.crt`. Anyone who can read that Secret
-  holds the cluster's hub identity, from any network location, until the certificate expires. They
-  can get it through RBAC on the managed cluster, an etcd backup, or a compromised node.
-- **The certificate is long-lived** and is renewed through a CSR loop. If it expires while the hub
-  is unreachable, the agent is locked out and needs a new bootstrap credential.
+- **The bootstrap `Secret`** holds a token that can create `ManagedCluster`s and CSRs on the hub. It
+  is usually long-lived and shared by every cluster joined with it.
+- **The `hub-kubeconfig-secret`** holds the agent's private key and certificate. Anyone who can
+  read it, through RBAC, an etcd backup, or a compromised node, holds the cluster's hub identity
+  from anywhere until the certificate expires.
+- **The certificate is long-lived.** If it expires while the hub is unreachable, the agent is locked
+  out and needs a new bootstrap credential.
+- **The hub CA key is a `Secret` on the hub.** Whoever reads it can mint any cluster's identity.
 
-Some operators must meet a compliance rule that forbids storing any long-lived credential in a
-cluster. Beyond that, fleets differ in what they need:
+Many organizations must also meet rules that this does not satisfy:
 
-- **Key placement is a deployment decision.** Some fleets require FIPS 140-2/140-3 key storage for
-  the hub CA or for the agents.
-- **Attestation is a deployment decision.** Clusters on AWS, GCP, or Azure can prove their identity
-  with a document signed by the cloud provider. On-premises clusters may have TPMs.
-- **Some organizations already run SPIRE** and want OCM to accept its identities instead of
-  running a second issuer.
+- No long-lived credential may be stored in a cluster.
+- Workload identity must come from the organization's identity system (SPIRE, Entra ID, or another
+  provider), not from a separate system that each product runs on its own.
 
-Today each of these needs a new driver, as with `awsirsa` and the
-[Azure AD driver][kep-195]. This proposal delivers a cloud-neutral baseline that uses only
-primitives every conformant Kubernetes cluster already has: projected ServiceAccount tokens and an
-OIDC-style issuer with a published JWKS. It also defines the extension points, so each later need
-becomes a provider rather than a driver.
+Today each identity system needs its own registration driver, such as `awsirsa` or the
+[Azure AD driver][kep-195]. Each driver reimplements acceptance and RBAC, and covers one vendor.
 
 ### Goals
 
-- No hub credential is persisted in any `Secret` on the managed cluster (or on the hosting cluster
-  in hosted modes): no bootstrap token, no client certificate, no private key.
-- The agent's private key is generated in memory and never leaves the agent process.
-- Agent certificates are short-lived (24h by default) and re-minted automatically. An agent that
-  restarts, or was offline past expiry, recovers without operator action.
-- The agent proves its identity with a projected ServiceAccount token. The token's audience is the
-  hub, and it expires within one hour.
-- No external identity infrastructure: no SPIRE, no cloud IAM, no service mesh.
-- Reuse the existing gRPC transport, per-cluster RBAC, the gRPC server's SubjectAccessReview
-  authorization, and the existing acceptance model (`hubAcceptsClient`).
-- Define the `KeyStore`, `CAKeyManager`, `Attestor`/`Verifier`, and `SVIDSource`/`BundleSource`
-  interfaces, the provider selection API, and the contract that a Mode 2, 3, or 4 provider must
-  meet. Core code never calls a cloud, HSM, or SPIRE API directly.
-- Run external providers as additional containers in the OCM component's pod, speaking a versioned
-  gRPC protocol over a pod-local Unix socket. An organization can build, deploy, and select its own
-  provider image without any change to OCM.
-- Fail closed: an unknown type, a missing or unhealthy provider container, or a failed handshake
-  stops the component from starting. The component never falls back to a built-in or weaker
-  provider.
-- Work across all four klusterlet deployment shapes: `Default`, `Singleton`, `Hosted`, and
+- Agents and the hub authenticate each other with short-lived X.509-SVIDs over mutual TLS. Each
+  side checks the other's SPIFFE ID.
+- No hub credential is stored in any `Secret` on the managed cluster, or on the hosting cluster in
+  hosted modes.
+- Out of the box, the hub issues SVIDs itself, and no external identity infrastructure is needed.
+- The hub and the agents can take their identity from an organization's identity provider, either
+  as SVIDs from a SPIFFE-native issuer or as tokens from a token-based provider.
+- Organizations can add their own attestation, such as TPM, through plugins.
+- Every integration point is vendor agnostic. Standard protocols are supported directly, and
+  everything else through plugins that organizations build without changing OCM.
+- Plugins are isolated and secured to production standards: a private socket, peer
+  authentication, the restricted Pod Security Standard, and core checks on every result.
+- Acceptance stays a double opt-in. A cluster joins only after the hub administrator binds its
+  identity to the cluster.
+- Hub RBAC, `CreatePermissions`/`Cleanup`, and SubjectAccessReview authorization keep working
+  unchanged.
+- All four klusterlet deployment modes are supported: `Default`, `Singleton`, `Hosted`, and
   `SingletonHosted`.
-- `clusteradm` can initialize a hub, join a cluster, and accept a cluster in this mode.
+- `clusteradm` can set up a hub, join a cluster, and accept a cluster in this mode.
 
 ### Non-Goals
 
-- **Building the providers for Modes 2, 3, and 4.** This proposal defines their interfaces, their
-  contracts, and the external provider mechanism that runs them. The providers themselves are built
-  later, as provider images, by OCM or by any organization.
+- **Building or shipping vendor plugins.** This proposal defines the plugin protocol, the SDK, and
+  the conformance suite. Organizations build the plugins for their own attestation systems. OCM
+  ships one sample plugin pair, for its own tests.
+- **Holding the hub CA key in an HSM or KMS.** This is deferred to a follow-up proposal. All
+  signing goes through an internal `Signer` interface, with one built-in implementation backed by a
+  `Secret`. A later proposal can add a `Signer` plugin kind on the same plugin framework, without
+  changing the issuance design.
 - **The kube-apiserver registration path** (`csr`, `awsirsa`). OCM does not control the hub
-  kube-apiserver's client CA configuration, so this proposal is scoped to the gRPC server.
-- **Addon credentials.** Addons keep using the existing `token` and `csr` addon drivers. Serving
-  SVIDs to addons over a node-local socket, the way ztunnel serves pods, is a possible follow-up.
-- **A general SPIFFE Workload API or federation.** This proposal does not provide a SPIFFE Workload
-  API for arbitrary workloads on the managed cluster, or SPIFFE federation with other trust
-  domains.
-- **Publishing the trust bundle to external consumers** such as object storage or AWS IAM Roles
-  Anywhere.
-- **Interface changes.** The `RegisterDriver` and `HubDriver` interfaces do not change.
-- **Changing the existing certificate-based gRPC identity mode**, which remains the default.
+  kube-apiserver's client authentication, so this proposal covers the gRPC transport only.
+- **Addon credentials.** Addons keep using the existing `token` and `csr` addon drivers.
+- **Running a SPIFFE Workload API for other workloads**, or managing SPIFFE federation. OCM consumes
+  trust bundles; it does not distribute them to other systems.
+- **Changing the existing certificate-based gRPC mode**, which remains the default.
 
 ## Proposal
 
-### How Istio ambient does it, and what each part becomes in OCM
+### Terms
 
-| Istio ambient | This proposal |
+| Term | Meaning |
 |---|---|
-| istiod's CA, `IstioCertificateService/CreateCertificate` | Hub gRPC server, new `CertificateService/CreateCertificate` |
-| ztunnel generates the key in memory and sends a CSR | Registration and work agents generate keys in the `memory` `KeyStore` |
-| ztunnel authenticates with its projected SA token, and istiod validates it with a TokenReview | The agent authenticates with its projected SA token (`k8s-psat` `Attestor`). The hub validates it as a JWT against the JWKS pinned for the agent's cluster (`k8s-psat` `Verifier`) |
-| SPIFFE ID `spiffe://<td>/ns/<ns>/sa/<sa>` | `spiffe://<td>/cluster/<cluster>/agent/<agent-role>`, where the role is mapped from the verified ServiceAccount |
-| Short-lived certificates, rotated at about half their lifetime | Same |
-| CA key in `cacerts`, or a plugged-in external CA | CA key behind `CAKeyManager`: a Secret now, an HSM or KMS in Mode 2 |
+| SVID | A SPIFFE Verifiable Identity Document. This proposal uses X.509-SVIDs: certificates whose only URI SAN is a SPIFFE ID. |
+| Trust domain | The SPIFFE trust root that an SVID belongs to, for example `ocm.example.com`. |
+| Trust bundle | The CA certificates used to verify SVIDs of a trust domain. |
+| Hub-issued | The hub's CA issues the SVID after the agent proves its identity. |
+| Externally issued | An external SPIFFE issuer, such as SPIRE, issues the SVID, and the hub trusts that issuer's bundle. |
+| Evidence | What an agent presents to get a hub-issued SVID, usually a signed token. |
+| Agent role | `registration` or `work`, or `singleton` in the `Singleton` modes. |
+| Plugin | A container image built by an organization that implements the plugin protocol. |
 
-There is one structural difference. istiod and ztunnel share a kube-apiserver, so istiod can call
-TokenReview. The OCM hub cannot call TokenReview against a managed cluster's apiserver. Instead,
-the hub verifies the token's signature itself, against the issuer and JWKS that were **pinned** for
-that cluster when the hub administrator accepted it. Pinning takes the place of the shared bootstrap
-credential as the root of trust for joining.
+### How identity is issued
+
+There are two ways for an agent to get its SVID. The hub administrator chooses one per cluster, and
+one hub can serve clusters of both kinds.
+
+**Hub-issued.** The hub is the issuer, so no identity server is needed.
+
+1. The agent generates a key pair in memory.
+2. It gets evidence of who it is. By default this is its projected ServiceAccount token. With a
+   token-based provider such as Entra ID, it is a token from that provider.
+3. It calls `CreateCertificate` on the hub with a CSR and the evidence.
+4. The hub verifies the evidence against the identity bound to the cluster, signs an SVID with its
+   CA key, and returns it.
+
+The agent renews at half the SVID lifetime. Every renewal generates a new key and presents fresh
+evidence.
+
+**Externally issued.** An external SPIFFE issuer is the issuer.
+
+1. The agent reads its SVID from the SPIFFE Workload API (for example a SPIRE agent, through the
+   SPIFFE CSI driver), or from files that a helper keeps current.
+2. It connects to the hub over mutual TLS with that SVID.
+3. The hub verifies the SVID against the external trust domain's bundle and maps its SPIFFE ID to a
+   cluster and role through the identity bound to the cluster.
+
+In both cases the hub's gRPC server presents its own SVID. That SVID is issued by the hub's CA, or
+by the hub cluster's external issuer. Agents check it against the expected hub SPIFFE ID.
 
 ### Architecture
 
@@ -150,1513 +152,1122 @@ flowchart LR
   subgraph MC["Managed (or hosting) cluster"]
     subgraph APOD["Agent pod"]
       direction TB
-      AG["agent container<br/>built-in: hub · memory · k8s-psat"]
-      AP[["provider container (optional)<br/>e.g. pkcs11 KeyStore · aws-iid Attestor · spire SVIDSource"]]
-      AG <-- "provider protocol (gRPC)<br/>private Unix socket, peer UID checked" --> AP
+      AG["klusterlet agent<br/>SVID key in memory"]
+      AP[["attestor plugin (optional)"]]
+      AG <-- "plugin protocol<br/>private Unix socket" --> AP
     end
+    WAPI[("SPIFFE Workload API<br/>e.g. SPIRE agent (optional)")]
+    WAPI -. "externally issued SVID" .-> AG
   end
-  subgraph HUB["Hub"]
+  subgraph HUB["Hub cluster"]
     subgraph GPOD["gRPC server pod"]
       direction TB
-      GS["grpc-server container<br/>CertificateService + CloudEvents<br/>built-in: k8s-psat · secret · builtin"]
-      HP[["provider container (optional)<br/>e.g. kms CAKeyManager · aws-iid Verifier · spire BundleSource"]]
-      GS <-- "provider protocol (gRPC)<br/>private Unix socket, peer UID checked" --> HP
+      GS["grpc-server<br/>CertificateService · CloudEvents<br/>SVID issuer, CA key in a Secret"]
+      VP[["verifier plugin (optional)"]]
+      GS <-- "private Unix socket" --> VP
     end
-    MCR[("ManagedCluster<br/>hubAcceptsClient + attestation policy")]
-    GS --- MCR
+    MCI[("ManagedClusterIdentity<br/>bound by the hub admin")]
+    GS --- MCI
   end
+  IDP[("Identity provider<br/>Entra ID, OIDC, SPIRE")]
+  AG -. "token request (token-based providers)" .-> IDP
   AG -- "CreateCertificate<br/>bootstrap listener, server-authenticated TLS" --> GS
-  AG <-- "CloudEvents and RotateTrust<br/>main listener, mTLS with the SVID" --> GS
+  AG <-- "CloudEvents<br/>main listener, mutual TLS with SVIDs" --> GS
 ```
 
-Each provider slot is filled either by a built-in provider inside the OCM container, or by an
-external provider container in the same pod. Double-bordered boxes are external provider
-containers, which are present only when the configuration names one. Each external provider gets
-its own socket, which only it and the OCM container can reach, and both ends check who is on the
-other side (see [Securing the provider channel](#securing-the-provider-channel)).
+Double-bordered boxes are plugin containers, present only when configured. Dashed lines are
+optional integrations.
 
-### Flow
+### Profiles
 
-```mermaid
-sequenceDiagram
-    participant MA as Managed cluster admin
-    participant K as Agent (registration / work)
-    participant KL as kubelet (managed or hosting cluster)
-    participant G as Hub gRPC server
-    participant HA as Hub admin
-    MA->>MA: clusteradm join (reads issuer + JWKS from the agent cluster)
-    MA-->>HA: clusteradm accept command with the trust file
-    HA->>G: clusteradm accept: attestation policy pinned + hubAcceptsClient=true
-    loop on start, and at ~50% of SVID TTL
-        KL->>K: projected SA token (aud = hub audience, <= 1h)
-        K->>K: KeyStore.Generate (in memory), build CSR
-        K->>G: CreateCertificate(CSR, agent role, evidence{type: k8s-psat, token})
-        G->>G: Verifier.Verify against pinned policy, map subject to role, check signer policy
-        G-->>K: X.509-SVID chain (24h) + trust bundle
-    end
-    K->>G: CloudEvents over mTLS with the in-memory SVID
-    G->>G: identity from SVID, authorize with SubjectAccessReview
-```
+The `profile` field on the `ClusterManager` and the `Klusterlet` selects one of two profiles. Each
+operator validates its own configuration against the profile. If the configuration does not meet
+it, the operator reports `Degraded` with the unmet requirement and does not start the component.
+There is no silent fallback.
+
+| Requirement | Development | Production |
+|---|---|---|
+| Hub CA key | A `Secret`, generated by the hub | A `Secret`, readable only by the gRPC server, on a hub with encryption at rest |
+| Hub CA | Self-signed | Self-signed, or an intermediate under the organization's root |
+| SVID lifetime | 1h to 24h, default 24h | 1h to 24h, default 12h |
+| Kubernetes token evidence | ServiceAccount must match | ServiceAccount name **and UID** must match, and the token must be bound to a pod |
+| OIDC issuers | Any issuer the admin binds | Only issuers in the hub's `allowedIssuers` list |
+| Agent admission policy on the agent cluster | Optional | **Required**, installed by the klusterlet operator |
+| Plugin images | Pinned by digest | Pinned by digest |
+| Issuance audit events | Logged | Logged, and emitted as Kubernetes Events |
+| Status | `DevelopmentProfile=True` condition, warning that it is not for production | — |
+
+The Development profile is what `clusteradm init` and `clusteradm join` set up by default. It is
+meant for trying the feature and for test environments.
 
 ### User Stories
 
-#### Story 1 - Hub administrator enables SPIFFE identity for gRPC registration
+#### Story 1 - A developer tries SPIFFE identity with no external dependency
 
 ```
-% clusteradm init \
-     --wait \
-     --registration-auth=grpc \
-     --grpc-identity=spiffe \
-     --spiffe-trust-domain=hub-0.example.com \
-     --context ${CTX_HUB_CLUSTER}
+% clusteradm init --registration-auth=grpc --grpc-identity=spiffe \
+    --spiffe-trust-domain=dev.ocm.example --context ${CTX_HUB}
+% clusteradm join --registration-auth=grpc --grpc-identity=spiffe \
+    --grpc-server=hub-grpc.example.com:443 --spiffe-hub-bundle=hub-bundle.pem \
+    --cluster-name=managed-0 --context ${CTX_MANAGED}
+% clusteradm accept --clusters managed-0 --spiffe-identity-file managed-0-identity.yaml \
+    --context ${CTX_HUB}
 ```
 
-This enables SPIFFE mode for the whole hub with the built-in providers: the `secret` CA key
-manager, the `k8s-psat` verifier, and the `builtin` bundle source. It does not name any managed
-cluster. Certificate-mode gRPC clusters keep working on the same hub.
+The hub generates its CA key in a `Secret`. `clusteradm join` reads the
+managed cluster's ServiceAccount issuer and its public keys, and writes them, with the agent
+ServiceAccounts, to `managed-0-identity.yaml`. The hub administrator reviews that file and accepts
+the cluster. The agents then get hub-issued SVIDs, with no `Secret` on the managed cluster.
 
-To use an external provider instead, for example a CA key manager backed by the organization's
-KMS, the administrator lists the provider image in `externalProviders` and points the slot at it
-(see [Story 6](#story-6---an-organization-plugs-in-its-own-provider)).
+#### Story 2 - An organization that runs SPIRE everywhere
 
-#### Story 2 - Managed cluster administrator joins a cluster without any hub credential
-
-```
-% clusteradm join \
-     --registration-auth=grpc \
-     --grpc-identity=spiffe \
-     --grpc-server=hub-0-grpc.example.com:443 \
-     --grpc-server-ca-file=hub-grpc-ca.crt \
-     --cluster-name=managed-0
-```
-
-There is no `--hub-token`. The agent receives only the gRPC server address and the server CA
-certificate. Both are public, so they are stored in a `ConfigMap`. The agent calls
-`CreateCertificate` on the hub's bootstrap listener, which is on the same host, port 8091 by
-default. `--grpc-certificate-server` overrides that address.
-
-`clusteradm join` uses its kube context on the cluster that will run the agent. That is the managed
-cluster in `Default` and `Singleton` modes, and the hosting cluster in `Hosted` and
-`SingletonHosted` modes. From that cluster it reads:
-
-- the ServiceAccount issuer, from `/.well-known/openid-configuration`;
-- the issuer's keys, from `/openid/v1/jwks`.
-
-It writes both to `managed-0-spiffe-trust.json` and prints the command the hub administrator runs
-next.
-
-The `memory` key store, the `k8s-psat` attestor, and the `hub` SVID source are the defaults, so no
-flags are needed for them. To use external providers, `clusteradm join --spiffe-providers-file`
-takes a file with the `spiffe` section of the `Klusterlet` spec, including `externalProviders`.
-
-Until the hub accepts the cluster, `CreateCertificate` rejects the agent's calls with
-`FailedPrecondition`, and the agent retries with backoff. The klusterlet reports a
-`HubConnectionDegraded` condition whose message names the cluster and says it is awaiting
-acceptance.
-
-#### Story 3 - Hub administrator accepts and pins a managed cluster
-
-```
-% clusteradm accept \
-     --clusters managed-0 \
-     --spiffe-trust-file managed-0-spiffe-trust.json
-```
-
-This command:
-
-1. creates the `ManagedCluster` if it does not exist;
-2. writes the attestation policy to the `ManagedCluster`: the attestor type, the issuer, the JWKS,
-   and the map from each agent ServiceAccount to its agent role;
-3. sets `hubAcceptsClient: true`.
-
-The trust file is not secret, because it holds only public keys. The hub administrator should still
-get it from the managed cluster administrator over a channel they trust, because it decides which
-cluster's tokens the hub accepts.
-
-Without `clusteradm`, the administrator sets the annotation described in
-[Attestation policy on ManagedCluster](#attestation-policy-on-managedcluster) and
-`spec.hubAcceptsClient: true` directly. Automatic approval through `ManagedClusterAutoApproval` is
-not supported in this mode (see [Open Questions](#open-questions)).
-
-#### Story 4 - Revoking a cluster
-
-The administrator sets `spec.hubAcceptsClient: false` or deletes the `ManagedCluster`. The existing
-hub cleanup path removes the cluster's RBAC bindings, and `CreateCertificate` rejects further
-requests. SVIDs that were already issued stay cryptographically valid until they expire. Access
-still ends immediately, because the gRPC server authorizes every request with a
-SubjectAccessReview and the bindings are gone.
-
-#### Story 5 - Managed cluster permission isolation on hub
-
-The SVID carries the same groups that a certificate-mode agent gets today, and a user in the same
-form:
-
-- user `system:open-cluster-management:<cluster>:<agent-role>`;
-- groups `system:open-cluster-management:<cluster>` and
-  `system:open-cluster-management:managed-clusters`.
-
-The per-cluster `ClusterRoleBinding`s bind the groups, not the user, so per-cluster RBAC and
-isolation are unchanged. The hub issues an SVID only for the cluster whose pinned policy verified
-the evidence, and only for the agent role that policy maps the verified ServiceAccount to. A
-cluster's token therefore cannot mint another cluster's identity, and one agent's token cannot mint
-another agent's identity (see [Binding the request to the evidence](#binding-the-request-to-the-evidence)).
-
-#### Story 6 - An organization plugs in its own provider
-
-An organization runs on-premises clusters with a hardware root of trust, and wants agents to attest
-with it (Mode 3). Its platform team:
-
-1. implements the `Attestor` and `Verifier` services of the provider protocol, using the Go SDK in
-   `sdk-go` or any gRPC language;
-2. runs the provider conformance suite against both images;
-3. publishes the images to its own registry;
-4. names them in the configuration, the same way an addon is enabled by name:
+The hub cluster and every managed cluster run SPIRE agents of the organization's trust domain
+`corp.example`. No hub-issued SVIDs are wanted.
 
 ```yaml
-# ClusterManager: spec.registrationConfiguration.registrationDrivers[authType=grpc].grpc.spiffe
-verifiers:
-  - type: k8s-psat
-  - type: acme-devid
-    external: acme-verifier
-externalProviders:
-  - name: acme-verifier
-    image: registry.acme.example/ocm/acme-verifier@sha256:4e1243bd...
+# ClusterManager
+trustDomain: corp.example
+serverIdentity:
+  source: WorkloadAPI           # the gRPC server gets its SVID from the hub cluster's SPIRE agent
+externalTrustDomains:
+  - name: corp.example
+    bundleSource: {workloadAPI: {}}
 ---
-# Klusterlet: spec.registrationConfiguration.registrationDriver.grpc.spiffe
-attestor:
-  type: acme-devid
-  external: acme-attestor
-externalProviders:
-  - name: acme-attestor
-    image: registry.acme.example/ocm/acme-attestor@sha256:9b74c989...
-    volumes:
-      - name: acme-attestor-config
-        configMap: { name: acme-attestor-config }
-        mountPath: /etc/acme
+# Klusterlet
+identitySource:
+  workloadAPI: {}               # the SPIFFE CSI driver mounts the SPIRE agent socket
+hub:
+  trustDomain: corp.example
+  id: spiffe://corp.example/ns/open-cluster-management-hub/sa/grpc-server
 ```
 
-The cluster-manager operator adds `acme-verifier` to the gRPC server and webhook pods. The
-klusterlet operator adds `acme-attestor` to each agent pod. The hub admin pins the cluster with an
-`acme-devid` attestation policy. The rest of the driver (signing, policy, RBAC, transport) does not
-change.
-
-### Implementation Details/Notes/Constraints
-
-#### Identity
-
-- **SPIFFE ID:** `spiffe://<trustDomain>/cluster/<clusterName>/agent/<agentRole>`.
-- **Agent roles.** The role is `registration` or `work` in `Default` and `Hosted` modes, and
-  `singleton` in `Singleton` and `SingletonHosted` modes. Unlike the generated agent name of
-  certificate mode, a role does not change when the klusterlet is reinstalled. SPIRE registration
-  entries (Mode 4) can therefore be written once.
-- **The hub sets every identity field.** It ignores the subject and extensions in the agent's CSR
-  and uses the CSR only for its public key. It takes the agent role from the attestation policy, as
-  described in [Binding the request to the evidence](#binding-the-request-to-the-evidence), never
-  from the request alone.
-- **SAN and Subject.** The SVID carries the SPIFFE ID as its only URI SAN, as the X.509-SVID
-  specification requires. It also carries a Subject in today's form:
-  `CN=system:open-cluster-management:<cluster>:<agentRole>` and `O=` the two groups above. This
-  keeps the existing `MtlsAuthenticator` and every SubjectAccessReview working unchanged.
-- **`SpiffeAuthenticator`.** A new authenticator in `sdk-go` is registered ahead of
-  `MtlsAuthenticator`. It accepts a peer certificate only if all of these hold:
-  - the certificate chains to a CA from the `BundleSource`;
-  - it has exactly one URI SAN;
-  - the SAN's trust domain equals the configured `trustDomain` exactly;
-  - the SAN's path has the form `/cluster/<cluster>/agent/<agentRole>`, with a valid cluster name
-    and a known role.
-
-  It then derives the user and groups from the SAN. If the certificate has a Subject, the Subject
-  must agree with the SAN, or the certificate is rejected. SPIRE-issued SVIDs (Mode 4) may have no
-  Subject at all.
-
-#### Provider interfaces
-
-The interfaces live in `pkg/registration/register/grpc/spiffe/provider`. The SPIFFE code in the
-driver depends only on these types. Each interface has one built-in provider, which implements it
-in-process. For an external provider, core code uses a client adapter that implements the same
-interface over the [provider protocol](#external-providers). The rest of the driver cannot tell the
-two apart.
-
-```go
-// KeyAlg is the key algorithm requested from a KeyStore or CAKeyManager.
-type KeyAlg string
-
-const (
-	KeyAlgECDSAP256 KeyAlg = "ECDSA-P256"
-	KeyAlgECDSAP384 KeyAlg = "ECDSA-P384"
-	KeyAlgRSA2048   KeyAlg = "RSA-2048"
-)
-
-// SVID is an X.509-SVID chain, leaf first, with the key it was issued for.
-type SVID struct {
-	ID     spiffeid.ID
-	Chain  []*x509.Certificate
-	Signer crypto.Signer
-}
-```
-
-**Agent side.**
-
-```go
-// SVIDSource produces the agent's SVID and the bundle it uses to verify the hub.
-// The gRPC client's GetClientCertificate and VerifyPeerCertificate callbacks read from it.
-//
-// Built-in: "hub", which composes a KeyStore, an Attestor, and the hub's CertificateService.
-// External: for example "spire" (Mode 4), which reads the Workload API of a local SPIRE agent.
-type SVIDSource interface {
-	// Run keeps the SVID current until ctx is done. It renews at 50% of the lifetime with jitter,
-	// retries with exponential backoff, and keeps retrying after expiry.
-	Run(ctx context.Context) error
-	// Current returns the current SVID, or ErrNoSVID before the first successful mint.
-	Current() (*SVID, error)
-	// Bundle returns the CA certificates that the hub's serving certificate must chain to.
-	Bundle() []*x509.Certificate
-}
-
-// KeyStore holds the agent's private key.
-//
-// Built-in: "memory".
-// External: for example "pkcs11", "tpm", "kmip" (Mode 2).
-type KeyStore interface {
-	// Generate creates a new key pair and makes it the current key. The private key never leaves
-	// the store; only a crypto.Signer is returned.
-	Generate(ctx context.Context, alg KeyAlg) (crypto.Signer, error)
-	// DestroyRetired removes every key previously returned by Generate except the current one.
-	DestroyRetired(ctx context.Context) error
-}
-
-// Attestor produces evidence that proves which cluster and agent is asking for an SVID.
-//
-// Built-in: "k8s-psat".
-// External: for example "aws-iid", "gcp-iit", "azure-imds", "oidc-federation", "tpm-devid" (Mode 3).
-type Attestor interface {
-	Type() string
-	// Evidence returns fresh evidence. challenge is nil unless the matching Verifier declares
-	// NeedsChallenge; when set, the evidence must be cryptographically bound to it.
-	Evidence(ctx context.Context, challenge []byte) (*Evidence, error)
-}
-
-type Evidence struct {
-	// Type must equal the Attestor's and Verifier's Type.
-	Type string
-	// Payload is opaque to core code, for example a JWT or a signed cloud identity document.
-	Payload []byte
-}
-```
-
-**Hub side.**
-
-```go
-// Verifier checks evidence against the attestation policy pinned on the ManagedCluster.
-// Every Attestor type has a matching Verifier.
-type Verifier interface {
-	Type() string
-	// NeedsChallenge reports whether evidence must be bound to a hub-issued challenge.
-	// False for k8s-psat, whose token is bound to the hub audience and expires within an hour.
-	NeedsChallenge() bool
-	// ValidatePolicy rejects a malformed policy. The ManagedCluster webhook calls it at write time.
-	// It returns the policy's bindings: one opaque string for each combination of trust material and
-	// subject that the policy accepts. Two different evidence sources must never produce the same
-	// binding. For k8s-psat, each binding is "<issuer>|<JWK thumbprint (RFC 7638)>|<subject>".
-	ValidatePolicy(policy []byte) (bindings []string, err error)
-	// Verify returns the verified claims, or an error with a ReasonCode.
-	Verify(ctx context.Context, req VerifyRequest) (*Claims, error)
-}
-
-type VerifyRequest struct {
-	ClusterName string
-	AgentRole   string
-	Evidence    *Evidence
-	// Policy is the raw attestation policy from the ManagedCluster, already checked by ValidatePolicy.
-	Policy []byte
-	// Audience is the hub's configured audience.
-	Audience string
-	// Challenge is set only when NeedsChallenge is true.
-	Challenge []byte
-}
-
-// Claims are the verified result. Subject is the verified subject of the evidence, for example the
-// ServiceAccount of a k8s-psat token. Core code looks Subject up in the policy's agents map to get
-// the agent role, and issues nothing if it is missing or differs from the requested role.
-// Attributes are only logged and recorded with each issuance.
-type Claims struct {
-	Subject    string
-	Attributes map[string]string
-}
-
-// ReasonCode is the fixed, bounded set of reasons a Verifier or any other provider reports a
-// failure with. Core code uses only the code in metrics labels, conditions' reasons, and the
-// status returned to the agent.
-type ReasonCode string
-
-// PolicyRotator is optionally implemented by a Verifier whose pinned material can rotate, such as
-// a ServiceAccount JWKS. Core code calls it from the RotateTrust RPC.
-type PolicyRotator interface {
-	// Rotate returns nil only if proposed is a legitimate successor of current, as proven by ev.
-	Rotate(ctx context.Context, current, proposed []byte, ev *Evidence) error
-}
-
-// CAKeyManager holds the hub CA's signing keys. Core code creates the CA certificates, stores them
-// in a ConfigMap, and enforces the signer policy; the CAKeyManager only signs.
-//
-// Built-in: "secret", which reuses the existing gRPC signer CA Secret.
-// External: for example "kms" (go.step.sm/crypto/kms URIs: AWS KMS, Google Cloud KMS,
-//           Azure Key Vault), "pkcs11", "kmip" (Mode 2).
-type CAKeyManager interface {
-	// Signer returns the key with the given ID. An empty ID means the active key.
-	Signer(ctx context.Context, keyID string) (crypto.Signer, error)
-	// CreateKey creates a new, non-exportable key for CA rotation and returns its ID.
-	CreateKey(ctx context.Context, alg KeyAlg) (keyID string, err error)
-}
-
-// BundleSource returns the CA certificates that SpiffeAuthenticator trusts for the trust domain.
-//
-// Built-in: "builtin", which returns the hub's own CA certificates, including any in a rotation
-//           overlap.
-// External: for example "spire" (Mode 4), which fetches the bundle from a SPIRE bundle endpoint.
-type BundleSource interface {
-	Bundle(ctx context.Context) ([]*x509.Certificate, error)
-	// Issues reports whether the hub signs SVIDs for this trust domain. CertificateService is
-	// served only when it is true.
-	Issues() bool
-}
-```
-
-**Responsibilities that stay in core code.** Providers cannot change any of the following:
-
-- **Signer policy.** Each SVID gets exactly one URI SAN for the requesting cluster and agent,
-  `ExtKeyUsage=ClientAuth`, and `IsCA=false`. The hub never issues wildcards or `ServerAuth`.
-  `NotAfter` is `min(now + svidTTL, CA NotAfter)`, and `NotBefore` is backdated by 60s.
-- **Acceptance.** The `ManagedCluster` must exist with `hubAcceptsClient: true` and a policy whose
-  `type` is one of the hub's enabled verifiers.
-- **CSR key checks.** The key must be ECDSA P-256/P-384 or RSA with at least 2048 bits.
-- **Rate limits, metrics, and audit logging.**
-
-As a result, a provider cannot widen what is issued. The worst a faulty or malicious provider can
-do depends on its slot:
-
-- a `Verifier` can accept evidence it should have rejected, for any accepted cluster whose policy
-  names its type;
-- a `KeyStore` or `SVIDSource` can disclose or misuse the key of the agent it serves;
-- a `CAKeyManager` can sign whatever it is asked to, which is why it is the provider to choose most
-  carefully.
-
-#### Changes required on the hub
-
-**`CertificateService`** is a new unary gRPC service in the existing gRPC server process. It is
-deliberately not a CloudEvents resource type. Issuance is synchronous and creates no Kubernetes
-`CertificateSigningRequest` object, so no CSR approval loop is involved.
-
-```protobuf
-// Served on the bootstrap listener, without a client certificate.
-service CertificateService {
-  rpc CreateCertificate(CreateCertificateRequest) returns (CreateCertificateResponse);
-  // Challenge returns a nonce for verifiers with NeedsChallenge. It returns FailedPrecondition
-  // when the cluster's policy names a verifier that does not need one.
-  rpc Challenge(ChallengeRequest) returns (ChallengeResponse);
-}
-
-// Served on the main listener, which requires an authenticated peer.
-service TrustService {
-  // RotateTrust replaces the cluster's pinned attestation policy. The caller must present its
-  // current SVID over mTLS. Served only for verifiers that implement PolicyRotator.
-  rpc RotateTrust(RotateTrustRequest) returns (RotateTrustResponse);
-}
-
-message Evidence {
-  string type = 1;      // for example "k8s-psat"
-  bytes payload = 2;    // opaque to core code
-  bytes challenge = 3;  // empty unless the verifier needs a challenge
-}
-
-// Field limits, enforced by the handler before any other work: cluster_name at most 253 bytes,
-// agent_role one of the known roles, csr at most 8 KiB, evidence.payload at most 64 KiB,
-// evidence.challenge at most 256 bytes, proposed_policy at most 64 KiB.
-message CreateCertificateRequest {
-  string cluster_name = 1;
-  string agent_role = 2;           // "registration", "work", or "singleton"; must match the policy
-  bytes csr = 3;                   // PEM, PKCS#10
-  Evidence evidence = 4;
-}
-
-message CreateCertificateResponse {
-  repeated bytes cert_chain = 1;   // PEM, leaf first
-  repeated bytes trust_bundle = 2; // PEM CA certificates for the trust domain
-}
-
-message RotateTrustRequest {
-  string cluster_name = 1;
-  bytes proposed_policy = 2;
-  Evidence evidence = 3;           // fresh evidence that verifies against proposed_policy
-}
-
-message RotateTrustResponse {}
-
-message ChallengeRequest { string cluster_name = 1; }
-message ChallengeResponse { bytes challenge = 1; }
-```
-
-**Two listeners.** The first `CreateCertificate` call has no client certificate, because the agent
-holds only the server CA. The gRPC server therefore serves two listeners in the same process:
-
-- **The bootstrap listener** (port 8091 by default, a second port on the existing gRPC `Service`)
-  serves only `CertificateService`. It uses server-authenticated TLS 1.3 and requests no client
-  certificate. It sets `MaxRecvMsgSize` to 128 KiB, so an unauthenticated client cannot make the
-  server receive or parse a larger message. It also sets a low `MaxConcurrentStreams` and short
-  keepalive and idle timeouts. A `grpc.InTapHandle` applies the per-peer rate limit before a
-  stream is accepted. No CloudEvents or other service is registered on it.
-- **The main listener** keeps today's configuration and serves CloudEvents and `TrustService`. Its
-  authentication interceptor accepts no call without an authenticated peer. No method on it is
-  exempt, and `CertificateService` is not registered on it.
-
-`CreateCertificate` does its own authentication rather than using the server's global authenticator
-chain. The existing `TokenAuthenticator` would send the token to the hub kube-apiserver's
-TokenReview, which cannot validate a managed cluster's token. The handler runs these steps in
-order, so that cheap rejections happen first:
-
-1. Check the field limits in `CreateCertificateRequest`, then rate-limit per cluster name.
-2. Load the `ManagedCluster` named in the request. It must exist with `hubAcceptsClient: true` and a
-   policy. Otherwise, return `FailedPrecondition` with reason `ClusterNotReady`. The same reason is
-   used in all three cases, so an unauthenticated caller cannot tell whether a cluster exists.
-3. Check that `evidence.type` equals the policy's `type` and is one of the hub's enabled verifiers.
-   Otherwise, return `PermissionDenied` with reason `AttestorTypeNotEnabled`.
-4. Call `Verifier.Verify`. On error, return `PermissionDenied` with the verifier's reason code, for
-   example `EvidenceIssuerMismatch`.
-5. Look up `Claims.Subject` in the policy's `agents` map. If it is missing, or maps to a role other
-   than `agent_role`, return `PermissionDenied` with reason `AgentNotBound`.
-6. Check the CSR's public key.
-7. Sign through `CAKeyManager.Signer` under the signer policy.
-8. Record the outcome in metrics (`ocm_spiffe_svid_issued_total{attestor}`,
-   `ocm_spiffe_svid_rejected_total{attestor,reason}`). Log it with `klog`, including the cluster,
-   agent role, claims subject, certificate serial, and, on failure, the detail described in
-   [Reason codes](#reason-codes).
-
-The status returned to the caller carries only the reason code and a fixed message for that code.
-Details such as the pinned issuer go only to the hub's logs, because the caller is not yet
-authenticated.
-
-<a id="binding-the-request-to-the-evidence"></a>**Binding the request to the evidence.** The cluster
-and the agent role in the request are only claims. The hub issues an SVID for them only when
-verified evidence binds to both:
-
-- **Agent.** The policy maps each accepted subject to exactly one agent role (step 5). A valid token
-  for the work agent's ServiceAccount can therefore mint only the `work` identity, never the
-  `registration` identity.
-- **Cluster.** A policy's bindings, as returned by `Verifier.ValidatePolicy`, must be unique across
-  all `ManagedCluster`s. The webhook rejects a policy that shares a binding with another cluster's
-  policy. Evidence that verifies against one cluster's policy therefore cannot verify against
-  another's.
-
-  For `k8s-psat`, a binding is the issuer, a JWK thumbprint, and a subject. Two ordinary clusters
-  never share a signing key, so they never collide, even when both use the default issuer
-  URL. Clusters that do share a key, such as several klusterlets on one hosting cluster in
-  `Hosted` mode, stay distinct because their ServiceAccounts are in different namespaces. A policy
-  with `"jwksSource": "discovery"` binds the issuer URL itself, so two such policies cannot use the
-  same issuer.
-
-Challenges are stateless: each is an HMAC-signed `(cluster, expiry, random)` tuple, so they work
-across gRPC server replicas. A short-lived replay cache enforces single use. The built-in
-`k8s-psat` verifier does not use them, but an external verifier may.
-
-**SPIFFE CA trust.** The main listener's client CA bundle includes the certificates from the
-`BundleSource`, alongside the existing gRPC signer CA.
-
-**Hub driver.** `GRPCHubDriver` gains the SPIFFE settings. `CreatePermissions` and `Cleanup` are
-unchanged: they bind the same groups as today, and the bindings name groups, not users. The CA rotation controller runs in the gRPC
-server, with leader election, so the `CAKeyManager` is needed only in that pod.
-
-**ManagedCluster webhook.** The validating webhook protects every annotation with the
-`spiffe.open-cluster-management.io/` prefix, the same way it protects `hubAcceptsClient`: changing
-them requires `update` on the `managedclusters/accept` subresource. It also calls the verifier's
-`ValidatePolicy`, so the operator adds external verifier containers to the webhook pod as well. It
-rejects a policy whose bindings overlap another `ManagedCluster`'s, using an index of bindings kept
-by the webhook's informer. It also rejects an `agents` map that names an unknown role or maps two
-roles to one subject. As a result, the agent's own hub identity cannot re-pin its cluster to a
-different issuer, and no admin can accidentally pin two clusters to the same evidence.
-
-#### Attestation policy on ManagedCluster
-
-The policy is a single JSON annotation. Core code reads only `type` and `agents`, and the matching
-verifier interprets the rest. This keeps Mode 3 policies out of the API. `agents` maps each subject
-that the verifier can return in `Claims.Subject` to an agent role.
+On acceptance, the hub admin binds the agents' SPIRE IDs to the cluster:
 
 ```yaml
-apiVersion: cluster.open-cluster-management.io/v1
-kind: ManagedCluster
+apiVersion: cluster.open-cluster-management.io/v1alpha1
+kind: ManagedClusterIdentity
 metadata:
-  name: managed-0
-  annotations:
-    spiffe.open-cluster-management.io/attestation-policy: |
-      {
-        "type": "k8s-psat",
-        "issuer": "https://kubernetes.default.svc.cluster.local",
-        "jwks": {"keys": [ ... ]},
-        "agents": {
-          "system:serviceaccount:open-cluster-management-agent:klusterlet-registration-sa": "registration",
-          "system:serviceaccount:open-cluster-management-agent:klusterlet-work-sa": "work"
-        }
-      }
+  name: prod-eu-1
 spec:
-  hubAcceptsClient: true
+  external:
+    trustDomain: corp.example
+  agents:
+    - role: registration
+      subject: spiffe://corp.example/cluster/prod-eu-1/ns/open-cluster-management-agent/sa/klusterlet-registration-sa
+    - role: work
+      subject: spiffe://corp.example/cluster/prod-eu-1/ns/open-cluster-management-agent/sa/klusterlet-work-sa
 ```
 
-The `k8s-psat` verifier:
+SPIRE's own node and workload attestation, including image digest selectors, decides which
+workload receives those IDs. OCM needs no plugin for this.
 
-- checks the JWT signature against `jwks`;
-- checks that `iss` equals `issuer`, that `aud` contains the hub's token audience, and that `exp`
-  and `nbf` hold, with 60s leeway;
-- checks that `sub` is a key of `agents`, and returns it as `Claims.Subject`.
+#### Story 3 - An organization that uses Entra ID for workload identity
 
-In `Singleton` and `SingletonHosted` modes there is a single agent ServiceAccount
-(`<klusterlet-name>-work-sa`), mapped to the `singleton` role. In `Hosted` and `SingletonHosted` modes, the issuer, JWKS, and
-namespace are the **hosting** cluster's, because the agent pod and its token come from there.
+The managed clusters run on AKS with Entra Workload ID. The organization wants every agent to be an
+Entra identity, so that Entra's conditional access, audit, and lifecycle apply.
 
-**JWKS rotation.** Kubernetes distributions, including managed services, can rotate the
-ServiceAccount signing key. `k8s-psat` implements `PolicyRotator` to handle this:
+In Entra, an app registration represents the hub, for example `api://ocm-hub`. It requires app role
+assignment, and each agent's managed identity is assigned its `OCM.Agent` app role. Without the
+assignment requirement, Entra would issue tokens for the hub's audience to any identity in the
+tenant that asked.
 
-- **Detecting rotation.** The agent watches its own cluster's JWKS. When the key set changes, it
-  calls `RotateTrust` with the new policy and a fresh token. The call is authenticated with its
-  current, valid SVID over mTLS.
-- **Accepting the update.** The hub accepts the new policy only if four things hold:
-  - the caller's SVID belongs to the same cluster;
-  - the issuer and `agents` are unchanged;
-  - the fresh token verifies against the new JWKS;
-  - the new bindings do not overlap another cluster's.
-- **Fallback.** If the SVID expires before the rotation is pushed, the hub administrator re-runs
-  `clusteradm accept` with a fresh trust file.
-
-A hub administrator can instead set `"jwksSource": "discovery"` in the policy. The hub then fetches
-the JWKS from the issuer's discovery endpoint. This works only when that endpoint is reachable from
-the hub.
-
-#### Hub signing key
-
-The built-in `secret` `CAKeyManager` reuses the existing gRPC signer CA Secret, so trying the
-feature needs no new key material. Keeping the hub CA key in an HSM or KMS is Mode 2 (see
-[Mode 2](#mode-2-external-hsm-or-kms-later)).
-
-CA rotation uses an overlap window:
-
-1. Call `CAKeyManager.CreateKey` to create a new key.
-2. Add the new CA certificate to the trust bundle and to the server's client CA bundle, next to the
-   old one.
-3. After one bundle-propagation interval, switch signing to the new key.
-4. Retire the old CA once every SVID issued under it has expired, which takes at most one
-   `svidTTL`.
-
-#### Changes required on the managed cluster
-
-**The `hub` SVID source.** A new `spiffe` package under `pkg/registration/register/grpc/` holds:
-
-- the current SVID, with its key in the `memory` `KeyStore`;
-- a renewer that re-mints at 50% of the SVID lifetime with jitter, retries with exponential backoff,
-  and keeps retrying after expiry, since a fresh token is always available;
-- the `k8s-psat` attestor, which reads the projected token from disk on every mint, because the
-  kubelet refreshes it.
-
-Every mint generates a new key and runs a fresh attestation. There is no separate renew path, so
-renewal and recovery after a restart follow the same code path.
-
-**gRPC client.** In SPIFFE mode, the driver builds `GRPCDialer.TLSConfig` with:
-
-- `GetClientCertificate` returning `SVIDSource.Current()`;
-- `RootCAs` from the server CA in the bootstrap `ConfigMap`, later replaced by
-  `SVIDSource.Bundle()`.
-
-This needs a small `sdk-go` change: today `BuildGRPCOptionsFromFlags` loads client certificates only
-from files, through `cert.AutoLoadTLSConfig`.
-
-**No `hub-kubeconfig-secret`.** In SPIFFE mode, `Process` creates no CSR and writes no Secret.
-`IsHubKubeConfigValid` reports whether the in-memory SVID is valid. `BuildKubeConfigFromTemplate`
-is not used, because the gRPC config holds no credential paths.
-
-**Each agent mints its own SVID.** In `Default` and `Hosted` modes, the work agent runs in a
-separate pod and can no longer read the registration agent's Secret. It runs the same SVID source
-with its own ServiceAccount token. Each agent receives the user for its own role
-(`...:registration` or `...:work`), and both receive the same groups. Hub RBAC binds the groups, so
-it is unchanged.
-
-**Projected token.** The operator adds a projected `serviceAccountToken` volume to each agent
-Deployment, with `audience` set to the hub's token audience and `expirationSeconds: 3600`.
-
-**Agent hardening.** Because the key lives only in process memory, the operator sets the following
-in the agent `Deployment`:
-
-- non-root;
-- a read-only root filesystem;
-- no privilege escalation.
-
-The documentation recommends disabling core dumps and swap on nodes.
-
-**Addons.** Addons are unchanged. The `token` addon driver already requests tokens over the gRPC
-connection (`grpcTokenControl`), and the SVID now authenticates that connection.
-
-#### Config surface
-
-The klusterlet's `RegistrationDriver` gets a `grpc` sub-object, and the hub's existing
-`GRPCRegistrationConfig` gets a `spiffe` sub-object. `authType` stays `grpc`, because the transport
-does not change. Each provider slot is a `SPIFFEProvider`, which names a built-in provider or an
-entry in `externalProviders`. Later modes therefore need no API change.
-
-```go
-// Klusterlet: spec.registrationConfiguration.registrationDriver.grpc
-type GRPCAgentRegistrationConfig struct {
-	// identityMode selects how the agent obtains its hub identity.
-	// Certificate is today's behavior: a CSR-issued certificate stored in hub-kubeconfig-secret.
-	// SPIFFE mints short-lived SVIDs in memory.
-	// +kubebuilder:validation:Enum=Certificate;SPIFFE
-	// +kubebuilder:default:=Certificate
-	// +optional
-	IdentityMode string `json:"identityMode,omitempty"`
-
-	// spiffe configures SPIFFE mode. Ignored unless identityMode is SPIFFE.
-	// +optional
-	SPIFFE *SPIFFEAgentConfig `json:"spiffe,omitempty"`
-}
-
-// +kubebuilder:validation:XValidation:rule="[self.svidSource, self.keyStore, self.attestor].all(p, !has(p.external) || self.externalProviders.exists(e, e.name == p.external))",message="a slot references an external provider that is not listed in externalProviders"
-// +kubebuilder:validation:XValidation:rule="!has(self.externalProviders) || self.externalProviders.all(e, !has(e.volumes) || e.volumes.all(v, !has(v.projected) || v.projected.sources.all(s, !has(s.serviceAccountToken) || s.serviceAccountToken.audience != self.tokenAudience)))",message="a provider must not be given a token with the hub audience"
-type SPIFFEAgentConfig struct {
-	// tokenAudience is the audience requested for the projected token used by the k8s-psat
-	// attestor. It must equal the hub's spiffe.tokenAudience.
-	// +kubebuilder:default:="open-cluster-management.io/spiffe"
-	// +optional
-	TokenAudience string `json:"tokenAudience,omitempty"`
-
-	// svidSource selects who issues the agent's SVID. Built-in: hub. External: for example spire (Mode 4).
-	// +kubebuilder:validation:XValidation:rule="has(self.external) || self.type == 'hub'",message="svidSource type is not built in (built-in: hub); set external to the provider that serves it"
-	// +kubebuilder:default:={type: hub}
-	// +optional
-	SVIDSource SPIFFEProvider `json:"svidSource,omitempty"`
-
-	// keyStore selects where the agent key lives. Built-in: memory. External: for example pkcs11,
-	// tpm, kmip (Mode 2). Ignored when svidSource is external.
-	// +kubebuilder:validation:XValidation:rule="has(self.external) || self.type == 'memory'",message="keyStore type is not built in (built-in: memory); set external to the provider that serves it"
-	// +kubebuilder:default:={type: memory}
-	// +optional
-	KeyStore SPIFFEProvider `json:"keyStore,omitempty"`
-
-	// attestor selects how the agent proves its identity. Built-in: k8s-psat. External: for example
-	// aws-iid, gcp-iit, azure-imds, oidc-federation, tpm-devid (Mode 3). Ignored when svidSource
-	// is external.
-	// +kubebuilder:validation:XValidation:rule="has(self.external) || self.type == 'k8s-psat'",message="attestor type is not built in (built-in: k8s-psat); set external to the provider that serves it"
-	// +kubebuilder:default:={type: k8s-psat}
-	// +optional
-	Attestor SPIFFEProvider `json:"attestor,omitempty"`
-
-	// externalProviders are added as containers to each agent pod.
-	// +listType=map
-	// +listMapKey=name
-	// +optional
-	ExternalProviders []SPIFFEExternalProvider `json:"externalProviders,omitempty"`
-}
-
-// ClusterManager: spec.registrationConfiguration.registrationDrivers[authType=grpc].grpc.spiffe
-// +kubebuilder:validation:XValidation:rule="([self.caKeyManager, self.bundleSource] + self.verifiers).all(p, !has(p.external) || self.externalProviders.exists(e, e.name == p.external))",message="a slot references an external provider that is not listed in externalProviders"
-// +kubebuilder:validation:XValidation:rule="!has(self.externalProviders) || self.externalProviders.all(e, !has(e.volumes) || e.volumes.all(v, !has(v.projected) || v.projected.sources.all(s, !has(s.serviceAccountToken) || s.serviceAccountToken.audience != self.tokenAudience)))",message="a provider must not be given a token with the hub audience"
-type SPIFFEHubConfig struct {
-	// trustDomain is the SPIFFE trust domain of SVIDs this hub issues or accepts.
-	// +required
-	TrustDomain string `json:"trustDomain"`
-
-	// tokenAudience is the audience that agents' k8s-psat tokens must carry.
-	// +kubebuilder:default:="open-cluster-management.io/spiffe"
-	// +optional
-	TokenAudience string `json:"tokenAudience,omitempty"`
-
-	// svidTTL is the lifetime of issued SVIDs.
-	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('1h') && duration(self) <= duration('168h')"
-	// +kubebuilder:default:="24h"
-	// +optional
-	SVIDTTL *metav1.Duration `json:"svidTTL,omitempty"`
-
-	// caKeyManager selects where the CA key lives. Built-in: secret. External: for example kms,
-	// pkcs11, kmip (Mode 2). Ignored when the bundleSource does not issue.
-	// +kubebuilder:validation:XValidation:rule="has(self.external) || self.type == 'secret'",message="caKeyManager type is not built in (built-in: secret); set external to the provider that serves it"
-	// +kubebuilder:default:={type: secret}
-	// +optional
-	CAKeyManager SPIFFEProvider `json:"caKeyManager,omitempty"`
-
-	// verifiers lists the attestation types the hub accepts. Several may be enabled at once.
-	// Built-in: k8s-psat. External: for example aws-iid, gcp-iit, azure-imds, oidc-federation,
-	// tpm-devid (Mode 3).
-	// +kubebuilder:validation:XValidation:rule="self.all(v, has(v.external) || v.type == 'k8s-psat')",message="verifier type is not built in (built-in: k8s-psat); set external to the provider that serves it"
-	// +kubebuilder:default:={{type: k8s-psat}}
-	// +listType=map
-	// +listMapKey=type
-	// +optional
-	Verifiers []SPIFFEProvider `json:"verifiers,omitempty"`
-
-	// bundleSource selects which CA certificates the hub trusts. Built-in: builtin. External: for
-	// example spire (Mode 4).
-	// +kubebuilder:validation:XValidation:rule="has(self.external) || self.type == 'builtin'",message="bundleSource type is not built in (built-in: builtin); set external to the provider that serves it"
-	// +kubebuilder:default:={type: builtin}
-	// +optional
-	BundleSource SPIFFEProvider `json:"bundleSource,omitempty"`
-
-	// externalProviders are added as containers to the gRPC server pod, and verifiers also to the
-	// webhook pod.
-	// +listType=map
-	// +listMapKey=name
-	// +optional
-	ExternalProviders []SPIFFEExternalProvider `json:"externalProviders,omitempty"`
-}
-
-// SPIFFEProvider fills one provider slot with a built-in provider or an external one.
-type SPIFFEProvider struct {
-	// type is the provider type. Without external, it selects a built-in provider. With external,
-	// the provider must report this type during the handshake.
-	// +required
-	Type string `json:"type"`
-
-	// external names the entry in externalProviders that serves this slot.
-	// +optional
-	External string `json:"external,omitempty"`
-
-	// config is opaque to OCM and passed to the provider during the handshake.
-	// Secrets must not appear here; give them to the provider container through env or volumes.
-	// +kubebuilder:pruning:PreserveUnknownFields
-	// +optional
-	Config *runtime.RawExtension `json:"config,omitempty"`
-}
-
-// SPIFFEExternalProvider is a container that serves the provider protocol on a Unix socket.
-// The operator adds it to every pod that uses one of the slots it serves.
-type SPIFFEExternalProvider struct {
-	// name is referenced from a slot's external field, and names the container and its socket.
-	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]{0,40}[a-z0-9])?$`
-	// +required
-	Name string `json:"name"`
-
-	// image must be pinned by digest.
-	// +kubebuilder:validation:Pattern=`^[^@]+@sha256:[a-f0-9]{64}$`
-	// +required
-	Image string `json:"image"`
-
-	// +optional
-	Args []string `json:"args,omitempty"`
-
-	// env may reference Secrets, for example for an HSM PIN or cloud credentials.
-	// +optional
-	Env []corev1.EnvVar `json:"env,omitempty"`
-
-	// +optional
-	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
-
-	// volumes are added to the pod and mounted only into this container, for example an HSM client
-	// configuration or the SPIRE agent socket. Only configMap, secret, projected, emptyDir, and csi
-	// volumes are allowed. A projected serviceAccountToken must set an explicit audience.
-	// +kubebuilder:validation:XValidation:rule="self.all(v, [has(v.configMap), has(v.secret), has(v.projected), has(v.emptyDir), has(v.csi)].exists(b, b))",message="provider volumes may only be configMap, secret, projected, emptyDir, or csi"
-	// +kubebuilder:validation:XValidation:rule="self.all(v, !has(v.projected) || v.projected.sources.all(s, !has(s.serviceAccountToken) || (has(s.serviceAccountToken.audience) && size(s.serviceAccountToken.audience) > 0)))",message="a projected serviceAccountToken in a provider volume must set an explicit audience"
-	// +optional
-	Volumes []SPIFFEProviderVolume `json:"volumes,omitempty"`
-
-	// securityContext is merged onto the restricted default. It may not leave the restricted Pod
-	// Security Standard, and may not set runAsUser, which the operator chooses. HSM and TPM devices
-	// are reached through a device plugin in resources, not through privileged access.
-	// +kubebuilder:validation:XValidation:rule="!has(self.runAsUser) && (!has(self.runAsNonRoot) || self.runAsNonRoot) && (!has(self.privileged) || !self.privileged) && (!has(self.allowPrivilegeEscalation) || !self.allowPrivilegeEscalation) && (!has(self.capabilities) || !has(self.capabilities.add) || size(self.capabilities.add) == 0) && (!has(self.capabilities) || !has(self.capabilities.drop) || self.capabilities.drop.exists(c, c == 'ALL')) && (!has(self.readOnlyRootFilesystem) || self.readOnlyRootFilesystem) && (!has(self.seccompProfile) || self.seccompProfile.type != 'Unconfined')",message="securityContext must stay within the restricted Pod Security Standard (capabilities.drop must include ALL) and must not set runAsUser"
-	// +optional
-	SecurityContext *corev1.SecurityContext `json:"securityContext,omitempty"`
-
-	// startupTimeout bounds how long the component waits for the provider's handshake before it
-	// fails closed.
-	// +kubebuilder:default:="60s"
-	// +optional
-	StartupTimeout *metav1.Duration `json:"startupTimeout,omitempty"`
-}
-
-type SPIFFEProviderVolume struct {
-	corev1.Volume `json:",inline"`
-
-	// +required
-	MountPath string `json:"mountPath"`
-
-	// +optional
-	ReadOnly bool `json:"readOnly,omitempty"`
-}
+```yaml
+# Klusterlet
+identitySource:
+  hubIssued:
+    evidence:
+      oauth2:
+        tokenEndpoint: https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token
+        clientID: <client ID of the agent's managed identity or app>
+        scope: api://ocm-hub/.default
+        assertion:
+          serviceAccountToken: {audience: api://AzureADTokenExchange}
 ```
 
-Both sides are gated by a new `SPIFFEIdentity` feature gate, alpha and off by default, in both the
-hub registration and klusterlet feature gate sets.
+The agent sends its projected ServiceAccount token to Entra as a client assertion
+([RFC 7523][rfc7523]). This is standard workload identity federation, so OCM runs no Entra code.
+The agent receives an Entra access token and presents it as evidence. The hub's built-in `oidc`
+verifier checks it against Entra's published keys, together with the tenant and the app role. The
+hub admin's binding names the agent's Entra object ID:
 
-#### External providers
-
-An external provider is a container image that serves the provider protocol. It is packaged and
-selected the way an addon is: the organization that needs it builds it, and the configuration names
-it.
-
-**Pod layout.** For every entry in `externalProviders` that a slot references, the operator:
-
-- adds the container to each pod that uses the slot:
-  - agent slots go to the registration and work agent pods in `Default` and `Hosted` modes, and to
-    the single agent pod in `Singleton` and `SingletonHosted` modes;
-  - in hosted modes these pods, and therefore the provider containers, run on the hosting cluster;
-  - `CAKeyManager`, `Verifier`, and `BundleSource` go to the gRPC server pod, and `Verifier` also
-    goes to the webhook pod;
-- adds it as a native sidecar container (an init container with `restartPolicy: Always`), so it
-  starts before the OCM container and stops after it;
-- creates one `emptyDir` volume for that provider alone, and mounts it into the provider at
-  `/var/run/ocm/provider` and into the OCM container at `/var/run/ocm/providers/<name>`. The
-  provider listens on `provider.sock` in that directory, and the path is passed in
-  `OCM_PROVIDER_SOCKET`;
-- applies the security settings in [Securing the provider channel](#securing-the-provider-channel).
-
-One container may serve several slots, for example a `tpm` `KeyStore` and a `tpm-devid`
-`Attestor`. Two slots that name the same entry share one container and one socket, and each slot
-gets its own handshake.
-
-<a id="securing-the-provider-channel"></a>**Securing the provider channel.** The provider channel carries the most sensitive calls in the
-design: signatures by the hub CA key, signatures by the agent key, and, in Mode 4, the agent's
-private key. The channel is secured against three things:
-
-- other containers in the same pod, including other providers;
-- other pods and processes on the same node;
-- a provider that tries to do more than its slot allows.
-
-The node itself is out of scope. That covers root on the node, the container runtime, and anyone
-who can `exec` into the pod. Each of them can already read the OCM container's memory, so no
-channel protection could stop them.
-
-The operator and the `sdk-go` provider runtime apply these controls, so provider authors do not
-implement them. They are not configurable, and none of them can be turned off:
-
-1. **One private socket per provider.** Each provider's `emptyDir` is mounted only into that
-   provider and the OCM container. Because no two providers share a volume, an external
-   `Verifier` cannot connect to the `CAKeyManager`'s socket and ask for a signature. The volume uses
-   `medium: Memory` with a 1Mi `sizeLimit`, so it never reaches the node's disk. Nothing is ever
-   placed under a `hostPath`.
-
-   The containers run under different UIDs (control 3), so they share access through a group. The
-   operator sets a pod-level `fsGroup` and `fsGroupChangePolicy: OnRootMismatch`. The kubelet then
-   gives each `emptyDir` group ownership by `fsGroup`, with mode `2770`, where the setgid bit makes
-   new files inherit the group. Both containers have `fsGroup` as a supplementary group. After
-   binding, `provider.Serve` sets the socket to mode `0660`, so the socket is owned by the
-   provider's UID and the `fsGroup` group. Only the provider and the OCM container can traverse the
-   directory and connect, and only because the volume is mounted into them. `fsGroup` is shared by
-   the whole pod, so isolation between providers comes from the mounts, not from the group.
-2. **Filesystem sockets only.** All containers in a pod share one network namespace. Anything
-   listening on TCP, on loopback, or on an abstract-namespace Unix socket can therefore be reached
-   by every container in the pod. `provider.Serve` listens only on the socket path. The OCM
-   container dials only that path. Before dialing, it uses `lstat` to confirm the path is a socket,
-   not a symlink, owned by the provider's UID and the `fsGroup` group. The conformance suite fails a
-   provider that opens any other listener.
-3. **Both ends check the peer's identity.** The operator runs the OCM container and every provider
-   container under different non-root UIDs, which it chooses itself. It sets `runAsUser` and
-   `runAsGroup` explicitly and never relies on the image. On each new connection, both ends read
-   the peer's UID from the kernel (`SO_PEERCRED`) and close the connection unless it is the UID they
-   expect. The expected UIDs are passed in `OCM_PROVIDER_PEER_UID`. The check is a gRPC
-   `TransportCredentials` in `sdk-go`, used by both the client adapters and `provider.Serve`. It runs
-   before any RPC, the handshake included.
-4. **No TLS on the socket.** Controls 1 to 3 leave exactly two kernel-authenticated endpoints, and
-   the bytes never leave the kernel. TLS would add a key that has to be delivered into the pod, which
-   is the kind of stored credential this design removes. The Kubernetes KMS v2 plugin, CSI drivers,
-   and the SPIFFE Workload API use the same model for the same kinds of secrets.
-5. **No shared process namespace.** The operator sets `shareProcessNamespace: false` explicitly.
-   This stops a provider from reading the agent key or the SVID out of the OCM container's memory
-   through `/proc`, and stops OCM from reading a provider's memory.
-6. **Each container gets only its own credentials.** The operator sets
-   `automountServiceAccountToken: false` on the pod. It mounts the hub-audience projected token and
-   the Kubernetes API token only into the OCM container. A provider gets no ServiceAccount token
-   unless its `volumes` declare a projected one. In that case, CEL validation on both
-   `SPIFFEAgentConfig` and `SPIFFEHubConfig` requires an explicit `audience` that differs from
-   `tokenAudience`.
-
-   CEL cannot know which audiences the cluster's own kube-apiserver accepts, so the operator checks
-   that at reconcile time. For each provider token audience, it requests a short-lived token for its
-   own ServiceAccount with that audience and submits it to its own cluster's `TokenReview`. If the
-   apiserver authenticates the token, the audience is an API audience. The operator then sets
-   `Degraded` with reason `ProviderTokenAudienceRejected` and does not render the pod.
-
-   Together these rules stop a provider from holding the agent's hub identity or its Kubernetes
-   permissions. Each Secret named in a provider's `env` or `volumes` is mounted only into that
-   provider.
-7. **A restricted container.** Provider containers meet the Kubernetes `restricted` Pod Security
-   Standard:
-   - non-root, with the operator-chosen UID;
-   - all capabilities dropped and no privilege escalation;
-   - a read-only root filesystem;
-   - the `RuntimeDefault` seccomp profile.
-
-   The OCM container gets the same settings. `securityContext` on an entry is merged onto these
-   defaults field by field, with fixed rules:
-   - `capabilities.drop` is always `[ALL]`, whatever the entry sets;
-   - `capabilities.add` must be empty;
-   - `runAsUser` comes from the operator and cannot be set;
-   - any other field the entry sets replaces the default only if the value stays within the
-     `restricted` profile.
-
-   CEL validation rejects an entry that sets `runAsUser`, adds capabilities, sets a `drop` list
-   without `ALL`, or leaves the profile in any other way. Provider `volumes` may only be `configMap`, `secret`, `projected`, `emptyDir`, or
-   `csi` volumes (`csi`, for example, for the SPIFFE CSI driver). HSM and TPM devices are reached
-   through a device plugin, requested in `resources`. A privileged container or a `hostPath` volume
-   is never used.
-8. **Bounded calls on both ends.** Every call from the OCM container has a deadline:
-   - `Sign`: 2s;
-   - `GetEvidence`, `Verify`, `ValidatePolicy`, and `Rotate`: 10s;
-   - `Handshake`: `startupTimeout`.
-
-   Messages are limited to 64KiB, except the `WatchX509SVID` and `WatchBundle` streams, which allow
-   4MiB. The OCM container also caps how many calls are in flight to each provider. On the provider
-   side, `provider.Serve` applies the same message limits, serves no gRPC reflection, and serves
-   `grpc.health.v1` only on the socket. The kubelet probes it there through a small `exec` probe in
-   the SDK.
-9. **The OCM container checks every result before using it.**
-   - **`KeyStore`**: the public key from `Generate` must use the requested algorithm. The CSR's
-     signature must verify against that key.
-   - **`CAKeyManager`**: core code builds the full `TBSCertificate`, and the provider returns only a
-     signature over its digest. Core code verifies that signature against the CA public key in the
-     CA `ConfigMap` before it returns a certificate. A provider can therefore not change a
-     certificate's contents.
-   - **`SVIDSource`**: the leaf's URI SAN must equal the expected SPIFFE ID, the chain must verify to
-     the bundle, and the private key must match the leaf. The key is kept only in memory and is
-     never logged.
-   - **`BundleSource`**: an empty bundle is rejected, and so is an update that removes the CA of the
-     hub's current serving certificate.
-   - **`Verifier`**: `Claims.Subject` is used only as a key into the pinned policy's `agents` map.
-     A subject that is not in the map issues nothing (see
-     [Binding the request to the evidence](#binding-the-request-to-the-evidence)). `Attributes` are
-     only logged.
-
-A rejected peer or a failed result check counts as a provider failure. Like every other provider
-failure, it fails closed (see below), and it is counted in
-`ocm_spiffe_provider_rejected_total{provider,slot,reason}`.
-
-**Provider protocol.** The protocol is the Go interfaces above mapped onto gRPC, in the versioned
-package `ocm.spiffe.provider.v1alpha1` in `sdk-go`. A provider serves `Provider` plus the services
-for the slots it implements. `Evidence` is the same message that `CertificateService` carries.
-
-```protobuf
-service Provider {
-  // Handshake is the first call on every connection, once per slot.
-  rpc Handshake(HandshakeRequest) returns (HandshakeResponse);
-}
-
-message HandshakeRequest {
-  repeated string protocol_versions = 1; // versions the OCM component supports, for example "v1alpha1"
-  string slot = 2;                       // "KeyStore", "CAKeyManager", "Attestor", "Verifier", "SVIDSource", "BundleSource"
-  string type = 3;                       // SPIFFEProvider.type
-  bytes config = 4;                      // SPIFFEProvider.config, as JSON
-  string cluster_name = 5;               // set on the agent side only
-}
-
-message HandshakeResponse {
-  string protocol_version = 1;           // one of the requested versions
-  string type = 2;                       // must equal the requested type
-  bool needs_challenge = 3;              // Attestor and Verifier
-  bool rotates_policy = 4;               // Verifier
-  bool issues = 5;                       // BundleSource
-}
-
-service KeyStore {
-  rpc Generate(GenerateRequest) returns (PublicKey);  // the new key becomes current
-  rpc Sign(SignRequest) returns (SignResponse);
-  rpc DestroyRetired(DestroyRetiredRequest) returns (DestroyRetiredResponse);
-}
-
-service CAKeyManager {
-  rpc GetPublicKey(GetPublicKeyRequest) returns (PublicKey);  // empty key_id means the active key
-  rpc CreateKey(CreateKeyRequest) returns (PublicKey);
-  rpc Sign(SignRequest) returns (SignResponse);
-}
-
-message GenerateRequest { string key_alg = 1; }
-message CreateKeyRequest { string key_alg = 1; }
-message GetPublicKeyRequest { string key_id = 1; }
-message PublicKey { string key_id = 1; bytes pkix_der = 2; }
-message SignRequest {
-  string key_id = 1;
-  bytes digest = 2;
-  string hash = 3;                       // for example "SHA-256"
-  int32 pss_salt_length = 4;             // set only for RSA-PSS
-}
-message SignResponse { bytes signature = 1; }
-message DestroyRetiredRequest {}
-message DestroyRetiredResponse {}
-
-service Attestor {
-  rpc GetEvidence(GetEvidenceRequest) returns (Evidence);
-}
-message GetEvidenceRequest { bytes challenge = 1; }
-
-service Verifier {
-  rpc ValidatePolicy(ValidatePolicyRequest) returns (ValidatePolicyResponse);
-  rpc Verify(VerifyRequest) returns (Claims);
-  // Rotate is called only when the handshake reported rotates_policy.
-  rpc Rotate(RotateRequest) returns (RotateResponse);
-}
-message ValidatePolicyRequest { bytes policy = 1; }
-message ValidatePolicyResponse { repeated string bindings = 1; }
-message VerifyRequest {
-  string cluster_name = 1;
-  string agent_role = 2;
-  Evidence evidence = 3;
-  bytes policy = 4;
-  string audience = 5;
-  bytes challenge = 6;
-}
-message Claims { string subject = 1; map<string, string> attributes = 2; }
-message RotateRequest { bytes current_policy = 1; bytes proposed_policy = 2; Evidence evidence = 3; }
-message RotateResponse {}
-
-service SVIDSource {
-  // WatchX509SVID sends the current SVID, then every rotation.
-  rpc WatchX509SVID(WatchX509SVIDRequest) returns (stream X509SVIDUpdate);
-}
-message WatchX509SVIDRequest {}
-message X509SVIDUpdate {
-  repeated bytes cert_chain = 1;         // DER, leaf first
-  bytes private_key = 2;                 // PKCS#8 DER; held in memory by the agent
-  repeated bytes bundle = 3;             // DER CA certificates used to verify the hub
-}
-
-service BundleSource {
-  rpc WatchBundle(WatchBundleRequest) returns (stream BundleUpdate);
-}
-message WatchBundleRequest {}
-message BundleUpdate { repeated bytes ca_certificates = 1; }
+```yaml
+spec:
+  hubIssued:
+    evidence:
+      oidc:
+        issuer: https://login.microsoftonline.com/<tenant>/v2.0
+        subjectClaim: oid
+        requiredClaims: {tid: <tenant>, roles: OCM.Agent}
+  agents:
+    - {role: registration, subject: <object ID>}
+    - {role: work, subject: <object ID of the work identity>}
 ```
 
-<a id="reason-codes"></a>**Reason codes.** A provider rejects a request with a gRPC status that carries a
-`google.rpc.ErrorInfo` detail. The detail's `reason` is taken from a fixed list defined in the
-protocol package. For example:
+The same configuration, with a different endpoint and issuer, works for any provider that supports
+OAuth 2.0 client assertions or token exchange ([RFC 8693][rfc8693]), such as Okta, Keycloak, or
+Google.
 
-- `EvidenceSignatureInvalid`, `EvidenceIssuerMismatch`, `EvidenceAudienceMismatch`,
-  `EvidenceExpired`, and `EvidenceReplayed`;
-- `PolicyInvalid`;
-- `KeyNotFound` and `KeyAlgorithmUnsupported`;
-- `BackendUnavailable`.
+#### Story 4 - An organization integrates its own attestation without changing OCM
 
-Core code has codes of its own as well, for example:
+On-premises clusters must prove their identity with the node's TPM. The organization builds two
+plugin images: an `Attestor`, which produces a TPM quote bound to a hub challenge, and a `Verifier`,
+which checks it against its device CA. It names them in the `Klusterlet` and `ClusterManager`
+configurations, and binds clusters with a `tpm` evidence policy. Signing, acceptance, RBAC, and the
+transport do not change.
 
-- `ClusterNotReady`, `AttestorTypeNotEnabled`, `AgentNotBound`, `CSRKeyRejected`, and `RateLimited`;
-- `ProviderUnavailable`, `ProviderPeerRejected`, `ProviderResultInvalid`, `ProviderHandshakeFailed`,
-  and `ProviderDeadlineExceeded`.
+#### Story 5 - Revoking a cluster
 
-A reason that is not on the list is recorded as `ProviderOther`. Only reason codes are used as
-metric label values and as condition reasons, so the number of label values is bounded. The
-`attestor` label is also bounded: it takes only the hub's enabled verifier types, and any other
-value from a request becomes `other`.
-
-The status message is free text controlled by the provider. Core code truncates it to 256 bytes
-and strips it of control and non-printable characters. It then appears only in hub or agent logs
-and in a condition's message, never in a metric label. For `CreateCertificate`, it is never
-returned to the caller.
-
-**Writing a provider.** `sdk-go` provides:
-
-- the generated protocol stubs;
-- a `provider.Serve` helper that takes implementations of the Go interfaces and serves them on
-  `OCM_PROVIDER_SOCKET`;
-- the conformance suite, as a test package and as a container image that runs against any provider
-  socket;
-- a sample provider, a SoftHSM-backed `KeyStore` and `CAKeyManager`, to use as a template.
-
-Providers may be written in any language with gRPC support.
-
-**Fail closed.** The component reports `Degraded` on the `Klusterlet` or `ClusterManager` and does
-not serve, with a message that names the provider and the cause, in any of these cases:
-
-- a slot names a type that is not built in and has no `external`;
-- the provider socket does not appear within `startupTimeout`;
-- the handshake fails, there is no common protocol version, or the provider reports a different
-  type;
-- the provider does not serve the service for its slot;
-- the socket is not a socket owned by the provider's UID, or the peer UID check fails.
-
-If a provider container exits later, calls through it fail until it restarts. The agent keeps its
-current SVID until expiry and retries with backoff. It never falls back to a built-in provider.
-
-#### Mode 2: External HSM or KMS (later)
-
-**Slots:** an external `KeyStore` (for example `pkcs11`, `tpm`, `kmip`) on the agent, and an external
-`CAKeyManager` (for example `kms`, `pkcs11`, `kmip`) on the hub. The provider container carries the
-HSM client library and any device or configuration mounts. The OCM container never loads them.
-
-A provider must guarantee that:
-
-- no call returns private key bytes: only public keys and signatures cross the socket;
-- keys are created non-extractable (for PKCS#11, `CKA_EXTRACTABLE=false` and `CKA_SENSITIVE=true`);
-- it supports ECDSA P-256 at minimum;
-- `CreateKey` creates a new key object, and old objects are destroyed by `DestroyRetired`, or once
-  the overlap window has passed;
-- login secrets such as a PIN come from Secrets mounted into the provider container through `env`
-  or `volumes`, never from `config`;
-- the hub's KMS credentials come from the hub's own workload identity, and the provider needs only
-  sign permission, never export.
-
-The hub CA key is where an HSM adds the most value. A `kms` `CAKeyManager` built on
-[`go.step.sm/crypto/kms`][step-kms] covers PKCS#11 HSMs, AWS KMS, Google Cloud KMS, Azure Key
-Vault, and TPM behind one key URI, for example `awskms:key-id=...` or
-`pkcs11:token=...;object=...`. It is the expected first Mode 2 provider.
-
-An agent-side HSM or TPM key survives restarts, but the SVID stays in memory. A restarted agent
-therefore still attests again: Mode 2 protects the key, not the bootstrap.
-
-#### Mode 3: Cloud attestor (later)
-
-**Slots:** an external `Attestor` on the agent and an external `Verifier` on the hub, with matching
-`type`. They are usually two images from the same project, as in
-[Story 6](#story-6---an-organization-plugs-in-its-own-provider).
-
-| Provider | Evidence | Hub verifies |
-|---|---|---|
-| `aws-iid` | Instance Identity Document and its signature | The AWS public certificate; the account is in the policy (optionally within an AWS Organization); region; instance ID |
-| `gcp-iit` | Instance Identity Token (JWT) | Google signing keys; `aud` equals the hub audience; the project is in the policy; instance ID; zone |
-| `azure-imds` | Attested data from IMDS | The Azure signing certificate; tenant and subscription are in the policy; VM ID |
-| `oidc-federation` | A pod workload identity token (IRSA, GKE Workload Identity, Azure Workload Identity) | The cloud's OIDC issuer and the ServiceAccount subject |
-| `tpm-devid` | A TPM quote bound to the challenge | The DevID CA and the endorsement key in the policy |
-
-A provider must guarantee that:
-
-- **Verification is offline.** The verifier checks evidence with public certificates or JWKS only
-  and never calls a cloud API with hub credentials.
-- **Re-attestation works.** Every mint attests again, because the key and SVID are in memory. An
-  attestor whose evidence is single-use cannot be supported.
-- **Replay is bounded.** Evidence must be bound to the hub audience (`gcp-iit`, `oidc-federation`)
-  or to a challenge (`NeedsChallenge`, `tpm-devid`), or the verifier must reject reuse in another
-  way. A static AWS Instance Identity Document does not meet this on its own (see
-  [Open Questions](#open-questions)).
-- **The policy binds a cluster.** A valid cloud document proves only that a request came from some
-  machine in an account. `ValidatePolicy` must require a field that ties the document to one
-  cluster, for example a tag such as `ocm-cluster=<name>` or an instance ID.
-
-The policy uses the same annotation, for example:
-
-```json
-{"type": "gcp-iit", "projects": ["prod-123"], "zones": ["europe-north1-a"], "labels": {"ocm-cluster": "prod-eu-1"}}
-```
-
-On EKS, GKE, and AKS, `oidc-federation` is preferred over the node identity attestors. It
-identifies the agent pod rather than whatever else runs on the node.
-
-#### Mode 4: SPIRE (later)
-
-**Slots:** an external `SVIDSource` (for example `spire`) on the agent and an external
-`BundleSource` (for example `spire`) on the hub.
-
-- **Agent.** A SPIRE agent runs on each managed cluster. The `spire` provider container mounts the
-  SPIRE agent's Workload API socket, for example through the SPIFFE CSI driver, and reads the SVID
-  with go-spiffe's `workloadapi.X509Source`. It streams the SVID to the OCM container through
-  `WatchX509SVID`. The private key crosses only the pod-local socket, as it does with the Workload
-  API itself. `KeyStore` and `Attestor` are not used, because SPIRE's own node attestors and key
-  managers do that work.
-- **Hub.** The hub does not issue SVIDs. The `spire` bundle source reports `issues: false`, so
-  `CertificateService` is not served. The provider fetches the bundle from the configured SPIRE
-  bundle endpoint (`https_spiffe` profile) and streams it through `WatchBundle`.
-- **Authorization.** SPIRE registration entries must map each cluster's agents to
-  `spiffe://<td>/cluster/<cluster>/agent/<agent-role>`. `SpiffeAuthenticator` derives the user from the
-  URI SAN. The hub still requires the `ManagedCluster` to exist with `hubAcceptsClient: true`, and
-  every request still passes a SubjectAccessReview.
-
-A hub uses a single trust domain and a single bundle source. A fleet that mixes hub-issued and
-SPIRE-issued SVIDs on one hub is out of scope.
-
-### Workflow Details
-
-Actors:
-1. Cluster admin on the managed cluster (and on the hosting cluster in hosted modes)
-2. Cluster admin on the hub cluster
-3. Hub registration controller and gRPC server
-4. Agents on the managed or hosting cluster
-
-#### Managed cluster prerequisites
-
-- **Kubernetes version.** Kubernetes 1.21 or newer, for ServiceAccount token volume projection and
-  for the `/.well-known/openid-configuration` and `/openid/v1/jwks` endpoints.
-- **Reading issuer metadata.** The identity that runs `clusteradm join` can read those endpoints.
-  The `system:service-account-issuer-discovery` role allows this and is bound by default.
-- **Hub connectivity.** The agent cluster can reach the hub gRPC endpoint. The hub never connects
-  back to the agent cluster, unless an administrator opts into `"jwksSource": "discovery"`.
-- **External providers.** Kubernetes 1.29 or newer is needed for native sidecar containers. On
-  older clusters the operator adds the provider as a regular container, and the OCM container waits
-  for the socket.
-
-#### Hub cluster prerequisites
-
-- **gRPC server.** The gRPC server is deployed, as for today's gRPC driver.
-- **External providers.** The same Kubernetes version requirement applies to the hub cluster when
-  hub slots use external providers.
-
-No hub kube-apiserver configuration changes are needed.
-
-#### Cluster join
-
-1. The managed cluster admin runs `clusteradm join` (Story 2). The klusterlet is deployed with
-   `authType: grpc`, `grpc.identityMode: SPIFFE`, and a bootstrap `ConfigMap` that holds only the
-   gRPC address and server CA.
-2. Each agent calls `CreateCertificate` and receives `FailedPrecondition` until step 3.
-3. The hub admin runs `clusteradm accept` with the trust file (Story 3).
-4. The next `CreateCertificate` call succeeds. The registration agent connects over mTLS, updates
-   the `ManagedCluster` status, and starts its lease. The work agent does the same with its own
-   SVID.
-
-#### Un-join and cleanup
-
-`clusteradm unjoin` removes the klusterlet. Deleting the `ManagedCluster`, or setting
-`hubAcceptsClient: false`, removes the RBAC bindings through the existing path. There is no
-certificate to revoke and no Secret to delete on the managed cluster.
+The hub administrator sets `hubAcceptsClient: false`, or deletes the `ManagedClusterIdentity`.
+Within seconds, `CreateCertificate` rejects new requests, the authenticator rejects new
+connections, and the gRPC server closes the cluster's open streams. The existing cleanup path
+removes the cluster's RBAC bindings. SVIDs already issued remain valid until they expire, but they
+can no longer be used.
 
 ### Risks and Mitigation
 
 | Risk | Mitigation |
 |---|---|
-| **A stolen projected token is used to mint an SVID.** | The token's audience is the hub, so it is useless against the managed cluster's own apiserver or any other service. It expires in 1h, and an SVID minted from it expires within `svidTTL`. Revocation is immediate through RBAC (Story 4). Compared with a stolen `tls.key` today, the exposure window falls from the certificate lifetime to at most 1h plus `svidTTL`. |
-| **The agent re-pins its cluster to an attacker-controlled issuer.** | Changing the policy annotation requires `managedclusters/accept`, which agents never have. `RotateTrust` cannot change the issuer or `agents`. |
-| **A token for one agent is used to mint another agent's or another cluster's identity.** | The hub takes the agent role from the verified subject through the pinned `agents` map, not from the request. The webhook rejects a policy whose bindings (issuer, key thumbprint, subject) overlap any other cluster's, so a piece of evidence verifies for at most one cluster. |
-| **A forged SVID from another trust domain.** | `SpiffeAuthenticator` requires an exact match on the configured trust domain and a well-formed path, in addition to a chain to the `BundleSource`. |
-| **A compromised managed-cluster apiserver mints tokens for the agent ServiceAccount.** | Out of scope: whoever controls that apiserver already controls the agent pod and could read today's Secret. The compromise does not reach other clusters, because each cluster's JWKS is pinned separately. |
-| **The unauthenticated `CreateCertificate` endpoint is abused.** | It is served on its own bootstrap listener: 128 KiB receive limit, field limits, low stream limits, and a per-peer rate limit applied before a stream is accepted. That listener serves nothing else, and the main listener has no unauthenticated methods. Unaccepted clusters and clusters without a policy are rejected before any signature work, with one reason that does not reveal whether the cluster exists. The endpoint never creates hub objects. |
-| **Unbounded metric cardinality or log injection from provider messages.** | Metrics and condition reasons use only the fixed reason codes. Provider messages are truncated, sanitized, and kept out of metric labels and out of responses to unauthenticated callers. |
-| **A faulty or malicious external provider.** | Signer policy, acceptance, and the SPIFFE ID are enforced in core code, so a provider cannot widen what is issued. The image comes from a registry the administrator chooses and is pinned by digest. It runs in its own container under its own UID, with the `restricted` security context enforced, and it shares neither the OCM container's filesystem, nor its process namespace, nor its tokens. Every result it returns is checked (see [Securing the provider channel](#securing-the-provider-channel)). |
-| **Another workload reaches a provider socket.** | Each provider's socket is in its own memory-backed `emptyDir`, never a `hostPath`, mounted only into that provider and the OCM container. Providers never listen on TCP, loopback, or abstract sockets, which every container in the pod could reach. |
-| **One provider calls another, for example a `Verifier` asking the `CAKeyManager` to sign.** | No two providers share a socket volume. Even if a socket were reachable, both ends check the peer's UID with `SO_PEERCRED`, and every container runs under its own operator-chosen UID. |
-| **Something other than the intended provider listens on the socket.** | Only the provider container has the socket's volume mounted. Before dialing, the OCM container confirms that the socket is owned by the provider's UID, and it then checks the peer UID on the connection. |
-| **A provider reads the agent key, the SVID, or the hub token from the OCM container.** | `shareProcessNamespace: false`, so `/proc` of the OCM container is not visible. `automountServiceAccountToken: false`, and the hub-audience token is mounted only into the OCM container. CEL validation rejects a provider token with the hub audience. |
-| **A provider returns a tampered result.** | Core code verifies every CA signature against the CA public key and every CSR signature against the key's public key. It checks an `SVIDSource`'s SAN, chain, and key match, and it rejects empty bundles. A tampered result fails closed. |
-| **A provider escalates to the node.** | The `restricted` Pod Security Standard is enforced by CEL validation, and it cannot be overridden. There are no privileged containers and no `hostPath` volumes. Devices are reached through device plugins. |
-| **A silent downgrade to a weaker mode.** | Every provider failure is fail-closed, and the code has no fallback path. A slot that names an external provider never falls back to a built-in one. |
-| **Restart storms, since every restart attests again.** | Per-cluster and per-IP rate limits. A warning event on the `ManagedCluster`, and `ocm_spiffe_reattestation_total{cluster,changed_claims}`, when the claims differ from the previous issuance. |
-| **The hub CA key is compromised.** | Rotation with an overlap window. Mode 2 moves the key into a non-exportable KMS or HSM. |
-| **The managed cluster's signing key rotates and the agent misses the push.** | The agent pushes new keys while its SVID is valid. After that, the `HubConnectionDegraded` condition names the cause and the fix (`clusteradm accept --spiffe-trust-file`). |
-| **The hub is unreachable for longer than `svidTTL`.** | The agent cannot reach the hub in that case anyway. When the hub returns, the agent mints again with a fresh token, with no operator action. This removes today's expired-certificate lockout. |
-| **Clock skew between clusters.** | 60s leeway on JWT validation. SVID `NotBefore` is backdated by 60s. |
-| **The audit trail is lost without CSR objects.** | Issuance metrics and structured logs for every mint, including the attestor type, claims subject, and certificate serial. |
+| **The hub CA key is stolen.** | The key is a `Secret` that only the gRPC server's ServiceAccount can read, and Production requires encryption at rest on the hub. CA rotation uses an overlap window. Keeping the key in an HSM is left to a follow-up proposal. |
+| **A workload on the managed cluster impersonates an agent.** | Evidence binds to the agent's ServiceAccount (name and UID) and, in Production, to a pod. The klusterlet operator's admission policy allows only its own Deployment to run as the agent ServiceAccounts, with no command overrides, no `exec`, and no hand-minted tokens. A cluster administrator of the managed cluster can still act as its agent; no design can prevent that. |
+| **One cluster's evidence is used for another cluster.** | The hub uses only the identity bound to the named cluster. The webhook rejects any `ManagedClusterIdentity` whose bindings overlap another cluster's. |
+| **One agent role mints another's identity.** | The role comes from the verified subject through the binding, never from the request. |
+| **An agent re-binds its own identity.** | `ManagedClusterIdentity` is writable only by hub administrators; agent identities have no access to it. |
+| **The unauthenticated `CreateCertificate` endpoint is abused.** | It runs on a separate bootstrap listener: 128 KiB message limit, field limits, per-peer rate limits before a stream opens, and one rejection reason that does not reveal whether a cluster exists. Nothing else is served there. |
+| **A stolen agent token.** | Tokens are audience-bound to the hub and expire within one hour. An SVID minted from one expires within the SVID lifetime. Revocation is immediate. Concurrent use by different pods is detected. |
+| **A forged or foreign SVID.** | The authenticator requires a chain to a configured bundle, an exact trust domain match, and a binding for the SPIFFE ID. |
+| **A man in the middle between agent and hub.** | Agents verify the hub's SVID and its exact SPIFFE ID. TLS must pass through load balancers unterminated. |
+| **A faulty or malicious plugin.** | Core code builds certificates, sets identities, and verifies plugin results. A plugin cannot widen what is issued. Plugins run isolated, as described in [Plugin security](#plugin-security). |
+| **A silent downgrade.** | Every failure fails closed. A Production configuration that does not meet the profile does not start. |
+| **The identity provider is unavailable.** | Agents renew at half the SVID lifetime, so an outage shorter than that has no effect. Cached OIDC keys are used for up to one hour. |
+| **Clock skew.** | 60s leeway on token validation, and `NotBefore` backdated by 60s. |
+| **Lost audit trail without CSR objects.** | Every issuance is logged and, in Production, recorded as an Event with the subject, pod, and certificate serial. |
 
-**Ownership and maintenance.** The baseline is cloud-neutral and lives in the existing gRPC driver
-and `sdk-go` packages. The only new dependency in core is `go-spiffe`, for ID and SVID helpers.
-Cloud, HSM, and SPIRE dependencies live only in provider images, so they never enter OCM's own
-images or dependency tree. The provider protocol in `sdk-go` is the one new public surface to
-maintain.
+## Design Details
+
+### Identity model
+
+**SPIFFE IDs issued by the hub:**
+
+| Workload | SPIFFE ID |
+|---|---|
+| Agent | `spiffe://<trustDomain>/ocm/cluster/<clusterName>/<agentRole>` |
+| Hub gRPC server | `spiffe://<trustDomain>/ocm/hub/grpc-server` |
+
+Externally issued SVIDs keep whatever IDs the external issuer assigns. The `ManagedClusterIdentity`
+binding maps them to a cluster and role.
+
+**Kubernetes identity.** The authenticator maps every authenticated agent to the same user and
+groups that a certificate-mode agent has today:
+
+- user `system:open-cluster-management:<clusterName>:<agentRole>`;
+- groups `system:open-cluster-management:<clusterName>` and
+  `system:open-cluster-management:managed-clusters`.
+
+The per-cluster `ClusterRoleBinding`s bind these groups, so RBAC, `CreatePermissions`, `Cleanup`, and
+SubjectAccessReview authorization are unchanged.
+
+**`SPIFFEAuthenticator`.** A new authenticator in `sdk-go` runs on the main listener, ahead of the
+existing authenticators. It accepts a peer certificate only if:
+
+1. it has exactly one URI SAN, and that SAN is a valid SPIFFE ID;
+2. it chains to the bundle of the SAN's trust domain, which must be the hub's trust domain or one of
+   `externalTrustDomains`;
+3. the SPIFFE ID resolves to a cluster and role:
+   - in the hub's trust domain, the path is `/ocm/cluster/<cluster>/<role>`;
+   - in an external trust domain, the ID is bound in a `ManagedClusterIdentity`, found through an
+     index;
+4. that cluster's `ManagedCluster` has `hubAcceptsClient: true`.
+
+The certificate's Subject, if any, is ignored.
+
+### Issuance paths
+
+#### Hub-issued SVIDs
+
+`CertificateService` is a new gRPC service in the gRPC server process. Issuance is synchronous and
+creates no Kubernetes CSR objects.
+
+```protobuf
+// Served only on the bootstrap listener, without a client certificate.
+service CertificateService {
+  rpc CreateCertificate(CreateCertificateRequest) returns (CreateCertificateResponse);
+  // Challenge returns a single-use nonce for evidence types that need one.
+  rpc Challenge(ChallengeRequest) returns (ChallengeResponse);
+}
+
+// Served only on the main listener, which requires an authenticated peer.
+service TrustService {
+  // RotateTrust replaces the cluster's pinned Kubernetes signing keys after a key rotation.
+  rpc RotateTrust(RotateTrustRequest) returns (RotateTrustResponse);
+  // WatchBundle streams the trust bundles the agent must trust.
+  rpc WatchBundle(WatchBundleRequest) returns (stream BundleUpdate);
+}
+
+message Evidence {
+  string type = 1;       // "kubernetes", "oidc", or a plugin type
+  bytes payload = 2;     // for example a JWT; at most 64 KiB
+  bytes challenge = 3;   // at most 256 bytes; set only when the type needs one
+}
+
+message CreateCertificateRequest {
+  string cluster_name = 1;  // at most 253 bytes
+  string agent_role = 2;    // "registration", "work", or "singleton"
+  bytes csr = 3;            // PEM PKCS#10, at most 8 KiB
+  Evidence evidence = 4;
+}
+
+message CreateCertificateResponse {
+  repeated bytes svid_chain = 1;  // PEM, leaf first
+  repeated bytes bundle = 2;      // PEM CA certificates of the hub trust domain
+}
+```
+
+**Two listeners.** An agent's first call has no client certificate, so the gRPC server serves two
+listeners in one process:
+
+- **Bootstrap listener**, port 8091 by default, as a second port of the gRPC `Service`. It serves
+  only `CertificateService`, over TLS 1.3 with the server's SVID, and requests no client
+  certificate. It sets `MaxRecvMsgSize` to 128 KiB, a low `MaxConcurrentStreams`, and short idle
+  and keepalive timeouts. A `grpc.InTapHandle` applies the per-peer rate limit before a stream is
+  accepted.
+- **Main listener.** It serves CloudEvents and `TrustService` over TLS 1.3 and requires a client
+  SVID. Every call must be authenticated; no method is exempt.
+
+**`CreateCertificate` steps**, in order, so that cheap rejections come first:
+
+1. Check field limits, then the per-cluster rate limit.
+2. Load the `ManagedCluster` and its `ManagedClusterIdentity`. Both must exist, the cluster must
+   have `hubAcceptsClient: true`, and the identity must use `hubIssued`. Otherwise, return
+   `ClusterNotReady`. The same reason is used in every case, so an unauthenticated caller cannot
+   tell whether a cluster exists.
+3. Check that `evidence.type` matches the binding's evidence type and is enabled on the hub.
+4. Verify the evidence with the matching verifier, against the binding. The verifier returns the
+   verified subject.
+5. Look up the subject in the binding's `agents`. It must map to `agent_role`, or the call fails
+   with `AgentNotBound`.
+6. Check the CSR's public key: ECDSA P-256 or P-384, or RSA with at least 3072 bits. The CSR's
+   Subject and extensions are ignored.
+7. Build the certificate and sign it through the `Signer`. The certificate has the SPIFFE ID as its
+   only URI SAN, `ExtKeyUsage=ClientAuth`, and `IsCA=false`. `NotAfter` is the earlier of
+   now + `svidTTL` and the CA's `NotAfter`, and `NotBefore` is now − 60s.
+8. Verify the signature against the CA public key, then record the issuance (see
+   [Observability and audit](#observability-and-audit)).
+
+Errors returned to the caller carry only a reason code from a fixed list. Details stay in the hub's
+logs.
+
+**Agent renewal.** The agent keeps its SVID and key in memory. It renews at 50% of the lifetime,
+with jitter, and retries with exponential backoff, including after expiry. Every renewal generates
+a new key and presents fresh evidence, so renewing and recovering after a restart use the same code
+path.
+
+**The hub's own SVID.** In hub-issued mode, the gRPC server issues its own SVID through the
+`Signer`. The key is generated in memory, and the SVID is renewed at half its lifetime. No
+attestation is needed, because the server is the issuer.
+
+#### Externally issued SVIDs
+
+The agent's `identitySource` selects where the SVID comes from:
+
+- **`workloadAPI`**: the agent reads its X.509-SVID and bundles from a [SPIFFE Workload
+  API][workload-api] socket, using go-spiffe's `X509Source`. This works with any implementation,
+  such as SPIRE. The operator mounts the socket through the SPIFFE CSI driver (`csi.spiffe.io`). A
+  `hostPath` mount is never used.
+- **`files`**: the agent reads `svid.pem`, `svid_key.pem`, and `bundle.pem` from a directory, and
+  reloads them when they change. A helper such as `spiffe-helper` or cert-manager's
+  `csi-driver-spiffe` keeps the files current, on a memory-backed CSI or `emptyDir` volume.
+
+The hub's `serverIdentity` takes the same sources (`Hub`, `WorkloadAPI`, or `Files`), so the gRPC
+server can also hold an SVID from the hub cluster's issuer.
+
+In this mode the agent calls neither `CreateCertificate` nor `RotateTrust`. It connects straight to
+the main listener.
+
+### Evidence for hub-issued SVIDs
+
+**On the agent: built-in evidence sources.** All of them are vendor neutral:
+
+| Source | Evidence | Typical use |
+|---|---|---|
+| `serviceAccountToken` (default) | A projected ServiceAccount token, with the hub's audience and a lifetime of at most 1h | Any Kubernetes cluster |
+| `oauth2` | An access token from an OAuth 2.0 token endpoint. The token is requested with a client assertion ([RFC 7523][rfc7523]) or a token exchange ([RFC 8693][rfc8693]), using a projected token as the assertion | Entra ID, Okta, Keycloak, Google, and other providers with workload identity federation |
+| `file` | A JWT read from a file that another component keeps current | SPIRE JWT-SVIDs through `spiffe-helper`, Vault Agent, and cloud sidecars |
+| `plugin` | Whatever the `Attestor` plugin produces | TPM, or any in-house system |
+
+The agent reads the evidence afresh on every renewal.
+
+**On the hub: built-in verifiers.**
+
+- **`kubernetes`** verifies a ServiceAccount token. It checks:
+  - the signature, against the JWKS pinned in the binding, or the issuer's discovery endpoint when
+    the binding sets `jwksSource: Discovery`;
+  - `iss`, `aud` (the hub's audience), `exp`, and `nbf`, with 60s leeway;
+  - the subject, `system:serviceaccount:<ns>:<sa>`;
+  - in Production, the ServiceAccount UID in the `kubernetes.io` claims, and that the token is bound
+    to a pod.
+- **`oidc`** verifies any OIDC JWT. It checks:
+  - the signature, using the issuer's discovery document and JWKS, or JWKS pinned in the binding;
+  - `alg`, which must be `RS256`, `PS256`, `ES256`, or `ES384`;
+  - `iss`, `aud`, `exp`, and `nbf`;
+  - the subject, read from the binding's `subjectClaim` (default `sub`);
+  - each entry in `requiredClaims`: a string claim must equal the value, and an array claim, such
+    as Entra's `roles`, must contain it.
+
+  In Production, the issuer must match the hub's `allowedIssuers`.
+
+Discovery and JWKS fetches use HTTPS only and verify the server certificate. They also:
+
+- check that the discovery document's `issuer` matches;
+- refuse redirects to another host, and limit responses to 1 MiB;
+- cache keys for 10 minutes, and refresh at most once a minute when an unknown key ID appears;
+- keep serving cached keys for up to one hour when the issuer is unreachable, then fail closed.
+
+**Kubernetes signing-key rotation.** For a binding with pinned JWKS, the agent watches its cluster's
+JWKS. When the keys change, it calls `RotateTrust` with the new keys and a fresh token, over its
+current SVID. The hub accepts the change only if:
+
+- the caller's SVID is for the same cluster;
+- the issuer and `agents` are unchanged;
+- the token verifies against the new keys;
+- the new bindings are unique.
+
+If the SVID has expired first, the hub administrator accepts the cluster again with a new identity
+file.
+
+### ManagedClusterIdentity
+
+`ManagedClusterIdentity` is a new cluster-scoped hub resource in
+`cluster.open-cluster-management.io/v1alpha1`. It has the same name as its `ManagedCluster`. It
+holds what the hub administrator accepted: which identity is allowed to act as each agent of the
+cluster. Only hub administrators can write it. Agent identities are given no access.
+
+```go
+type ManagedClusterIdentitySpec struct {
+	// Exactly one of hubIssued or external is set.
+	// +optional
+	HubIssued *HubIssuedIdentity `json:"hubIssued,omitempty"`
+	// +optional
+	External *ExternalIdentity `json:"external,omitempty"`
+
+	// agents binds each agent role to the subject that may act as it.
+	// +listType=map
+	// +listMapKey=role
+	// +kubebuilder:validation:MinItems=1
+	Agents []AgentBinding `json:"agents"`
+}
+
+type HubIssuedIdentity struct {
+	// Exactly one of the following is set.
+	Evidence EvidencePolicy `json:"evidence"`
+}
+
+type EvidencePolicy struct {
+	// +optional
+	Kubernetes *KubernetesEvidencePolicy `json:"kubernetes,omitempty"`
+	// +optional
+	OIDC *OIDCEvidencePolicy `json:"oidc,omitempty"`
+	// plugin is passed unchanged to the verifier plugin of the given type.
+	// +optional
+	Plugin *PluginEvidencePolicy `json:"plugin,omitempty"`
+}
+
+type KubernetesEvidencePolicy struct {
+	Issuer string `json:"issuer"`
+	// +kubebuilder:validation:Enum=Pinned;Discovery
+	// +kubebuilder:default:=Pinned
+	JWKSSource string `json:"jwksSource,omitempty"`
+	// jwks is required when jwksSource is Pinned.
+	// +optional
+	JWKS *runtime.RawExtension `json:"jwks,omitempty"`
+}
+
+type OIDCEvidencePolicy struct {
+	Issuer string `json:"issuer"`
+	// +kubebuilder:default:=sub
+	SubjectClaim string `json:"subjectClaim,omitempty"`
+	// +optional
+	RequiredClaims map[string]string `json:"requiredClaims,omitempty"`
+	// jwks pins the issuer's keys instead of using discovery.
+	// +optional
+	JWKS *runtime.RawExtension `json:"jwks,omitempty"`
+}
+
+type PluginEvidencePolicy struct {
+	Type string `json:"type"`
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Config runtime.RawExtension `json:"config"`
+}
+
+type ExternalIdentity struct {
+	// trustDomain must be one of the hub's externalTrustDomains.
+	TrustDomain string `json:"trustDomain"`
+}
+
+type AgentBinding struct {
+	// +kubebuilder:validation:Enum=registration;work;singleton
+	Role string `json:"role"`
+	// subject is the verified subject: a ServiceAccount ("system:serviceaccount:<ns>:<sa>"), the
+	// value of the OIDC subjectClaim, a plugin-defined subject, or a SPIFFE ID for external.
+	Subject string `json:"subject"`
+	// serviceAccountUID is required in the Production profile for kubernetes evidence.
+	// +optional
+	ServiceAccountUID string `json:"serviceAccountUID,omitempty"`
+}
+```
+
+**Validation.** A validating webhook on the hub enforces three rules:
+
+- **The policy is valid.** It checks each `ManagedClusterIdentity` against its verifier. Plugin
+  policies are checked by the plugin's `ValidatePolicy`.
+- **Bindings are unique.** Each binding is a string such as `<issuer>|<JWK thumbprint>|<subject>`
+  for pinned Kubernetes keys, `<issuer>|<subject>` for discovery and OIDC, or
+  `<trustDomain>|<SPIFFE ID>` for external. No binding may appear on two clusters, so a given piece
+  of evidence or SVID can match only one cluster. Hosted klusterlets that share a hosting cluster's
+  keys stay distinct, because their ServiceAccounts are in different namespaces.
+- **The profile is respected.** For example, in Production a `kubernetes` binding needs
+  `serviceAccountUID`, and an OIDC issuer must be in `allowedIssuers`.
+
+**Status.** `status.conditions` reports `Bound`, and, after an issuance with different claims, a
+`ClaimsChanged` warning.
+
+### How agents verify the hub
+
+The agent's configuration names the hub's trust domain and SPIFFE ID. They default to
+`spiffe://<trustDomain>/ocm/hub/grpc-server`. On both listeners, the agent:
+
+1. verifies that the server's SVID chains to the hub trust domain's bundle;
+2. requires the exact hub SPIFFE ID, using go-spiffe's `tlsconfig.AuthorizeID`.
+
+The server's host name is not checked. Load balancers in front of the gRPC server must pass TLS
+through without terminating it.
+
+**Bootstrap bundle.** In hub-issued mode, `clusteradm init` writes the hub trust bundle (CA
+certificates only) to `hub-bundle.pem`, and `clusteradm join` stores it in a `ConfigMap`. It is
+public, so no `Secret` is needed. After joining, the agent keeps the bundle current through
+`WatchBundle`, which carries CA rotation.
+
+In externally issued mode, bundles come from the configured source: the Workload API, bundle files,
+or a [SPIFFE bundle endpoint][bundle-endpoint].
+
+### Trust bundles and external trust domains
+
+The hub lists every external trust domain it accepts, each with a bundle source:
+
+```yaml
+externalTrustDomains:
+  - name: corp.example
+    bundleSource:
+      workloadAPI: {}           # the hub cluster's own SPIFFE issuer provides federated bundles
+  - name: partner.example
+    bundleSource:
+      endpoint:
+        url: https://spire.partner.example/bundle
+        profile: https_spiffe   # or https_web
+        endpointSPIFFEID: spiffe://partner.example/spire/server
+  - name: lab.example
+    bundleSource:
+      configMap: {name: lab-bundle}
+```
+
+Bundles are refreshed at the interval the source specifies, or every five minutes. A refresh that
+would leave an empty bundle is rejected.
+
+### Hub signing key
+
+**Key storage.** The hub CA key is a `Secret` in the hub's `open-cluster-management-hub` namespace:
+
+- the cluster-manager operator generates it, and only the gRPC server's ServiceAccount can read it;
+- in Production, the deployment guide requires encryption at rest on the hub, for example
+  through a Kubernetes KMS provider, and restricts who can read Secrets in that namespace.
+
+**The `Signer` interface.** Core code signs through an internal Go interface. The certificate is
+always built by core code, and the signature is verified against the CA public key before use:
+
+```go
+type Signer interface {
+	// Public returns the CA public key for keyID, or the active key when keyID is empty.
+	Public(ctx context.Context, keyID string) (crypto.PublicKey, error)
+	// Sign signs a digest with the given key.
+	Sign(ctx context.Context, keyID string, digest []byte, opts crypto.SignerOpts) ([]byte, error)
+}
+```
+
+This proposal has one implementation, backed by the `Secret`. Holding the key in an HSM or KMS is
+deferred: a follow-up proposal can add a `Signer` plugin kind that implements this interface over
+the plugin framework, without changing issuance.
+
+**CA hierarchy.**
+
+- **`SelfSigned`**: the hub creates a root CA certificate for its key.
+- **`Intermediate`**: `clusteradm init --spiffe-ca-csr` produces a CSR for the hub's key. The
+  organization's root CA signs it, and the chain is stored in a ConfigMap. The bundle then carries
+  the organization's root, so other systems that trust that root can verify OCM SVIDs.
+
+**Rotation.** Rotation uses an overlap window:
+
+1. A new key is generated, and its CA certificate is added to the bundle.
+2. After one bundle propagation interval (default 1h), signing switches to the new key.
+3. The old CA certificate leaves the bundle once every SVID it signed has expired, at most one
+   `svidTTL` later. The old key is then deleted.
+
+**Load.** Each agent renews at half its lifetime, so it needs two signatures per lifetime. For
+10,000 clusters with two agents each, that is about 0.5 signatures per second at a 24h lifetime,
+and about 11 per second at 1h.
+
+### Plugins
+
+**Plugin kinds:**
+
+| Kind | Runs in | Purpose |
+|---|---|---|
+| `Verifier` | gRPC server pod and webhook pod (hub) | Verifies a custom evidence type, and validates its policy |
+| `Attestor` | Agent pods | Produces a custom evidence type |
+
+SPIFFE-native issuers, OIDC providers, and OAuth 2.0 providers need no plugin, because they are
+supported through their standards. A `Signer` kind, for holding the hub CA key in an HSM, is left
+to a follow-up proposal.
+
+**Protocol.** The plugin protocol is versioned gRPC, in the package `ocm.identity.plugin.v1alpha1`
+in `sdk-go`. Every plugin serves `Plugin`, plus the service for its kind:
+
+```protobuf
+service Plugin {
+  rpc Handshake(HandshakeRequest) returns (HandshakeResponse);
+}
+message HandshakeRequest {
+  repeated string protocol_versions = 1;
+  string kind = 2;          // "Verifier", "Attestor"
+  string type = 3;          // for Verifier and Attestor, the evidence type
+  bytes config = 4;         // the plugin's config, as JSON
+}
+message HandshakeResponse {
+  string protocol_version = 1;
+  bool needs_challenge = 2; // Verifier and Attestor
+}
+
+service Verifier {
+  rpc ValidatePolicy(ValidatePolicyRequest) returns (ValidatePolicyResponse);
+  rpc Verify(VerifyRequest) returns (VerifyResponse);
+}
+message ValidatePolicyRequest { bytes policy = 1; }
+message ValidatePolicyResponse { repeated string bindings = 1; }
+message VerifyRequest {
+  string cluster_name = 1;
+  bytes evidence = 2;
+  bytes policy = 3;
+  string audience = 4;
+  bytes challenge = 5;
+}
+message VerifyResponse {
+  string subject = 1;                    // looked up in the binding's agents
+  map<string, string> attributes = 2;    // logged only
+}
+
+service Attestor {
+  rpc GetEvidence(GetEvidenceRequest) returns (GetEvidenceResponse);
+}
+message GetEvidenceRequest { bytes challenge = 1; }
+message GetEvidenceResponse { bytes evidence = 1; }
+```
+
+A plugin reports a failure with a gRPC status that carries a `google.rpc.ErrorInfo`, whose reason
+comes from a fixed list.
+
+**Deployment.** Plugins are configured in a `plugins` list on the `ClusterManager` or `Klusterlet`:
+name, kind, image (pinned by digest), args, env, resources, and volumes. For each plugin, the
+operator:
+
+- adds the plugin as a native sidecar container (an init container with `restartPolicy: Always`) to
+  every pod that uses it. In hosted modes, agent pods and their plugins run on the hosting cluster.
+- gives it a private socket, as described in [Plugin security](#plugin-security);
+- waits for its handshake, up to `startupTimeout` (default 60s), before the OCM container serves.
+
+**SDK and conformance.** `sdk-go` provides:
+
+- the generated stubs;
+- `plugin.Serve`, which applies every plugin-side security control;
+- a conformance suite, as a Go test package and as a container image;
+- a sample `Attestor` and `Verifier` pair, based on a test key, for OCM's tests and as a template.
+  It is not a supported plugin.
+
+Plugins may be written in any language that has gRPC support, provided they meet the same controls.
+
+#### Plugin security
+
+The plugin channel carries attestation evidence and verification decisions, so it is protected
+against:
+
+- other containers in the pod, including other plugins;
+- other pods and processes on the node;
+- a plugin that tries to do more than its kind allows.
+
+Root on the node, the container runtime, and anyone who can `exec` into the pod are out of scope.
+They can already read the OCM container's memory.
+
+The controls are not configurable, and none of them can be turned off:
+
+1. **A private socket per plugin.** Each plugin gets its own `emptyDir` with `medium: Memory`, mounted
+   only into that plugin and the OCM container. Because no two plugins share a volume, one plugin
+   cannot call another. Access through the volume works as follows:
+   - the operator sets a pod `fsGroup`, so each volume is group-owned with mode `2770`;
+   - `plugin.Serve` creates the socket with mode `0660`;
+   - before dialing, the OCM container checks with `lstat` that the path is a socket, not a symlink,
+     owned by the plugin's UID and the `fsGroup` group.
+2. **Filesystem sockets only.** Containers in a pod share a network namespace. Plugins therefore
+   never listen on TCP, loopback, or abstract sockets, and the conformance suite fails a plugin that
+   does.
+3. **Peer authentication on both ends.** The operator runs every container under its own non-root UID
+   and sets `runAsUser` itself. On each connection, both ends read the peer's UID with `SO_PEERCRED`
+   and close the connection unless it is the UID they expect. This check is a gRPC
+   `TransportCredentials` in `sdk-go`, and it runs before any call.
+4. **No TLS on the socket.** Controls 1 to 3 leave two kernel-authenticated endpoints, and the bytes
+   never leave the kernel. TLS would need a key delivered into the pod, which is the kind of stored
+   credential this design removes. The Kubernetes KMS v2 plugin and CSI drivers use the same model.
+5. **Separate processes and credentials.** The operator sets `shareProcessNamespace: false` and
+   `automountServiceAccountToken: false`. The hub-audience token is mounted only into the OCM
+   container. A plugin gets only the Secrets and tokens listed in its own entry. CEL validation
+   rejects a plugin token whose audience is the hub's. The operator also rejects one that its own
+   cluster's `TokenReview` accepts, because that is a Kubernetes API audience.
+6. **Restricted containers.** Every container meets the `restricted` Pod Security Standard:
+   - non-root, with all capabilities dropped (`drop: [ALL]`, nothing added);
+   - no privilege escalation;
+   - a read-only root filesystem and the `RuntimeDefault` seccomp profile.
+
+   Plugin volumes may only be `configMap`, `secret`, `projected`, `emptyDir`, or `csi`. TPM
+   devices are reached through device plugins. CEL validation rejects anything else.
+7. **Bounded calls.** Every call has a deadline: 10s for evidence calls, and `startupTimeout` for
+   the handshake. Messages are limited to 64 KiB, and the number of calls in
+   flight to each plugin is capped. `plugin.Serve` enforces the same limits and serves no gRPC
+   reflection.
+8. **Results are checked.**
+   - **`Verifier`**: core code uses only the returned subject, as a key into the binding's `agents`.
+   - **`Attestor`**: its evidence is checked by the hub like any other evidence.
+
+**Fail closed.** The component reports `Degraded` and does not serve if:
+
+- a plugin is missing or fails its handshake;
+- the protocol versions do not overlap;
+- the socket fails its ownership check, or the peer check fails.
+
+If a plugin fails later, calls through it fail. The agent keeps its current SVID until it expires.
+There is no fallback to a built-in implementation.
+
+### Hardening the agent cluster
+
+In the Production profile, the klusterlet operator installs a `ValidatingAdmissionPolicy` (needs
+Kubernetes 1.30+) in the cluster that runs the agents. It allows only the operator's own pods to
+act as the agent ServiceAccounts:
+
+| Object that uses an agent ServiceAccount | Only allowed creator |
+|---|---|
+| `Deployment` | The klusterlet operator's ServiceAccount, with the approved image digest and no command override |
+| `ReplicaSet` | `system:serviceaccount:kube-system:deployment-controller`, owned by that Deployment |
+| `Pod` | `system:serviceaccount:kube-system:replicaset-controller`, owned by that ReplicaSet |
+| `serviceaccounts/token` for an agent ServiceAccount | Kubelets (`system:node:*`) only |
+| `pods/exec`, `pods/attach` in the agent namespace | Denied, except to cluster administrators |
+
+Agent pods also run under the `restricted` Pod Security Standard, with a read-only root filesystem.
+The SVID key exists only in process memory.
+
+On the hub, the issuance log and the `ClaimsChanged` condition record which pod received each SVID.
+If more pods hold live SVIDs for a cluster and role than that agent has replicas, the hub raises a
+warning Event.
+
+### Configuration API
+
+`authType` stays `grpc`. A new `identityMode` field selects `SPIFFE`, and a `spiffe` object holds its
+settings.
+
+```go
+// ClusterManager: spec.registrationConfiguration.registrationDrivers[authType=grpc].grpc
+type GRPCHubIdentityConfig struct {
+	// +kubebuilder:validation:Enum=Certificate;SPIFFE
+	// +kubebuilder:default:=Certificate
+	IdentityMode string `json:"identityMode,omitempty"`
+	// +optional
+	SPIFFE *SPIFFEHubConfig `json:"spiffe,omitempty"`
+}
+
+type SPIFFEHubConfig struct {
+	// +kubebuilder:validation:Enum=Development;Production
+	// +kubebuilder:default:=Development
+	Profile string `json:"profile,omitempty"`
+	TrustDomain string `json:"trustDomain"`
+	// +kubebuilder:default:="open-cluster-management.io/spiffe"
+	TokenAudience string `json:"tokenAudience,omitempty"`
+	// +optional
+	SVIDTTL *metav1.Duration `json:"svidTTL,omitempty"`
+
+	// hubIssuer configures hub-issued SVIDs. When unset, the hub issues none.
+	// +optional
+	HubIssuer *HubIssuerConfig `json:"hubIssuer,omitempty"`
+	// serverIdentity selects where the gRPC server gets its SVID. Default: Hub.
+	// +optional
+	ServerIdentity IdentitySource `json:"serverIdentity,omitempty"`
+	// +optional
+	ExternalTrustDomains []ExternalTrustDomain `json:"externalTrustDomains,omitempty"`
+	// +optional
+	Plugins []PluginSpec `json:"plugins,omitempty"`
+}
+
+type HubIssuerConfig struct {
+	// +optional
+	CA CAConfig `json:"ca,omitempty"`
+	// evidence lists the evidence types the hub accepts: kubernetes, oidc, and plugin verifiers.
+	// +kubebuilder:default:={{type: kubernetes}}
+	Evidence []EvidenceTypeConfig `json:"evidence,omitempty"`
+	// allowedIssuers limits the OIDC issuers that bindings may name. Required in Production when
+	// oidc is enabled.
+	// +optional
+	AllowedIssuers []string `json:"allowedIssuers,omitempty"`
+}
+
+type CAConfig struct {
+	// +kubebuilder:validation:Enum=SelfSigned;Intermediate
+	// +kubebuilder:default:=SelfSigned
+	Mode string `json:"mode,omitempty"`
+	// chainConfigMap holds the intermediate certificate and its chain, for Intermediate.
+	// +optional
+	ChainConfigMap string `json:"chainConfigMap,omitempty"`
+}
+
+// Klusterlet: spec.registrationConfiguration.registrationDriver.grpc
+type SPIFFEAgentConfig struct {
+	// +kubebuilder:validation:Enum=Development;Production
+	// +kubebuilder:default:=Development
+	Profile string `json:"profile,omitempty"`
+	Hub HubIdentity `json:"hub"`
+	IdentitySource AgentIdentitySource `json:"identitySource"`
+	// +optional
+	Plugins []PluginSpec `json:"plugins,omitempty"`
+}
+
+type HubIdentity struct {
+	TrustDomain string `json:"trustDomain"`
+	// id defaults to spiffe://<trustDomain>/ocm/hub/grpc-server.
+	// +optional
+	ID string `json:"id,omitempty"`
+	// bundleConfigMap holds the hub bundle used before the first SVID (hub-issued mode).
+	// +optional
+	BundleConfigMap string `json:"bundleConfigMap,omitempty"`
+}
+
+// Exactly one field is set.
+type AgentIdentitySource struct {
+	// +optional
+	HubIssued *HubIssuedSource `json:"hubIssued,omitempty"`
+	// +optional
+	WorkloadAPI *WorkloadAPISource `json:"workloadAPI,omitempty"`
+	// +optional
+	Files *FilesSource `json:"files,omitempty"`
+}
+
+type HubIssuedSource struct {
+	// Exactly one field is set. Default: serviceAccountToken.
+	Evidence EvidenceSource `json:"evidence,omitempty"`
+}
+
+type EvidenceSource struct {
+	// +optional
+	ServiceAccountToken *ServiceAccountTokenSource `json:"serviceAccountToken,omitempty"`
+	// +optional
+	OAuth2 *OAuth2Source `json:"oauth2,omitempty"`
+	// +optional
+	File *FileTokenSource `json:"file,omitempty"`
+	// plugin names an Attestor plugin.
+	// +optional
+	Plugin string `json:"plugin,omitempty"`
+}
+
+type OAuth2Source struct {
+	TokenEndpoint string `json:"tokenEndpoint"`
+	// +kubebuilder:validation:Enum=ClientAssertion;TokenExchange
+	// +kubebuilder:default:=ClientAssertion
+	Grant    string `json:"grant,omitempty"`
+	ClientID string `json:"clientID,omitempty"`
+	Scope    string `json:"scope,omitempty"`
+	// assertion is the projected ServiceAccount token used as the client assertion or subject token.
+	Assertion ServiceAccountTokenSource `json:"assertion"`
+}
+
+type PluginSpec struct {
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]{0,40}[a-z0-9])?$`
+	Name string `json:"name"`
+	// +kubebuilder:validation:Enum=Verifier;Attestor
+	Kind string `json:"kind"`
+	// type is the evidence type, for Verifier and Attestor.
+	// +optional
+	Type string `json:"type,omitempty"`
+	// +kubebuilder:validation:Pattern=`^[^@]+@sha256:[a-f0-9]{64}$`
+	Image string `json:"image"`
+	// +optional
+	Args []string `json:"args,omitempty"`
+	// +optional
+	Env []corev1.EnvVar `json:"env,omitempty"`
+	// +optional
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+	// volumes are mounted only into this plugin. CEL restricts the volume types.
+	// +optional
+	Volumes []PluginVolume `json:"volumes,omitempty"`
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +optional
+	Config *runtime.RawExtension `json:"config,omitempty"`
+	// +kubebuilder:default:="60s"
+	// +optional
+	StartupTimeout *metav1.Duration `json:"startupTimeout,omitempty"`
+}
+```
+
+The remaining types (`IdentitySource`, `ExternalTrustDomain`, `EvidenceTypeConfig`,
+`ServiceAccountTokenSource`, `FileTokenSource`, `WorkloadAPISource`, `FilesSource`, and
+`PluginVolume`) follow the YAML shown in the user stories. Profile rules that span several fields
+are enforced by CEL where possible, and otherwise by the operator, which reports `Degraded`.
+
+Both sides are gated by a new `SPIFFEIdentity` feature gate, alpha and off by default.
+
+### clusteradm
+
+| Command | New flags |
+|---|---|
+| `init` | `--grpc-identity=spiffe`, `--spiffe-trust-domain`, `--spiffe-profile`, `--spiffe-config-file` (the full `spiffe` object, for plugins and external trust domains), `--spiffe-ca-csr`. It writes `hub-bundle.pem`. |
+| `join` | `--grpc-identity=spiffe`, `--spiffe-hub-bundle`, `--spiffe-identity-source=hub-issued\|workload-api\|files`, `--spiffe-config-file`. It writes `<cluster>-identity.yaml`, a draft `ManagedClusterIdentity`. |
+| `accept` | `--spiffe-identity-file`. It creates the `ManagedClusterIdentity` and sets `hubAcceptsClient: true`. |
+
+The identity file holds only public data. The hub administrator should still receive it over a
+trusted channel and review it, because it decides who can act as the cluster.
+
+### Observability and audit
+
+- **Reason codes.** Failures carry a code from a fixed list, for example `ClusterNotReady`,
+  `EvidenceInvalid`, `AgentNotBound`, `CSRKeyRejected`, `RateLimited`, and `PluginRejectedPeer`. Unknown plugin reasons become `PluginOther`. Only codes are used in metric
+  labels and condition reasons. Free-text details are truncated to 256 bytes, sanitized, and logged.
+- **Metrics:**
+  - `ocm_spiffe_svid_issued_total{evidence}` and `ocm_spiffe_svid_rejected_total{evidence,reason}`;
+  - `ocm_spiffe_plugin_up{plugin}`;
+  - `ocm_spiffe_bundle_age_seconds{trust_domain}`.
+
+  The `evidence` label takes only the enabled types.
+- **Audit.** Every issuance is logged with the cluster, role, evidence type, subject, pod (when
+  known), serial number, and expiry. In Production, each issuance is also recorded as an Event on
+  the `ManagedClusterIdentity`.
+
+### Workflow summary
+
+**Join, hub-issued:**
+
+1. `clusteradm join` deploys the klusterlet with the hub bundle and writes the identity file.
+2. Agents call `CreateCertificate` and get `ClusterNotReady` until acceptance.
+3. `clusteradm accept` creates the `ManagedClusterIdentity` and sets `hubAcceptsClient: true`.
+4. Agents receive SVIDs and connect to the main listener.
+
+**Join, externally issued:**
+
+1. The organization's issuer gives each agent its SVID.
+2. `clusteradm accept` binds those SPIFFE IDs.
+3. Agents connect to the main listener.
+
+**Unjoin.** `clusteradm unjoin` removes the klusterlet. Deleting the `ManagedCluster` deletes its
+`ManagedClusterIdentity` through an owner reference, and the existing cleanup removes RBAC.
+There is no certificate to revoke and no Secret to delete.
+
+### Open Questions
+
+- **API group and placement of `ManagedClusterIdentity`.** Should it be a separate resource, as
+  proposed, or a field on `ManagedCluster` protected by the `managedclusters/accept` subresource?
+- **Image signature verification.** Should the operators verify plugin image signatures, for example
+  with Sigstore, in addition to requiring a digest, or should that be left to cluster-level policy?
+- **Default Production SVID lifetime.** Is 12h the right default, balancing exposure against the
+  margin for identity-provider outages?
+- **Challenge-based evidence.** Is a single-use, HMAC-signed challenge sufficient for TPM attestation
+  across gRPC server replicas, or do plugin verifiers need shared state?
 
 ### Test Plan
 
-- Unit tests:
-  - `k8s-psat` verification fails for a wrong issuer, audience, subject, signature, or expiry, and
-    for an unaccepted cluster or one with no policy.
-  - Certificate construction: the hub sets the URI SAN, Subject, and EKU, and ignores any identity
-    the CSR supplies.
-  - `SpiffeAuthenticator` rejects:
-    - a URI SAN that disagrees with the Subject;
-    - a SAN from another trust domain, even when it chains to a trusted CA;
-    - a malformed path or an unknown role.
+- **Unit tests:**
+  - Each verifier rejects a wrong issuer, audience, subject, signature, algorithm, or expiry.
+  - The `kubernetes` verifier enforces the ServiceAccount UID and the pod binding in Production.
+  - Certificate construction ignores the CSR's identity fields, and builds the SAN, key usage, and
+    lifetime correctly.
+  - `SPIFFEAuthenticator` rejects:
+    - an unknown trust domain;
+    - an unbound external SPIFFE ID;
+    - a malformed path;
+    - an unaccepted cluster.
+  - `CreateCertificate` rejects:
+    - a role mismatch;
+    - an unbound subject;
+    - a request over any field limit.
 
-    It accepts an SVID with no Subject.
-  - `CreateCertificate` rejects a request whose `agent_role` differs from the role mapped from the
-    verified subject, and a subject missing from `agents`. It rejects a request that exceeds any
-    field limit. It returns the same `ClusterNotReady` status for a missing, unaccepted, and
-    unpinned cluster.
-  - The webhook rejects a policy whose bindings overlap another cluster's. It accepts two Hosted
-    klusterlets on one hosting cluster, which share keys but have different subjects.
-  - Provider failures map to the fixed reason codes, and an unknown reason maps to `ProviderOther`.
-    Provider messages are truncated and sanitized, and never appear in metric labels or in a
-    `CreateCertificate` response.
-  - The renewer renews at 50%, keeps retrying after expiry, reads a fresh token on every mint, and
-    generates a new key on every mint.
-  - `RotateTrust` rejects an `issuer` or `agents` change, a token that does not verify against the
-    new JWKS, and new bindings that overlap another cluster's.
-  - CEL validation rejects a type that is not built in without `external`, an `external` name with
-    no matching `externalProviders` entry, and an image that is not pinned by digest.
-  - The operator renders provider containers into the right pods for each slot and each klusterlet
-    mode. Each provider has its own socket volume, and no two providers share one. Every container
-    has its own UID and the restricted security context, the pod sets
-    `shareProcessNamespace: false` and `automountServiceAccountToken: false`, and no provider
-    container mounts the hub-audience token.
-  - The pod sets an `fsGroup`, and the provider socket has mode `0660` with the `fsGroup` group, so
-    the OCM container and the provider can connect despite having different UIDs. The operator
-    always renders `capabilities.drop: [ALL]`.
-  - CEL validation, on both the agent and hub configs, rejects:
-    - a `securityContext` that leaves the `restricted` profile, sets `runAsUser`, adds
-      capabilities, or has a `drop` list without `ALL`;
-    - a `hostPath` volume;
-    - a provider token with no audience or with the hub audience.
-  - The operator sets `Degraded` when a provider token's audience is accepted by its own cluster's
-    `TokenReview`.
-  - The peer-credential `TransportCredentials` rejects a connection from an unexpected UID on both
-    ends, and the OCM side refuses a socket path that is a symlink or has the wrong owner.
-  - Result checks reject a bad CA signature, a CSR signature that does not match, an SVID with the
-    wrong SAN or a mismatched key, and an empty bundle.
-- Provider conformance suite in `sdk-go`, run against every built-in provider through the protocol
-  adapter, and required for every external provider:
-  - `KeyStore` never exposes key bytes and generates a distinct key each time.
-  - A `Verifier` rejects evidence for another cluster, expired evidence, and replayed evidence.
-  - A `CAKeyManager` signs with the requested key ID.
-  - The handshake rejects a type mismatch and a protocol version with no overlap.
-  - The provider rejects a peer with an unexpected UID, and opens no TCP, loopback, or
-    abstract-namespace listener.
-  - The provider enforces the message size limits and serves no gRPC reflection.
-- Integration tests:
-  - `CreateCertificate` against an in-process gRPC server, with a fake issuer that signs tokens
-    with test keys, and a fake verifier that exercises the provider error paths.
-  - The bootstrap listener serves only `CertificateService` and rejects a message over its receive
-    limit. The main listener rejects every call without an authenticated peer and does not serve
-    `CertificateService`.
-  - The webhook blocks agent identities from changing the policy annotation and rejects malformed
-    policies.
-  - CA rotation with overlapping bundles.
-  - The client adapters against a fake provider serving each protocol service, including a provider
-    that exits, hangs, returns errors, runs under the wrong UID, or returns a tampered signature or
-    SVID.
-- e2e tests on kind, for each of `Default`, `Singleton`, `Hosted`, and `SingletonHosted`:
-  - Join, accept, and register.
-  - Each agent role is authorized for its own calls through the group bindings, and a token for
-    one role cannot mint another role's SVID.
-  - A real `ManifestWork` applied on the managed cluster.
-  - An agent restart mints again.
-  - `hubAcceptsClient: false` revokes access.
-  - A forced ServiceAccount signing-key rotation is pushed.
-  - No Secret in the agent namespace contains `tls.key`, `tls.crt`, or a hub token.
-  - The sample SoftHSM provider runs as an external `KeyStore` and `CAKeyManager`, and a test
-    attestor and verifier pair runs as external providers.
+    It returns the same reason for a missing, unaccepted, or unbound cluster.
+  - The webhook rejects overlapping bindings and profile violations. It accepts Hosted klusterlets
+    that share a hosting cluster's keys.
+  - The renewer renews at 50%, retries after expiry, and generates a new key on every renewal.
+  - Profile validation: a Production hub without `allowedIssuers` when `oidc` is enabled does not
+    start, and a Production klusterlet on a cluster without admission policy support does not
+    start.
+  - `requiredClaims` matches a string claim exactly and an array claim by membership.
+  - Operator rendering:
+    - each plugin has its own socket volume;
+    - each container has its own UID and the restricted context;
+    - `shareProcessNamespace: false` and `automountServiceAccountToken: false` are set;
+    - plugins do not mount the hub-audience token.
+  - CEL rejects an image not pinned by digest, a disallowed volume type, and a plugin token with
+    the hub audience.
+  - The peer-credential check rejects an unexpected UID on both ends. Socket checks reject a symlink
+    and a wrong owner.
+- **Plugin conformance suite**, run against the built-in implementations through the protocol, and
+  required for every plugin:
+  - a `Verifier` rejects evidence for another cluster, expired evidence, and replayed evidence;
+  - the handshake rejects a version mismatch;
+  - the plugin rejects an unexpected peer UID, opens no other listener, and enforces message limits.
+- **Integration tests:**
+  - `CreateCertificate` with a fake Kubernetes issuer, a fake OIDC provider, and a fake OAuth 2.0
+    token endpoint.
+  - Externally issued SVIDs from a test Workload API server.
+  - The bootstrap listener serves only `CertificateService`, and enforces its message limit. The
+    main listener rejects every unauthenticated call.
+  - CA rotation with overlapping bundles. Kubernetes key rotation through `RotateTrust`.
+  - Plugin failure paths: a plugin that exits, hangs, runs as the wrong UID, or returns malformed
+    results.
+  - Revocation closes open streams.
+- **e2e tests on kind**, for each klusterlet mode:
+  - Join, accept, and register with hub-issued SVIDs (Development profile).
+  - The Production profile with the agent admission policy.
+  - The sample `Attestor` and `Verifier` plugin pair.
+  - SPIRE as the external issuer for the agents and the hub.
+  - An OIDC provider (Dex) through the `oauth2` evidence source.
+  - A real `ManifestWork` round trip.
+  - Agent restart, revocation, CA rotation, and Kubernetes key rotation.
+  - No Secret in the agent namespace contains a key, a certificate, or a hub token.
 
 ### Graduation Criteria
 
 - **Alpha:**
-  - `SPIFFEIdentity` feature gate, off by default.
-  - The `memory`, `k8s-psat`, `hub`, `secret`, and `builtin` providers.
-  - The external provider mechanism: protocol `v1alpha1`, sidecar container injection, the Go SDK,
-    the conformance suite, and the sample provider.
+  - The `SPIFFEIdentity` feature gate, off by default.
+  - Hub-issued SVIDs with `kubernetes` evidence.
+  - The hub's own SVID, and agents verifying it.
+  - `ManagedClusterIdentity` `v1alpha1`.
+  - The Development profile.
+  - The plugin framework: the protocol, the SDK, the conformance suite, and the sample
+    `Attestor` and `Verifier` pair.
   - `Default` and `Singleton` modes.
-  - Unit, conformance, and integration tests.
 - **Beta:**
-  - Gate on by default (the mode itself is still opt-in through `identityMode`).
+  - The Production profile, with its enforcement and the agent admission policy.
+  - `oidc` evidence, and the `oauth2` and `file` evidence sources.
+  - Externally issued SVIDs (Workload API and files) and external trust domains.
   - Hosted modes.
-  - `RotateTrust`.
-  - CA rotation.
-  - e2e coverage across all four modes.
+  - CA rotation and `RotateTrust`.
   - `clusteradm` support.
-  - Provider protocol `v1beta1`, with no incompatible changes afterwards.
+  - e2e coverage for every mode and source.
+  - Plugin protocol `v1beta1`, with no incompatible changes afterwards.
 - **GA:**
-  - At least two releases at beta with no API changes.
-  - Documentation on the website.
-  - The CA rotation procedure verified in e2e.
-  - Provider protocol `v1`.
-  - Security review completed.
-
-Modes 2, 3, and 4 need no change to OCM: each is delivered as provider images that pass the
-conformance suite. Providers that OCM itself maintains, such as a `kms` `CAKeyManager`, will be
-proposed separately.
+  - Two releases at beta with no API changes.
+  - Plugin protocol `v1`.
+  - Website documentation, including a production deployment guide.
+  - An independent security review.
 
 ### Upgrade / Downgrade Strategy
 
-- **Existing clusters.** Certificate-mode gRPC clusters and every other driver are unaffected.
-- **Migrating a cluster.**
-  1. The hub admin pins the cluster with `clusteradm accept --spiffe-trust-file` while it is still
-     connected in certificate mode.
-  2. The klusterlet is switched to `identityMode: SPIFFE`, and the agent mints an SVID.
-  3. Once the agent reports `HubConnectionDegraded=False`, the operator deletes the unused
+- **Existing clusters** are unaffected. Certificate mode remains the default.
+- **Migrating a cluster:**
+  1. The hub administrator creates the cluster's `ManagedClusterIdentity` while the cluster is
+     still connected in certificate mode.
+  2. The klusterlet switches to `identityMode: SPIFFE`, and the agents obtain SVIDs.
+  3. Once the agents report `HubConnectionDegraded=False`, the operator deletes the unused
      `hub-kubeconfig-secret` and bootstrap Secret.
-- **Downgrade.** Switching back to `Certificate` mode needs a bootstrap Secret again, as for a
+- **Development to Production.** The administrator meets the Production requirements, such as
+  `allowedIssuers`, ServiceAccount UIDs in the bindings, and the agent admission policy, then sets
+  `profile: Production`. The operator refuses the switch until every requirement is met.
+- **Downgrade.** Switching a cluster back to certificate mode needs a bootstrap Secret, as for a
   fresh join.
-- **Enabling a later mode.** Selecting a Mode 2, 3, or 4 provider means adding it to
-  `externalProviders` and pointing the slot at it. The operator rolls the affected pods with the
-  new container. It does not change `authType` or `identityMode`. For a new attestor, the hub admin
-  first adds its verifier to `verifiers` and updates the cluster's policy, then the agent switches
-  its `attestor`.
 
 ### Version Skew Strategy
 
-- **Agent newer than the hub.** A SPIFFE-mode agent that talks to a hub without
-  `CertificateService` receives `Unimplemented`. It sets `HubConnectionDegraded` with the message
-  `hub does not support SPIFFE identity`.
-- **Hub newer than the agent.** An older agent never selects SPIFFE mode, so it is unaffected.
-- **Provider names.** An agent that selects a provider type the hub has not enabled is rejected
-  with `PermissionDenied`, and the message names the hub's enabled verifiers.
-- **Provider protocol.** The protocol is versioned. During the handshake, the OCM component sends
-  the versions it supports, and the provider picks one. With no common version the component fails
-  closed. A provider image can serve several versions, so the same image works across OCM releases.
+- **A newer agent and an older hub.** An agent in SPIFFE mode that gets `Unimplemented` reports
+  `HubConnectionDegraded` with the message `hub does not support SPIFFE identity`.
+- **An older agent** never selects SPIFFE mode, so it is unaffected.
+- **Plugins.** The handshake negotiates the protocol version. A plugin image can support several
+  versions, so one image works across OCM releases. With no common version, the component fails
+  closed.
 
 ## Implementation History
 
-- 2026-10-23: Design document "OCM Registration with SPIFFE: Pluggable Design".
 - 2026-10-24: Provisional KEP opened.
+- 2026-10-24: Rewritten around hub-issued SVIDs, external identity providers through open
+  standards, plugins for custom attestation, and two profiles. HSM support deferred.
 
 ## Drawbacks
 
-- **The hub's gRPC endpoint gains a pre-authentication surface.** It is narrow and rate-limited,
-  but today every gRPC call carries a hub-issued credential.
-- **Extra hub work.** Every agent restart and every half TTL costs one mint. At a 24h TTL with two
-  agents per cluster, that is about four signatures per cluster per day.
-- **The provider protocol is a public API.** Once it reaches beta, it must stay compatible across
-  OCM releases. Its interfaces are defined before most of their implementations exist, so the
-  alpha protocol may need revision when Modes 2 to 4 are built.
-- **Cost of an extra container.** Each external provider adds a container to the affected pods.
-  Changing a provider restarts those pods. With an external `KeyStore`, every TLS handshake makes a
-  `Sign` call over the Unix socket.
-- **The issuance model differs from the CSR path.** Unlike the kube-apiserver path, it creates no
-  CSR objects, so there are two issuance models to understand.
+- **A new pre-authentication endpoint.** The bootstrap listener is narrow and rate-limited, but it
+  is a surface that does not exist today.
+- **The plugin protocol is a public API**, and must stay compatible once it reaches beta.
+- **More configuration.** Two issuance paths, several evidence sources, and two profiles are more to
+  learn than one fixed mechanism. The defaults keep the simple case to three `clusteradm` commands.
+- **Extra containers.** Each plugin adds a container to the affected pods, and changing a plugin
+  restarts them.
+- **No CSR objects.** Issuance is not visible as Kubernetes CSRs. Audit relies on logs, metrics, and
+  Events.
 
 ## Alternatives
 
-- **A separate `spiffe` `authType`.** A new top-level driver would duplicate the gRPC transport,
-  RBAC, and acceptance logic. The transport is unchanged, so SPIFFE is an identity mode of the
-  `grpc` driver.
-- **In-process plugins** (`hashicorp/go-plugin` binaries mounted into the OCM container, as SPIRE
-  does). These avoid an extra container, but the binary must run inside OCM's image (same libc and
-  architecture) and needs a mount mechanism plus checksum pinning. It also cannot bring its own
-  libraries, devices, or volumes. A container image is the unit organizations already build, sign,
-  and scan.
-- **Providers as a separate Deployment reached over the network.** This is closer to how an addon
-  runs, but signing requests and, in Mode 4, SVID private keys would cross the network, and the
-  channel would need its own authentication. A pod-local socket needs neither.
-- **mTLS on the provider socket.** This would authenticate the two ends with certificates instead
-  of kernel peer credentials. However, the certificates and keys would have to be issued and
-  delivered into the pod, either as Secrets or through a bootstrap channel of their own. That
-  reintroduces the stored credentials this design removes. It adds nothing against the node, which
-  is out of scope, and nothing beyond private volumes and `SO_PEERCRED` against other containers.
-- **Compiling every provider into OCM.** This is simpler to operate, but every HSM, cloud, or
-  in-house attestor would need a change to OCM and an OCM release, and OCM's dependencies would
-  grow with each one.
-- **SPIRE only (Mode 4 as the only mode).** This offers the richest attestation, but every fleet
-  would have to run SPIRE servers and agents, and OCM would be tied to SPIRE's release cycle. Here
-  it remains an option behind `SVIDSource`.
-- **Validate managed cluster tokens at the hub kube-apiserver.** The hub kube-apiserver could trust
-  each managed cluster's issuer through structured `AuthenticationConfiguration`, so the existing
-  `TokenAuthenticator` would work unchanged. This was rejected because:
-  - it needs hub apiserver configuration for every managed cluster;
-  - managed hubs limit or forbid custom issuers;
-  - the credential stays a bearer token on every call, instead of proof of key possession.
-- **One driver per cloud** (`awsirsa`, [Azure AD][kep-195]). Each driver is self-contained, but they
-  work only on the kube-apiserver path, duplicate RBAC and acceptance logic, and do not help mixed
-  or on-premises fleets. In this design they become Mode 3 attestors.
-- **Kubernetes Pod Certificates (`PodCertificateRequest`) and `ClusterTrustBundle`.** These issue
-  identities within one cluster. The hub cannot act as a signer for pods on another cluster's
-  apiserver, so they do not solve cross-cluster registration.
-
-## Open Questions
-
-- **Auto-approval.** Should the hub support it in SPIFFE mode? One option is trust-on-first-use:
-  the first `CreateCertificate` records the presented issuer and JWKS on a pending cluster for the
-  admin to accept. That reintroduces an unauthenticated object-creation path, so this proposal
-  leaves it out. A Mode 3 attestor with strong claims, such as `gcp-iit` with an allow-listed
-  project and a cluster label, might later justify auto-approval.
-- **Annotation or typed API for the attestation policy.** A typed field on `ManagedCluster`, or a
-  separate hub-only resource, would be more explicit, at the cost of an API change. The annotation
-  keeps Mode 3 policies opaque to the API.
-- **AWS IID replay (Mode 3).** The AWS Instance Identity Document is static and cannot be bound to
-  a challenge. Should `aws-iid` be dropped in favor of `oidc-federation` (EKS Pod Identity or IRSA),
-  or combined with a once-per-instance rule like SPIRE's default?
-- **Where Mode 3 verifiers live.** Verifying `aws-iid`, `gcp-iit`, and `azure-imds` documents needs
-  only public certificates and JWKS, not cloud SDKs. Should OCM build them in, rather than leave
-  them to external providers?
-- **Provider image distribution.** Should OCM publish signed reference provider images, and should
-  the operator verify image signatures (for example with Sigstore) in addition to digest pinning?
+- **A separate `spiffe` `authType`.** The transport, RBAC, and acceptance are those of the gRPC
+  driver, so SPIFFE is an identity mode of it rather than a new driver.
+- **One driver per vendor** (`awsirsa`, [Azure AD][kep-195]). Each driver reimplements acceptance and
+  RBAC, and none helps mixed or on-premises fleets. Here, vendors integrate through standards or
+  plugins.
+- **SPIRE only.** This gives the richest attestation, but every fleet would have to run SPIRE, and
+  organizations using other providers would be left out. SPIRE is fully supported through the
+  Workload API.
+- **Vendor SDKs compiled into OCM.** This is simpler to operate, but every cloud or in-house
+  system would need an OCM change and release, and OCM would carry each vendor's dependencies and
+  licenses.
+- **In-process plugins** (`hashicorp/go-plugin` binaries mounted into the OCM container). The binary
+  must match OCM's image, and cannot bring its own libraries or devices. A container image is the
+  unit organizations already build, sign, and scan.
+- **Plugins as a separate Deployment reached over the network.** Evidence and verification
+  results would cross the network, and the channel would need its own credentials. On the agent,
+  those credentials would depend on the identity the plugin helps obtain. A pod-local socket needs
+  neither.
+- **Plugins as OCM addons.** Addons are delivered through ManifestWork, which needs the cluster's hub
+  identity, so an attestor addon could not take part in the first join. A broken addon update could
+  also leave the agent unable to renew its SVID, and then unable to receive the fix. Addons remain a
+  good way to distribute surrounding infrastructure, such as SPIRE agents or the SPIFFE CSI
+  driver.
+- **mTLS on the plugin socket.** It would need certificates delivered into the pod, which brings back
+  stored credentials, and it adds nothing beyond private volumes and peer UID checks.
+- **Exchanging external SVIDs for hub-issued SVIDs.** An organization that wants hub-issued SVIDs
+  while authenticating with SPIRE can do so without this. It uses the `file` evidence source with
+  SPIRE JWT-SVIDs and the `oidc` verifier, through SPIRE's OIDC discovery provider.
+- **Hub-side allow-lists of image digests or pod labels.** The hub cannot observe these. A caller
+  would report them itself, so they would prove nothing. Workload attributes are enforced by
+  admission on the agent cluster, or by an external issuer that observes them, such as SPIRE.
+- **Validating managed-cluster tokens at the hub kube-apiserver.** This would need hub apiserver
+  configuration for every issuer, which managed hubs often forbid, and the credential would stay a
+  bearer token on every call.
+- **Kubernetes Pod Certificates (`PodCertificateRequest`).** They issue identities within one cluster.
+  The hub cannot act as a signer for pods on another cluster's apiserver.
 
 ## References
 
-- SPIFFE X.509-SVID specification: https://github.com/spiffe/spiffe/blob/main/standards/X509-SVID.md
-- SPIFFE bundle endpoint: https://github.com/spiffe/spiffe/blob/main/standards/SPIFFE_Trust_Domain_and_Bundle.md
-- go-spiffe (ID and SVID helpers, Workload API client): https://github.com/spiffe/go-spiffe
-- Istio ambient mode overview: https://istio.io/latest/docs/ambient/overview/
-- SPIRE plugins: https://spiffe.io/docs/latest/deploying/spire_server/
-- Kubernetes sidecar containers: https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/
+- SPIFFE: https://spiffe.io/docs/latest/spiffe-about/overview/
+- X.509-SVID: https://github.com/spiffe/spiffe/blob/main/standards/X509-SVID.md
+- SPIFFE Workload API: https://github.com/spiffe/spiffe/blob/main/standards/SPIFFE_Workload_API.md
+- SPIFFE trust domain and bundle: https://github.com/spiffe/spiffe/blob/main/standards/SPIFFE_Trust_Domain_and_Bundle.md
+- go-spiffe: https://github.com/spiffe/go-spiffe
 - SPIFFE CSI driver: https://github.com/spiffe/spiffe-csi
-- Kubernetes ServiceAccount token volume projection:
-  https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/#serviceaccount-token-volume-projection
-- Kubernetes ServiceAccount issuer discovery:
-  https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/#service-account-issuer-discovery
-- Smallstep `crypto/kms`: https://github.com/smallstep/crypto/tree/master/kms
-- gRPC based registration: [141-grpc-based-registration](../141-grpc-based-registration/README.md)
+- RFC 7523, JWT profile for OAuth 2.0 client authentication: https://www.rfc-editor.org/rfc/rfc7523
+- RFC 8693, OAuth 2.0 token exchange: https://www.rfc-editor.org/rfc/rfc8693
+- Microsoft Entra Workload ID: https://learn.microsoft.com/en-us/entra/workload-id/workload-identity-federation
+- Kubernetes ServiceAccount token projection: https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/#serviceaccount-token-volume-projection
+- Kubernetes sidecar containers: https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/
+- Kubernetes ValidatingAdmissionPolicy: https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/
+- gRPC based registration: [141-grpc-based-registration][kep-141]
 
+[spiffe]: https://spiffe.io/
 [x509-svid]: https://github.com/spiffe/spiffe/blob/main/standards/X509-SVID.md
+[workload-api]: https://github.com/spiffe/spiffe/blob/main/standards/SPIFFE_Workload_API.md
+[bundle-endpoint]: https://github.com/spiffe/spiffe/blob/main/standards/SPIFFE_Trust_Domain_and_Bundle.md
+[rfc7523]: https://www.rfc-editor.org/rfc/rfc7523
+[rfc8693]: https://www.rfc-editor.org/rfc/rfc8693
+[kep-141]: ../141-grpc-based-registration/README.md
 [kep-195]: https://github.com/ssijbabu/enhancements/tree/azure-ad-registration-driver-kep/enhancements/sig-architecture/195-azure-ad-registration-driver
-[step-kms]: https://github.com/smallstep/crypto/tree/master/kms
