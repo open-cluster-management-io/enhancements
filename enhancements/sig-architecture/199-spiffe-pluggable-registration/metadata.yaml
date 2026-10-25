@@ -1,4 +1,4 @@
-title: spiffe-pluggable-identity
+title: spiffe-identity
 authors:
   - "@ssijbabu"
 reviewers:
@@ -6,9 +6,8 @@ reviewers:
 approvers:
   - TBD
 creation-date: 2026-10-24
-last-updated: 2026-10-24
+last-updated: 2026-10-25
 status: provisional
 see-also:
   - "/enhancements/sig-architecture/141-grpc-based-registration"
-  - "/enhancements/sig-architecture/105-aws-iam-registration"
   - "/enhancements/sig-architecture/167-token-based-addon-registration"
