@@ -18,7 +18,7 @@ access must otherwise carry their own credential provisioner or receive a broade
 credential than the workload needs.
 
 This proposal will add a creation-time Go option to AgentAddon. An addon that opts in will declare
-one target ServiceAccount, one stable Secret name, and a token rotation policy. The framework will
+one target ServiceAccount and a token rotation policy. The framework will
 send that declaration to the hosting cluster in the addon's ManifestWork. The hosting cluster's
 klusterlet operator will authenticate the request through its AppliedManifestWork, use its existing
 managed-cluster connection to issue a short-lived TokenRequest for the declared ServiceAccount, and
@@ -143,9 +143,10 @@ because its namespace and name match. It will update or delete only a Secret who
 is the authenticated request ConfigMap and whose credential marker and immutable request hash match.
 A collision with any other Secret will produce Failed status.
 
-**The klusterlet operator needs Secret permissions across runtime namespaces.** Kubernetes RBAC
-cannot restrict create and update to arbitrary future Secret names selected by many addon types.
-The ClusterRole permission will therefore cover Secrets across the hosting cluster. Request
+**The klusterlet operator needs Secret permissions across runtime namespaces.** Today its ClusterRole
+can create any Secret but can read, update, or delete only a fixed list of Secret names. The credential
+Secret will therefore have one fixed name, `managed-cluster-kubeconfig`, in every runtime namespace, so
+that list gains one name instead of the rule covering every Secret on the hosting cluster. Request
 authentication, per-instance namespaces, strict owner checks, and non-adoption of collisions will
 constrain its use.
 The klusterlet operator remains the trusted component that already holds the broader target-cluster
@@ -197,7 +198,6 @@ type AgentAddonOptions struct {
 type ManagedClusterCredentialOption struct {
     ServiceAccountNamespace string
     ServiceAccountName      string
-    SecretName              string
     TokenFile               string
     ExpirationSeconds       int64
     RefreshBeforeSeconds    int64
@@ -216,7 +216,6 @@ The fields will have these meanings:
 |---|---|---|
 | ServiceAccountNamespace | No | Target-cluster ServiceAccount namespace. Empty means the addon's managed-cluster install namespace. |
 | ServiceAccountName | Yes | Target-cluster ServiceAccount name. |
-| SecretName | No | Stable hosting-cluster destination. Empty means addon-name-managed-kubeconfig. |
 | TokenFile | Yes | Path used by the generated kubeconfig to read the mounted token key. |
 | ExpirationSeconds | Yes | Requested TokenRequest lifetime, from 600 through 86400 seconds. |
 | RefreshBeforeSeconds | Yes | Positive interval before expiry; it must be less than ExpirationSeconds. |
@@ -274,13 +273,12 @@ data:
   addonName: <addon-name>
   serviceAccountNamespace: <target-serviceaccount-namespace>
   serviceAccountName: <target-serviceaccount-name>
-  secretName: <credential-secret-name>
   tokenFile: <mounted-token-path>
   expirationSeconds: <base-10-seconds>
   refreshBeforeSeconds: <base-10-seconds>
 ~~~
 
-The name managed-cluster-credential-request and the eight data keys will be fixed. Unknown data
+The name managed-cluster-credential-request and the seven data keys will be fixed. Unknown data
 keys will never influence a credential decision. The request hash will be a Kubernetes label-safe
 value made from SHA-256. It will start with the domain bytes
 `open-cluster-management.io/addon-credential-request/v1\x00`. For each fixed key in lexical order,
@@ -342,8 +340,9 @@ deploy a pod that mounts the klusterlet's external managed-cluster kubeconfig.
 ### 5. Target connection and TokenRequest
 
 After authenticating the request, the controller will locate Hosted-mode Klusterlet objects whose
-spec.clusterName matches targetCluster. Exactly one match will be required. No match will report
-Pending; multiple matches will report Failed rather than choosing one.
+cluster name matches targetCluster. spec.clusterName is optional; when it is empty, the controller will
+use the name the operator already reads from the agent's hub kubeconfig Secret. Exactly one match will
+be required. No match will report Pending; multiple matches will report Failed rather than choosing one.
 
 The controller will read the fixed external-managed-kubeconfig Secret from that Klusterlet's
 runtime namespace. This broad credential will remain inside the klusterlet operator process and
@@ -357,6 +356,13 @@ The controller will then:
 3. Build a kubeconfig containing the target server, CA and TLS connection settings, and tokenFile.
 4. Create or update the stable credential Secret in the runtime namespace.
 5. Schedule the next refresh from the actual expiration returned by the target API server.
+
+The klusterlet operator already writes hosted agent kubeconfig Secrets this way, with
+`helpers.SATokenGetter` and `helpers.SyncKubeConfigSecret` in ocm `pkg/operator/helpers`: the same data
+keys, a tokenFile kubeconfig, and the same connection change checks. The credential controller will
+extend that helper instead of adding a second one. Unlike the agent path, it will not use legacy
+ServiceAccount token Secrets, will use the declared lifetime and refresh window, and will check Secret
+ownership before every update instead of applying by name.
 
 The target ServiceAccount and its RBAC will remain addon-owned. TokenRequest will not add any
 authorization beyond that ServiceAccount. The target API server may shorten the requested lifetime;
@@ -385,8 +391,9 @@ Its controller owner reference will point to the request ConfigMap. A valid exis
 have that exact controller owner and request identity before it can be read, updated, invalidated,
 or deleted.
 
-The Secret name will be stable and immutable for the lifetime of the addon instance. If another
-object occupies the name, the controller will leave it unchanged and report Failed.
+The Secret will always be named `managed-cluster-kubeconfig`. The runtime namespace is already unique
+per addon instance, so the name does not need to vary, and a fixed name lets the operator's RBAC list it.
+If another object occupies the name, the controller will leave it unchanged and report Failed.
 
 The kubeconfig auth info will contain tokenFile and will not embed token. The addon will mount both
 kubeconfig and token from the same Secret volume so the configured token path resolves to the
@@ -465,7 +472,7 @@ While the option is selected, status.relatedObjects will include the exact core 
 - group: ""
   resource: secrets
   namespace: <runtime-namespace>
-  name: <credential-secret-name>
+  name: managed-cluster-kubeconfig
 ~~~
 
 The reference will be stable because the runtime namespace and Secret name are immutable. It lets
@@ -475,15 +482,16 @@ users discover the credential without reconstructing naming rules.
 
 The hosting-cluster klusterlet operator will need:
 
-- get, list, watch, and patch on credential request ConfigMaps;
-- get, create, update, and delete on credential Secrets;
-- get on AppliedManifestWork; and
+- get, list, watch, and patch on credential request ConfigMaps, which its ClusterRole already allows;
+- create on Secrets, which is already allowed, and `managed-cluster-kubeconfig` added to its existing
+  named-Secret rule, which grants get, list, watch, update, and delete. That rule matches the name in
+  every namespace, which is one more reason the checks below are mandatory;
+- get on AppliedManifestWork, added next to its existing list, update, and patch; and
 - its existing access to Hosted Klusterlet objects and external-managed-kubeconfig.
 
-These permissions will be limited to the verbs and resources required, but dynamic runtime
-namespace and Secret names prevent Kubernetes RBAC resourceNames rules from fully expressing the
-desired scope. Authentication and ownership checks in the controller are therefore mandatory, not
-defense in depth that can be omitted.
+The runtime namespaces are dynamic, so RBAC cannot limit these permissions to them. Authentication
+and ownership checks in the controller are therefore mandatory, not defense in depth that can be
+omitted.
 
 Hosted workload RBAC must not grant create, update, patch, or delete on
 managed-cluster-credential-request. Addon Roles should name the individual ConfigMaps they need to
@@ -500,6 +508,11 @@ The request ConfigMap will be owned by AppliedManifestWork. The credential Secre
 the request ConfigMap. Deleting the ManagedClusterAddOn will remove its ManifestWork, the work agent
 will remove the request ConfigMap, and Kubernetes garbage collection will remove the Secret.
 Deleting the isolated runtime namespace will provide a second lifecycle boundary.
+
+A hosting pre-delete hook that mounts the credential Secret can still run during deletion, because
+[191-hosted-addon-runtime-namespace](../191-hosted-addon-runtime-namespace/README.md) waits for the
+hook's result before deleting the runtime Work that owns the request ConfigMap and, through it, the
+Secret.
 
 All explicit invalidation or cleanup will verify the expected controller owner, marker, immutable
 hash, and current UID. Deletes will use a UID precondition so a newly created object at the same
@@ -567,7 +580,7 @@ Hosting cluster
 - Unit tests for deterministic request hashes and namespaces, including delimiter ambiguity,
   sanitization, truncation, long names, invalid characters, and stable output.
 - Unit tests for option validation: feature absent, all required opt-ins present, target
-  ServiceAccount defaults, stable Secret default, required tokenFile, minimum and maximum lifetime,
+  ServiceAccount defaults, required tokenFile, minimum and maximum lifetime,
   and refresh-before bounds.
 - Controller tests for every request authentication failure: wrong fixed name, missing marker,
   missing or multiple AppliedManifestWork owners, owner UID mismatch, deleting owner, missing exact

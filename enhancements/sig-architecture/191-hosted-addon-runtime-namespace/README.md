@@ -50,6 +50,10 @@ normally renders stable names for objects such as its Deployment, ServiceAccount
 Lease. If every instance renders those names into the same namespace, a later instance can update the
 objects used by an earlier instance.
 
+In a kind setup with one hosting cluster serving two managed clusters, one agent ran with the other cluster's
+configuration and hub identity, removing one addon deleted the other's hub credentials, and an addon with no
+working agent still reported `Available=True` from the other instance's Lease.
+
 The existing addon installation namespace is documented as a managed-cluster destination. Reusing it
 as the hosting destination overloads one value with two independent meanings. Asking an administrator
 to configure a different value for every managed cluster would preserve the possibility of human
@@ -176,6 +180,10 @@ The addon factory will provide a corresponding `WithHostingNamespaceEnabledOptio
 method. The option will require hosted mode support. It will affect only Hosted-mode instances of an
 addon type configured with the option from the start.
 
+The option is for Go addons built with the addon factory. Addons defined with `AddOnTemplate`, which the
+generic addon manager runs, are out of scope for the first version, the same as in
+[190-hosted-addon-managed-cluster-credentials](../190-hosted-addon-managed-cluster-credentials/README.md).
+
 The following are part of the API contract:
 
 - The option will remain false unless an addon author explicitly enables it.
@@ -244,8 +252,9 @@ contract and will not change for existing API versions.
 
 ```go
 type ManagedClusterAddOnStatus struct {
-    // namespace is the namespace on the managed cluster used for the addon
-    // registration Secret or Lease.
+    // namespace is the addon installation namespace. In Default mode it is on the
+    // managed cluster. In legacy Hosted mode the registration Secret and Lease are
+    // also written to this namespace, on the hosting cluster.
     Namespace string `json:"namespace,omitempty"`
 
     // hostingNamespace is the namespace on the hosting cluster where the
@@ -258,7 +267,7 @@ The two fields will have deliberately separate meanings:
 
 | Field | Cluster | Meaning |
 |---|---|---|
-| `status.namespace` | target managed cluster | Existing managed-side installation, registration Secret, and Lease namespace |
+| `status.namespace` | target managed cluster (Default mode); also the hosting cluster in legacy Hosted mode | Existing installation namespace. In legacy Hosted mode the registration Secret and Lease are written here on the hosting cluster, which is why instances collide |
 | `status.hostingNamespace` | hosting cluster | Opted-in Hosted-mode runtime, registration Secret, and Lease namespace |
 
 `status.namespace` will not be repurposed. Existing readers and writers will continue to see its
@@ -360,6 +369,12 @@ The framework will generate the Namespace manifest. Addon authors will not need 
 Namespace template. Arbitrary cluster-scoped templates will remain outside this proposal; the
 generated Namespace is the one required exception.
 
+Existing hosted templates often render their own hosting Namespace from `.AddonInstallNamespace` (for example
+`namespacehosting.yaml` in the addon-framework `helloworld_hosted` example). A Namespace is cluster-scoped, so the
+namespaced-manifest check above does not catch it. When the option is enabled, the runtime Work builder will
+reject a hosting `Namespace` manifest from the template and report it in `HostingManifestApplied`, so the old
+shared namespace is not created alongside the generated one.
+
 The hosted lifecycle finalizers required for runtime and pre-delete hook cleanup will be persisted
 before the first runtime Work can be created. In particular, when an addon defines a hosting
 pre-delete hook, its hosting pre-delete finalizer will be established before runtime creation. A
@@ -376,13 +391,17 @@ the addon framework and makes the status value the single routing contract.
 Publishing the destination is not sufficient to make it safe. Before writing a registration Secret,
 the hosting-cluster registration agent will read that Namespace directly and require its
 `addon.open-cluster-management.io/hosting-addon` annotation to equal the exact
-`<managedClusterName>/<addonName>` identity. It will not infer namespace ownership from the aggregate
+`<managedClusterName>/<addonName>` identity. The hosted registration agent's ClusterRole on the hosting
+cluster (`klusterlet-registration-clusterrole-addon-management.yaml`) grants Secrets and Leases today but not
+Namespaces, so it will gain `get` on `namespaces`. It will not infer namespace ownership from the aggregate
 `HostingManifestApplied` condition, because a later failure in an unrelated runtime manifest must not
 churn a valid registration credential.
 
 If `status.hostingNamespace` is nonempty but the Namespace is missing, unannotated, or differently
-owned, registration will stop any registration controller for that destination and remove any
-well-known credential Secret that might have been created before the unsafe state was observed. It
+owned, registration will stop any registration controller for that destination and remove a credential
+Secret it created there before the unsafe state was observed. It will only delete a Secret that carries its
+own owner label for this addon instance, never a Secret matched by name alone, because the registration agent
+can delete Secrets in every namespace of the hosting cluster and the namespace may belong to someone else. It
 will wait for a later exact ownership result instead of falling back to `status.namespace`.
 
 For a legacy addon with an empty `status.hostingNamespace`, the registration agent will continue to
@@ -428,6 +447,11 @@ Deletion will proceed in this order:
 
 Issuing a Work delete request will not count as cleanup completion. Waiting for disappearance avoids
 removing the `ManagedClusterAddOn` while a cross-namespace Work still has remote resources to delete.
+
+A hosting pre-delete hook that mounts the managed-cluster kubeconfig Secret cannot start until that Secret
+exists. OCM does not create it today (see
+[190-hosted-addon-managed-cluster-credentials](../190-hosted-addon-managed-cluster-credentials/README.md)), so
+such an addon's deletion stays blocked on the hook regardless of this proposal.
 
 #### Missing target ManagedCluster
 
@@ -509,6 +533,10 @@ Integration tests will cover:
 - conservative orphaning when the hosting ManagedCluster disappears before ownership feedback; and
 - an upgrade with the option unset producing no status, Work, namespace, registration, or template
   behavior change for existing Default-mode and Hosted-mode addons.
+
+An e2e test will run one hosted addon for two managed clusters on the same hosting cluster and check that each
+instance has its own namespace, registration Secret and Lease, that each agent runs with its own cluster name,
+and that deleting one instance leaves the other Available.
 
 Tests that mutate install mode or the namespace option after creation are outside this proposal
 because those choices are immutable for a `ManagedClusterAddOn` lifetime.

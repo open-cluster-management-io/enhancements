@@ -27,9 +27,9 @@ are delivered.
 The claim phase will never adopt or change a pre-existing resource unless its live ownership
 annotation already identifies the same `ManagedClusterAddOn`. A new resource will first be created
 with `CreateOnly` and protected with `SelectivelyOrphan`. After a live CEL condition verifies its
-owner, it will be promoted to non-forcing server-side apply under a field manager unique to the addon
-instance. A conflict will be reported on the `ManagedClusterAddOn` before a foreign resource is
-mutated.
+owner, it will be promoted to server-side apply under a field manager unique to the addon instance:
+one forced apply at promotion, then non-forcing applies after that. A conflict will be reported on
+the `ManagedClusterAddOn` before a foreign resource is mutated.
 
 The complete behavior will be optional. Existing addons and existing hosted deployments will keep
 their current behavior. An addon type will select the feature before its addon instances are
@@ -396,6 +396,9 @@ will provide these outcomes:
   match.
 - Deleting the Work while ownership remains foreign will not delete that object.
 
+`SelectivelyOrphan` is what keeps a pre-existing object unattached: `CreateOnly` on its own would still
+add the Work's owner reference to an existing object.
+
 The temporary orphan rule is part of acquisition safety, not the addon's requested steady-state
 deletion policy.
 
@@ -426,28 +429,45 @@ or missing annotation. No runtime Work will be created for a new instance in thi
 
 #### 3. Promote verified ownership
 
-After the live ownership condition is `True`, the claim will be promoted to:
+After the live ownership condition is `True`, the claim will be promoted to this steady-state strategy:
 
 ```yaml
 updateStrategy:
   type: ServerSideApply
   serverSideApply:
     force: false
-    fieldManager: <deterministic full-digest manager for this addon instance>
+    fieldManager: work-agent-<deterministic full-digest suffix for this addon instance>
 ```
 
-The field manager will be stable and unique to the `ManagedClusterAddOn` namespace and name. `force`
-will always be `false`; the framework will never take fields from another manager to make a claim
-succeed.
+The field manager will be stable and unique to the `ManagedClusterAddOn` namespace and name.
+ManifestWork requires it to start with `work-agent`.
+
+A resource created during acquisition is owned by the work agent's create-time field manager, so a
+non-forcing apply under the per-instance field manager would conflict on every field it changes.
+Promotion will therefore take two steps:
+
+1. Set `force: true` with the per-instance field manager and wait for `Applied=True` on that Work
+   generation.
+2. Set `force: false` and wait for `Applied=True` again.
+
+If the controller restarts after step 1, it will complete step 2, so a claim Work never stays at
+`force: true`. Every apply after promotion will use `force: false`, and the framework will not take
+fields from another manager to make a later claim revision succeed.
+
+The forced apply takes every conflicting field in the applied manifest, from any manager. An edit
+made by someone else between creation and promotion that leaves the ownership annotation unchanged
+will be overwritten; the verified annotation is what is accepted as proof that the object belongs to
+this instance. A work agent change that lets `CreateOnly` create the object through server-side apply
+with the per-instance field manager would avoid the forced apply entirely.
 
 The temporary acquisition orphan rule will be removed for the verified object so normal Work
 ownership can manage its lifecycle. An intentional addon deletion policy that already requires the
 resource to be orphaned will remain in place.
 
-The controller will wait until the current Work generation reports `Applied=True` and the live Work
-contains the exact non-forcing strategy, expected field manager, and expected orphan state. It will
-compare only these controlled claim fields rather than the entire desired and stored Work, because
-API defaulting may add unrelated fields.
+Promotion will be complete when, after step 2, the current Work generation reports `Applied=True` and
+the live Work contains the exact non-forcing strategy, expected field manager, and expected orphan
+state. It will compare only these controlled claim fields rather than the entire desired and stored
+Work, because API defaulting may add unrelated fields.
 
 ### Runtime gating and steady-state conflicts
 
@@ -474,7 +494,7 @@ Before deleting a claim Work, the controller will prepare and observe a safe del
 manifest:
 
 1. If current-generation live feedback says `HostingResourceOwned=True`, the controller will ensure
-   that the object has been promoted to non-forcing SSA and normal Work ownership. Normal Work
+   that the object has been promoted (both steps above) and has normal Work ownership. Normal Work
    cleanup may then delete it, unless the addon's intentional deletion policy says to orphan it.
 2. If current-generation live feedback says `HostingResourceOwned=False`, the controller will keep
    `CreateOnly` and `SelectivelyOrphan`. Deleting the Work will leave the foreign object untouched.
@@ -574,7 +594,8 @@ Unit coverage will include:
 - current-generation CEL ownership results for missing, matching, and foreign annotations;
 - a custom ownership condition of `False` mapping to `HostingResourceConflict` even when the Work is
   otherwise applied;
-- promotion to non-forcing SSA with the exact per-instance field manager;
+- promotion with one forced apply under the exact per-instance field manager, then non-forcing
+  updates that change the claimed object without a conflict;
 - gating on explicit claim fields without whole-Work semantic equality;
 - initial runtime gating and preservation of already-running runtime Works;
 - cleanup of an owned claim, orphaning of a foreign claim, waiting for an unknown claim, and
@@ -660,7 +681,8 @@ object after comparison. This proposal will require a live matching owner annota
 
 **Use forced server-side apply.** Forced apply would resolve a conflict by taking fields from another
 manager, which violates the requirement to detect incompatibility before changing the existing
-resource.
+resource. Force is used only for the single promotion apply, on an object whose ownership has already
+been verified.
 
 **Use one Work and rely on manifest ordering.** `ManifestWork` does not provide the ownership barrier
 needed between cluster-scoped claims and namespaced runtime objects. Splitting the phases gives the
