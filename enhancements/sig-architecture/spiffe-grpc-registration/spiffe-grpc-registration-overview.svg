@@ -1,0 +1,124 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 780" width="1200" height="780" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#333"/>
+    </marker>
+    <marker id="arrow-grey" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#777"/>
+    </marker>
+    <style>
+      .title { font-size: 20px; font-weight: bold; fill: #1a1a1a; }
+      .zone { font-size: 15px; font-weight: bold; }
+      .name { font-size: 13.5px; font-weight: bold; fill: #1a1a1a; }
+      .detail { font-size: 11.5px; fill: #444; }
+      .label { font-size: 11px; fill: #222; paint-order: stroke; stroke: #fff; stroke-width: 4px; stroke-linejoin: round; }
+      .grey { fill: #666; }
+      .legend { font-size: 12.5px; fill: #1a1a1a; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="780" fill="#ffffff"/>
+  <text x="600" y="36" text-anchor="middle" class="title">SPIFFE gRPC registration: components and trust</text>
+
+  <!-- SPIRE server (outside the OCM clusters) -->
+  <rect x="480" y="58" width="240" height="64" rx="8" fill="#ffffff" stroke="#777" stroke-dasharray="6 4"/>
+  <text x="600" y="84" text-anchor="middle" class="name">SPIRE server</text>
+  <text x="600" y="104" text-anchor="middle" class="detail">signs all SVIDs</text>
+
+
+  <!-- Hub cluster -->
+  <rect x="30" y="150" width="520" height="550" rx="12" fill="#f3f6fc" stroke="#3a5bc7" stroke-width="1.5"/>
+  <text x="50" y="178" class="zone" fill="#3a5bc7">OCM hub cluster</text>
+
+  <rect x="50" y="320" width="180" height="70" rx="8" fill="#ffffff" stroke="#777"/>
+  <text x="140" y="346" text-anchor="middle" class="name">SPIRE agent</text>
+  <text x="140" y="364" text-anchor="middle" class="detail">Workload API socket</text>
+  <text x="140" y="379" text-anchor="middle" class="detail">(SPIFFE CSI driver)</text>
+
+  <rect x="320" y="300" width="210" height="120" rx="8" fill="#e6f2f3" stroke="#0f6e78" stroke-width="1.5"/>
+  <text x="425" y="326" text-anchor="middle" class="name">OCM gRPC server</text>
+  <text x="425" y="346" text-anchor="middle" class="detail">server X.509-SVID in memory</text>
+  <text x="425" y="363" text-anchor="middle" class="detail">SPIFFE authenticator</text>
+  <text x="425" y="380" text-anchor="middle" class="detail">SAR authorizer</text>
+  <text x="425" y="397" text-anchor="middle" class="detail">stream expiry + revocation</text>
+
+  <rect x="320" y="500" width="210" height="80" rx="8" fill="#ffffff" stroke="#3a5bc7"/>
+  <text x="425" y="526" text-anchor="middle" class="name">Hub kube-apiserver</text>
+  <text x="425" y="544" text-anchor="middle" class="detail">ManagedCluster, ManifestWork,</text>
+  <text x="425" y="560" text-anchor="middle" class="detail">add-ons, RBAC (unchanged)</text>
+
+  <rect x="50" y="500" width="180" height="80" rx="8" fill="#ffffff" stroke="#3a5bc7"/>
+  <text x="140" y="526" text-anchor="middle" class="name">Registration controller</text>
+  <text x="140" y="544" text-anchor="middle" class="detail">and add-on manager:</text>
+  <text x="140" y="560" text-anchor="middle" class="detail">accept, deny, RBAC</text>
+
+  <line x1="320" y1="355" x2="230" y2="355" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="275" y="346" text-anchor="middle" class="label">Workload API</text>
+
+  <line x1="425" y1="420" x2="425" y2="500" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="433" y="465" class="label">SAR, reads/writes</text>
+
+  <line x1="230" y1="540" x2="320" y2="540" stroke="#333" stroke-width="1.5" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <text x="275" y="531" text-anchor="middle" class="label">watch</text>
+
+  <!-- Spoke cluster -->
+  <rect x="650" y="150" width="520" height="550" rx="12" fill="#f4f8f1" stroke="#3c7a3c" stroke-width="1.5"/>
+  <text x="670" y="178" class="zone" fill="#3c7a3c">Managed cluster</text>
+
+  <rect x="940" y="200" width="200" height="70" rx="8" fill="#ffffff" stroke="#777"/>
+  <text x="1040" y="226" text-anchor="middle" class="name">SPIRE agent</text>
+  <text x="1040" y="244" text-anchor="middle" class="detail">Workload API socket</text>
+  <text x="1040" y="259" text-anchor="middle" class="detail">(SPIFFE CSI driver)</text>
+
+  <rect x="680" y="300" width="210" height="60" rx="8" fill="#ffffff" stroke="#3c7a3c"/>
+  <text x="785" y="325" text-anchor="middle" class="name">Registration agent</text>
+  <text x="785" y="344" text-anchor="middle" class="detail">own SVID, memory only</text>
+
+  <rect x="680" y="380" width="210" height="60" rx="8" fill="#ffffff" stroke="#3c7a3c"/>
+  <text x="785" y="405" text-anchor="middle" class="name">Work agent</text>
+  <text x="785" y="424" text-anchor="middle" class="detail">own SVID, memory only</text>
+
+  <rect x="680" y="460" width="210" height="60" rx="8" fill="#ffffff" stroke="#3c7a3c"/>
+  <text x="785" y="485" text-anchor="middle" class="name">Add-on agents</text>
+  <text x="785" y="504" text-anchor="middle" class="detail">own SVID, memory only</text>
+
+  <rect x="680" y="600" width="210" height="70" rx="8" fill="#ffffff" stroke="#3c7a3c"/>
+  <text x="785" y="626" text-anchor="middle" class="name">Spoke kube-apiserver</text>
+  <text x="785" y="644" text-anchor="middle" class="detail">resources the agents apply</text>
+  <text x="785" y="659" text-anchor="middle" class="detail">and report on</text>
+
+  <line x1="890" y1="330" x2="1040" y2="330" stroke="#333" stroke-width="1.5"/>
+  <line x1="890" y1="410" x2="1040" y2="410" stroke="#333" stroke-width="1.5"/>
+  <line x1="890" y1="490" x2="1040" y2="490" stroke="#333" stroke-width="1.5"/>
+  <line x1="1040" y1="490" x2="1040" y2="270" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="1050" y="360" class="label">Workload API:</text>
+  <text x="1050" y="375" class="label">X.509-SVID and</text>
+  <text x="1050" y="390" class="label">trust bundle;</text>
+  <text x="1050" y="440" class="label">rotated by</text>
+  <text x="1050" y="455" class="label">SPIRE</text>
+
+  <line x1="785" y1="520" x2="785" y2="600" stroke="#333" stroke-width="1.5" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <text x="793" y="565" class="label">local API calls</text>
+
+  <!-- Cross-cluster: OCM gRPC mTLS (bus from agents) -->
+  <line x1="680" y1="330" x2="640" y2="330" stroke="#0f6e78" stroke-width="2"/>
+  <line x1="680" y1="410" x2="640" y2="410" stroke="#0f6e78" stroke-width="2"/>
+  <line x1="680" y1="490" x2="640" y2="490" stroke="#0f6e78" stroke-width="2"/>
+  <line x1="640" y1="330" x2="640" y2="490" stroke="#0f6e78" stroke-width="2"/>
+  <line x1="640" y1="360" x2="530" y2="360" stroke="#0f6e78" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="585" y="346" text-anchor="middle" class="label">CloudEvents/gRPC</text>
+  <text x="585" y="380" text-anchor="middle" class="label">mTLS, SVIDs on</text>
+  <text x="585" y="394" text-anchor="middle" class="label">both sides</text>
+  <text x="585" y="415" text-anchor="middle" class="label grey">internal LB,</text>
+  <text x="585" y="429" text-anchor="middle" class="label grey">TLS passthrough</text>
+
+  <!-- SPIRE agents to SPIRE server (drawn last so they sit above the cluster boxes) -->
+  <path d="M480,90 L200,90 L200,320" fill="none" stroke="#777" stroke-width="1.5" stroke-dasharray="6 4" marker-start="url(#arrow-grey)" marker-end="url(#arrow-grey)"/>
+  <path d="M720,90 L1040,90 L1040,200" fill="none" stroke="#777" stroke-width="1.5" stroke-dasharray="6 4" marker-start="url(#arrow-grey)" marker-end="url(#arrow-grey)"/>
+  <text x="340" y="82" text-anchor="middle" class="label grey">node attestation, SVID signing (SPIRE protocol)</text>
+  <text x="880" y="82" text-anchor="middle" class="label grey">node attestation, SVID signing (SPIRE protocol)</text>
+
+  <!-- Legend -->
+  <text x="600" y="732" text-anchor="middle" class="legend">No bootstrap token · No CSR · No Secrets or ConfigMaps holding keys or certificates</text>
+  <text x="600" y="754" text-anchor="middle" class="legend">OCM components talk only to their local SPIRE agent for identity; SVIDs are short-lived and stay in memory</text>
+</svg>
