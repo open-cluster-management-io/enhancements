@@ -178,8 +178,14 @@ type Patch struct {
 
     // Patch is the patch body, as an embedded object or array rather than a string,
     // so that it is schema-checked and readable in the resource.
-    // +kubebuilder:pruning:PreserveUnknownFields
-    Patch runtime.RawExtension `json:"patch"`
+    //
+    // This is apiextensionsv1.JSON rather than runtime.RawExtension deliberately.
+    // controller-gen renders runtime.RawExtension as "type: object", which the API
+    // server would use to reject every JSONPatch, since an RFC 6902 patch body is a
+    // JSON array. apiextensionsv1.JSON renders as x-kubernetes-preserve-unknown-fields
+    // with no type constraint, so it accepts both arrays and objects. The body is then
+    // validated against Type by the controller.
+    Patch apiextensionsv1.JSON `json:"patch"`
 
     // AtomicLists controls what happens when a StrategicMergePatch would replace a list
     // declared atomic, or a list whose merge semantics cannot be determined from the
@@ -199,7 +205,7 @@ rendered successfully everywhere it applied.
 
 #### ResourceOverrideSchema
 
-Cluster-scoped, administrator-managed, at most one per target GVK so that schema selection is
+Cluster-scoped, administrator-managed, at most one per target type so that schema selection is
 unambiguous.
 
 ```go
@@ -207,20 +213,35 @@ unambiguous.
 // strategic merge patches can merge lists instead of replacing them. It affects override
 // rendering only: it does not modify any CRD and does not affect API server validation.
 type ResourceOverrideSchemaSpec struct {
-    // Target is the resource type this schema describes.
-    Target ResourceTypeRef `json:"target"`
+    // Target identifies the resource type this schema describes, using the same
+    // group/resource identity as ManifestOverridePolicy.resourceSelectors and
+    // ManifestWork's manifestConfigs. Name and namespace are not used here and must
+    // be empty: this names a type, not an instance.
+    Target workv1.ResourceIdentifier `json:"target"`
+
+    // Kind is the manifest's kind for this group/resource, and Version is its served
+    // version. Together with Target these give the hub the apiVersion/kind to
+    // group/resource mapping for this type.
+    //
+    // This is not redundant. Manifests carry apiVersion and kind; resourceSelectors
+    // match on group and resource; and the work hub has no RESTMapper entry for a CRD
+    // that is installed only on managed clusters -- which is precisely the case
+    // ResourceOverrideSchema exists to serve. Registering the schema therefore also
+    // registers the mapping, so a selector can match the type at all.
+    Kind    string `json:"kind"`
+    Version string `json:"version"`
 
     // OpenAPIV3Schema is a partial schema overlay. Merge metadata given here takes
     // precedence; anything not mentioned is inherited from the type's own schema.
-    // +kubebuilder:pruning:PreserveUnknownFields
-    OpenAPIV3Schema runtime.RawExtension `json:"openAPIV3Schema"`
-}
-
-type ResourceTypeRef struct {
-    APIVersion string `json:"apiVersion"`
-    Kind       string `json:"kind"`
+    OpenAPIV3Schema apiextensionsv1.JSON `json:"openAPIV3Schema"`
 }
 ```
+
+Making `ResourceOverrideSchema` carry the mapping resolves two things at once. It gives the
+API a single resource-identification scheme, as @kahirokunn asked for on [#198][issue-198]
+and as review feedback on [#155][pr-155] preferred. And it closes a hole that group/resource
+selection would otherwise have: the hub cannot discover a type it does not have installed, so
+without this the Knative example below could not be selected at all.
 
 Example, declaring that a Knative `Service`'s containers and their environment variables
 merge by `name`:
@@ -232,8 +253,10 @@ metadata:
   name: knative-service
 spec:
   target:
-    apiVersion: serving.knative.dev/v1
-    kind: Service
+    group: serving.knative.dev
+    resource: services
+  kind: Service
+  version: v1
   openAPIV3Schema:
     properties:
       spec:
@@ -378,9 +401,13 @@ ordered, two renders of the same inputs always produce the same bytes.
 the work API and lets the implementation reuse `helper.ResourceMatch`.
 
 This requires mapping each manifest's `apiVersion`/`kind` to its resource, which the work hub
-does not do today — it needs a `RESTMapper`. See [Open Questions](#open-questions); it is also
-the reason `ResourceOverrideSchema` currently targets by `apiVersion`/`kind` instead, which is
-an inconsistency the proposal should settle before it goes `implementable`.
+does not do today — it needs a `RESTMapper`. A `RESTMapper` built from hub discovery covers
+built-in types and any CRD installed on the hub. For a type installed only on managed
+clusters, the mapping comes from the `kind`/`version`/`target` triple on its
+`ResourceOverrideSchema`, as described above. A manifest whose type can be resolved by
+neither route and which no selector matches is simply left unpatched; if a selector does
+name an unresolvable group/resource, the render fails for that cluster with an error naming
+the type, rather than silently skipping the manifest.
 
 #### Patch application
 
@@ -405,6 +432,23 @@ When the available schema cannot support the requested merge — an atomic list,
 whose keys cannot be honoured — the patch fails rather than silently replacing the list,
 unless the patch sets `atomicLists: Replace`.
 
+**Deletion semantics must not diverge between built-ins and custom resources.** This is a
+trap in the approach above. A strategic merge patch deletes a field by setting it to `null`,
+and removes a list entry with the `$patch: delete` directive; `strategicpatch` implements
+both. `structured-merge-diff`'s `TypedValue.Merge` does not — it merges, and expresses
+removal through field-set subtraction in the apply path, not through nulls in the merge
+input. Using `strategicpatch` for built-ins and typed merge for custom resources would
+therefore give the same patch two different meanings depending on the target type, and the
+difference would be silent.
+
+The implementation must close this explicitly. Before the typed merge, the patch is scanned
+for `null` values and `$patch` directives; those are extracted and applied as removals
+against the merged result, so that `spec: {field: null}` and `$patch: delete` mean the same
+thing for a Knative `Service` as they do for a `Deployment`. Any directive that cannot be
+honoured for a custom resource is an error naming the directive and the path, never a
+silent no-op. The test plan covers deletion on both a built-in and a custom resource with
+the same patch body, asserting identical results.
+
 #### Identity invariant
 
 After all patches are applied, the rendered manifest's `apiVersion`, `kind`, `name` and
@@ -414,11 +458,17 @@ resource, and make `ManifestWork` status accounting meaningless.
 
 #### Controller wiring
 
-The MWRS controller gains two informers:
+The MWRS controller gains three informers:
 
 - `ManifestOverridePolicy`, to re-render when a policy changes.
 - `ManagedCluster`, because label selectors need cluster labels, which `PlacementDecision`
   does not carry.
+- `ResourceOverrideSchema`, on create, update **and delete**. Merge metadata is an input to
+  the rendered output, so editing a schema changes what the manifest should be. Without this
+  watch, existing `ManifestWork`s keep the payload rendered under the old metadata until some
+  unrelated event happens to reconcile their MWRS, which is both wrong and hard to diagnose.
+  Deletion matters as much as update: removing a schema can turn a previously valid merge
+  into one that must now fail under `atomicLists: Reject`.
 
 The `ManagedCluster` informer is the significant cost. It caches every `ManagedCluster` on the
 hub and must re-render affected MWRS when labels change. Mitigations to measure before
@@ -485,19 +535,26 @@ Two mechanisms, following the precedent of `ManagedClusterAddOn.status.configRef
    b. add discovery on the hub — only works for types installed on the hub;
    c. collect schemas from managed clusters and keep a content-hash-deduplicated cache on the
       hub, with small per-cluster references, as proposed by @kahirokunn. This handles clusters
-      whose schemas genuinely differ for the same `apiVersion`/`kind`, but requires an
-      agent-to-hub schema reporting channel that does not exist in `work` today, plus a refresh
-      and garbage-collection story. That is arguably its own enhancement.
-   This proposal currently assumes (a) with (c) as a follow-up, and this is the main
-   unresolved question.
+      whose schemas genuinely differ for the same type, but requires an agent-to-hub schema
+      reporting channel that does not exist in `work` today, plus a refresh and
+      garbage-collection story. That is arguably its own enhancement.
 
-2. **One identifier scheme or two?** `resourceSelectors` uses `ResourceIdentifier`
-   (group/resource) for consistency with `manifestConfigs` and per review feedback on
-   [#155][pr-155]; `ResourceOverrideSchema.spec.target` uses `apiVersion`/`kind` because it
-   describes a type rather than selecting instances, and because manifests carry
-   `apiVersion`/`kind`. Using group/resource everywhere requires a `RESTMapper` on the work
-   hub; using `apiVersion`/`kind` everywhere diverges from `manifestConfigs` inside the same
-   API. Both are defensible; the proposal should not ship with the inconsistency unexplained.
+   This is the main unresolved question, and it is a disagreement rather than a gap.
+   @kahirokunn's position is that (c) should land *before* custom-resource strategic merge
+   ships at all, because requiring administrators to extract, register and keep schemas
+   current is a poor first experience and does not handle per-cluster schema differences.
+   The counter-position is that (c) is a new hub/agent contract with its own skew and
+   lifecycle design, and that making it a prerequisite couples this proposal's delivery to
+   a second, larger one. @mikeshng has been asked to arbitrate. The proposal as written
+   assumes (a) with (c) as a follow-up; if the group prefers @kahirokunn's sequencing, the
+   change is to graduation criteria and scope rather than to the API above.
+
+2. ~~**One identifier scheme or two?**~~ **Resolved.** `ResourceIdentifier` (group/resource)
+   is used throughout — `resourceSelectors` and `ResourceOverrideSchema.spec.target` — per
+   @kahirokunn on [#198][issue-198] and review feedback on [#155][pr-155]. The objection
+   that group/resource needs hub discovery for types the hub does not have installed is
+   answered by `ResourceOverrideSchema` carrying `kind` and `version`, so registering a
+   schema also registers the mapping. See [Resource selection](#resource-selection).
 
 3. **How is `forEach` added later, if at all?** Keeping `overrides` a list leaves room, but
    the loop boundary determines variable scope and execution order. Given
@@ -528,12 +585,20 @@ invariant; atomic-list reject and the explicit `Replace` opt-in; composite
 determinism, by rendering twice and comparing bytes. [ocm#1792][ocm-1792] already carries this
 suite for the agreed subset.
 
+Two cases deserve naming because they guard against silent divergence rather than an
+outright bug. **Deletion parity**: the same strategic merge patch using `null` and
+`$patch: delete` is applied to a built-in and to a custom resource, and the two results must
+agree — this is the gap between `strategicpatch` and typed merge described above. **JSON
+Patch body shape**: a policy whose `patch` is a JSON array round-trips through the CRD
+schema, which is what `apiextensionsv1.JSON` buys over `runtime.RawExtension`.
+
 **Integration tests** on the controller: that a policy change re-renders existing
 `ManifestWork`s; that the two drift-detection sites agree with the rendered object, so no
 churn occurs — a regression test for the failure mode described above; that a render failure
 marks one cluster `Failed` and leaves others untouched; that a `Progressive` rollout with
 `maxFailures` and `progressDeadline` reacts to a failing cluster instead of stalling; that
-`ManagedCluster` label changes re-render.
+`ManagedCluster` label changes re-render; that creating, editing and deleting a
+`ResourceOverrideSchema` re-renders the `ManifestWork`s whose merge result it changes.
 
 **E2E tests**: a `ManifestWorkReplicaSet` plus a `ManifestOverridePolicy` producing different
 payloads on two managed clusters, including a custom resource patched with a registered
@@ -593,6 +658,12 @@ its own skew analysis.
 - 2026-10-30: renderer prototype opened as [ocm#1792][ocm-1792].
 - 2026-11-02: atomic-list rejection agreed as the default; `ResourceOverrideSchema` and the
   cross-cluster schema cache proposed; this proposal opened.
+- 2026-11-03: identifier question resolved on `ResourceIdentifier` throughout, with
+  `ResourceOverrideSchema` carrying the kind/version mapping so the hub can resolve types it
+  does not have installed. Patch body changed from `runtime.RawExtension` to
+  `apiextensionsv1.JSON` so JSON Patch arrays pass CRD validation. Deletion-semantics
+  divergence between `strategicpatch` and typed merge identified and specified away. A
+  `ResourceOverrideSchema` watch added to the controller wiring.
 
 ## Drawbacks
 
