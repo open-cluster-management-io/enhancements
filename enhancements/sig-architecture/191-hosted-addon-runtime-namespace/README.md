@@ -121,13 +121,13 @@ default without a migration.
 
 **A truncated digest can collide.** The generated name will include 80 bits of a domain-separated
 SHA-256 digest, so an accidental collision is unlikely but not impossible. The framework will not
-rely on probability for correctness. It will verify an ownership annotation through Work feedback
-before creating runtime resources. A different or missing owner will produce a conflict condition
-instead of adoption.
+rely on probability for correctness. The work agent will check the live owner before applying a
+Namespace, and the framework will wait for that Work's apply result before creating runtime
+resources. A different or missing owner will produce a conflict condition instead of adoption.
 
 **A pre-existing namespace can have the generated name.** A namespace with no ownership annotation
-will be treated as foreign. Initial acquisition will use `CreateOnly`, so the framework will not add
-an annotation to or otherwise change that namespace. Runtime and registration will remain blocked.
+will be treated as foreign. The work agent will not add an annotation or owner reference to it, and
+runtime and registration will remain blocked.
 
 **An annotation is not proof against a privileged actor.** An actor that can create or modify
 namespaces can copy an annotation. Kubernetes RBAC remains the authorization boundary. The annotation
@@ -139,7 +139,7 @@ why the feature will be opt-in and immutable for the lifetime of each addon obje
 must document the policies required by the generated namespace before enabling the option.
 
 **A hosting cluster can disappear during deletion.** The hub must prefer preserving a possibly
-foreign resource over completing unsafe deletion. Unverified claims will be changed to `CreateOnly`
+foreign resource over completing unsafe deletion. Unverified claims will be changed to `ReadOnly`
 and selectively orphaned before their Works are deleted. Generic Work cleanup finalizers will not be
 force-removed. If the hosting work agent cannot complete cleanup, an administrator may need to restore
 the hosting cluster or resolve the Work finalizer after inspecting the remote resources.
@@ -290,16 +290,29 @@ The typed field will be the authoritative machine-readable routing value. `relat
 discovery aid for users and generic tooling; consumers will not parse it to decide where credentials
 or manifests belong.
 
-The status field and RelatedObject will be set when the opted-in Hosted-mode addon is reconciled. They
-will remain present while any hosting ManifestWork or hosting lifecycle finalizer remains. They will
-be removed only after hosted cleanup is complete. This makes status truthful during asynchronous
-cross-namespace deletion.
+For an opted-in Hosted-mode addon, the hub-side registration controller will persist the hosted
+manifest cleanup finalizer before publishing registration settings. It will resolve the hosting
+namespace and write `hostingNamespace`, the namespace RelatedObject, `status.registrations`, and the
+`RegistrationApplied` condition in the same status update, merging them with existing status. No
+registration settings for that instance will be published while its hosting namespace is
+unresolved. The deployment controller will wait for this published value rather than initialize it
+independently.
+
+The hosting namespace and RelatedObject will remain present while any hosting ManifestWork or
+hosting lifecycle finalizer remains. After cleanup, the controller will clear them together with
+the registration settings and `RegistrationApplied` condition in one status update. Registration
+settings will not be republished for a terminating addon.
 
 ### 4. Claim before runtime
 
 A Kubernetes Namespace is cluster-scoped, so placing a Namespace manifest and a Deployment in one
 ordinary Work would not prevent the Deployment from reaching a pre-existing foreign namespace. The
 framework will split reconciliation into a claim phase and a runtime phase.
+
+The addon manager will persist the hosted manifest cleanup finalizer before creating the first claim
+Work. A hosting Work is in a different namespace from its `ManagedClusterAddOn`, so it cannot rely on
+an addon owner reference for cleanup. The finalizer will protect both claim and runtime Works,
+including an addon deleted while its Namespace claim is still pending.
 
 The claim Work will contain the generated Namespace with this annotation:
 
@@ -309,37 +322,28 @@ metadata:
     addon.open-cluster-management.io/hosting-addon: <managedClusterName>/<addonName>
 ```
 
-The initial claim will use the ManifestWork `CreateOnly` update strategy. It will also selectively
-orphan that Namespace if the Work is deleted before ownership has been observed. These settings give
-the initial claim two safe outcomes:
+Namespace claims will use the ownership checks defined in
+[192-hosted-addon-cluster-scoped-resources](../192-hosted-addon-cluster-scoped-resources/README.md#required-work-support),
+including its required Work API and work-agent changes. This behavior is required even when
+`HostedClusterScopedResourcesEnabled` is false; that option controls the addon's other
+cluster-scoped manifests.
 
-- If the Namespace does not exist, the work agent creates it with the expected annotation.
-- If it already exists, the work agent does not mutate it and the existing annotation can be
-  inspected through feedback.
+The framework will first use a read-only Work to confirm agent support. Once support is confirmed,
+the claim Work will use SSA with `force: true` and the expected addon owner. The work agent will
+create an absent Namespace, reconcile one owned by this instance, or leave a foreign Namespace
+unchanged. Each write will use a fresh live ownership check and that read's concurrency values.
 
-The claim Work will request both annotation feedback and a custom CEL condition named
-`HostingResourceOwned`. The condition will be true only when the live Namespace contains the exact
-expected owner value. The addon manager will require all of the following before proceeding:
+The framework will create runtime Works only when the Namespace claim has its expected writable
+configuration and reports `Applied=True` and `HostingResourceClaimSupported=True` for the current
+generation. Those results come from the agent that enforces ownership.
 
-1. The claim Work exists.
-2. Its `Applied` condition reports the current Work generation.
-3. The owner feedback is present.
-4. `HostingResourceOwned` is true for the expected instance identity.
-5. The verified claim has been promoted to non-forcing server-side apply with a stable,
-   instance-specific field manager.
-6. The promoted Work generation has been observed.
+A foreign or unannotated Namespace will produce `HostingManifestApplied=False` with reason
+`HostingResourceConflict`. A missing current-generation result will remain pending. Registration
+will also check Namespace ownership directly before writing its Secret or Lease.
 
-Promotion will remove temporary orphaning for a Namespace that has been proven to belong to this
-addon. `force` will remain false so the claim cannot silently take fields from another field manager.
-
-If the Namespace is unannotated or has another owner, the addon manager will set
-`HostingManifestApplied=False` with reason `HostingResourceConflict`. It will not create the runtime
-Work and registration will not write a Secret or Lease into that Namespace. A transient absence of
-current-generation feedback will remain pending rather than being interpreted as ownership.
-
-The claim Work will be separate from the runtime Work. That boundary prevents Work ordering or a
-single Work's parallel manifest application from placing namespaced resources before the ownership
-decision.
+The claim Work will remain separate from the runtime Work so namespaced resources cannot be applied
+before the Namespace is ready. While the claim Work is active, the agent may recreate a missing
+Namespace. During finalization it will only clean up tracked resources and will never recreate one.
 
 ### 5. Runtime template contract
 
@@ -375,11 +379,10 @@ namespaced-manifest check above does not catch it. When the option is enabled, t
 reject a hosting `Namespace` manifest from the template and report it in `HostingManifestApplied`, so the old
 shared namespace is not created alongside the generated one.
 
-The hosted lifecycle finalizers required for runtime and pre-delete hook cleanup will be persisted
-before the first runtime Work can be created. In particular, when an addon defines a hosting
-pre-delete hook, its hosting pre-delete finalizer will be established before runtime creation. A
-deletion request therefore cannot arrive in a gap where runtime resources exist but the hook is not
-protected by a finalizer.
+The hosted manifest cleanup finalizer will already be present before the Namespace claim is created.
+When an addon defines a hosting pre-delete hook, its hosting pre-delete finalizer will also be
+persisted before runtime creation. A deletion request therefore cannot arrive in a gap where runtime
+resources exist but the hook is not protected by a finalizer.
 
 ### 6. Registration Secret and Lease routing
 
@@ -399,14 +402,26 @@ churn a valid registration credential.
 
 If `status.hostingNamespace` is nonempty but the Namespace is missing, unannotated, or differently
 owned, registration will stop any registration controller for that destination and remove a credential
-Secret it created there before the unsafe state was observed. It will only delete a Secret that carries its
-own owner label for this addon instance, never a Secret matched by name alone, because the registration agent
-can delete Secrets in every namespace of the hosting cluster and the namespace may belong to someone else. It
-will wait for a later exact ownership result instead of falling back to `status.namespace`.
+Secret it created there before the unsafe state was observed. Registration Secrets created for these
+opted-in destinations will carry `addon.open-cluster-management.io/registration-secret: "true"` and
+the existing owner label identifying the exact addon instance. Every cleanup path for these Secrets,
+including stale registration settings and addon deletion, will read the live Secret and require both
+markers before deleting it with the observed Secret UID as a precondition. A UID conflict will require
+a fresh read and the same checks; it will never fall back to an unconditional name-based delete.
+A replacement without the marker or matching addon identity will be left unchanged, and the collision
+or cleanup error will be reported. A missing Secret already satisfies cleanup. These checks are
+necessary because the registration agent can delete Secrets in every namespace of the hosting
+cluster. Registration will wait for a later exact Namespace ownership result instead of falling back
+to `status.namespace`.
 
 For a legacy addon with an empty `status.hostingNamespace`, the registration agent will continue to
 use the existing installation namespace and hosted-mode detection. Once the new field is nonempty,
 it will take precedence over legacy inference.
+
+An opted-in addon must never be visible with registration settings and an empty
+`status.hostingNamespace`. The atomic status publication above preserves this distinction without
+making the registration agent infer the Go option from an empty field. Withdrawing registration
+settings together with the namespace also prevents legacy fallback at the end of deletion.
 
 ### 7. Creation and deletion lifecycle
 
@@ -417,14 +432,18 @@ selected, with those choices unchanged until deletion.
 
 Creation will proceed in this order:
 
-1. Resolve and publish `status.hostingNamespace` and its RelatedObject.
-2. Create the Namespace claim Work with safe acquisition settings.
-3. Wait for current-generation ownership feedback and safe promotion.
-4. Persist the hosted manifest finalizer and any configured hosting pre-delete hook finalizer.
-5. Create the namespaced runtime Work.
-6. Mark hosting manifests applied only after the Work reports success.
-7. Allow hosted registration to create its Secret and Lease after its direct Namespace ownership
-   check succeeds.
+1. Persist the hosted manifest cleanup finalizer before publishing registration settings or creating
+   any hosting Work.
+2. Publish `status.hostingNamespace` and its RelatedObject together with registration settings.
+3. Create the Namespace claim Work with the expected owner and initial read-only support check.
+4. Wait for a current-generation, ownership-checked Namespace apply result from a supporting agent.
+5. Persist any configured hosting pre-delete hook finalizer.
+6. Create the namespaced runtime Work.
+7. Mark hosting manifests applied only after the Work reports success.
+
+Registration can create its Secret and Lease once the published Namespace exists and its direct
+ownership check succeeds. It does not wait for the runtime Work or `HostingManifestApplied`; an
+unrelated runtime failure must not remove a valid registration credential.
 
 There can be an availability delay while ownership is checked. There cannot be an interval in which
 the hosted agent runs in an unverified namespace.
@@ -439,11 +458,12 @@ Deletion will proceed in this order:
 3. If a hook builder no longer returns a hook, delete any stale hook Work and wait for its actual
    disappearance before removing the hook finalizer.
 4. Delete runtime Works and wait for the Works and their remote AppliedManifestWorks to be cleaned up.
-5. Delete the claim Work. An owned Namespace can be removed; an unverified or foreign Namespace must
-   be orphaned.
+5. Delete the claim Work and wait for its agent-side finalizer. As defined in KEP 192, it will remove
+   the tracked owned Namespace, preserve a foreign Namespace, and treat an absent Namespace as
+   already cleaned up, even if the desired manifest could not be applied.
 6. Remove the corresponding addon finalizer only after the Works protected by it are gone.
-7. Clear `status.hostingNamespace` and the namespace RelatedObject only after no hosted Work or hosted
-   lifecycle finalizer remains.
+7. Clear `status.hostingNamespace`, its RelatedObject, and registration settings together, only after
+   no hosted Work or hosted lifecycle finalizer remains.
 
 Issuing a Work delete request will not count as cleanup completion. Waiting for disappearance avoids
 removing the `ManagedClusterAddOn` while a cross-namespace Work still has remote resources to delete.
@@ -464,9 +484,10 @@ the cross-namespace Works are gone.
 
 If the hosting `ManagedCluster` disappears before claim ownership has been observed, the controller
 cannot know whether each claimed object was created for this addon or was pre-existing. Before
-deleting the claim Work, it will persist `CreateOnly` for every uncertain resource and add an exact
+deleting the claim Work, it will persist `ReadOnly` for every uncertain resource and add an exact
 selective orphan rule. It will verify that safe Work shape before issuing deletion.
-This prevents deletion of a foreign object if stale feedback arrives later.
+This prevents deletion of a foreign object if stale feedback arrives later and avoids recreating an
+absent Namespace if the work agent returns before any successful apply result was observed.
 
 A resource previously verified as owned can retain normal deletion behavior. A resource known to be
 foreign will be orphaned. Generic ManifestWork cleanup finalizers will not be force-removed because
@@ -487,14 +508,14 @@ finalizer removal in this failure mode.
                     hosting cluster namespace on hub
                                    |
                        claim ManifestWork
-                         CreateOnly first
-                         owner feedback + CEL
+                         confirm agent support
+                         check owner and apply
                                    |
                          ownership verified?
                             /            \
                           no              yes
                           |                |
-             HostingResourceConflict      | promote to non-force SSA
+             HostingResourceConflict      | Applied=True
              no runtime or credential      |
                                            v
                                   runtime ManifestWork
@@ -514,12 +535,18 @@ Unit tests will cover:
 - DNS-1123 validity and the 63-character bound for maximum-length and unusual addon names;
 - use of the complete managed cluster and addon names in the digest;
 - conversion of `hostingNamespace` between `v1alpha1` and `v1beta1`;
+- atomic publication and withdrawal of the hosting namespace and registration settings for opted-in
+  instances;
 - template values when the option is enabled and disabled;
 - rejection of a hosted namespaced manifest outside `status.hostingNamespace`;
-- claim acquisition, owner feedback parsing, non-forcing promotion, and conflict conditions;
+- ownership-checked Namespace apply results, agent support, and conflict conditions using the same
+  rules as KEP 192;
 - temporary selective orphan rules for claims whose ownership is uncertain;
+- registration Secret cleanup requiring the registration marker and exact addon identity, with
+  UID-conditional deletion and revalidation after a conflict;
 - RelatedObject retention and removal; and
-- finalizer ordering when a hook is present, absent, or removed from the builder output.
+- finalizer persistence before registration settings or the first claim Work, and hook finalizer
+  ordering when a hook is present, absent, or removed from the builder output.
 
 Integration tests will cover:
 
@@ -528,9 +555,20 @@ Integration tests will cover:
 - an unannotated generated-name collision remaining unchanged and blocking runtime creation;
 - a namespace owned by another addon producing `HostingResourceConflict`;
 - registration Secret and Lease creation only after ownership has been verified;
+- replacement of a registration Secret with an unrelated Secret between its ownership check and
+  deletion leaving the replacement untouched, including stale-configuration and addon-deletion cleanup;
+- initial registration with delayed hub-side controllers and final cleanup never writing to the
+  legacy namespace;
+- deletion before the first claim apply result retaining the addon until cleanup ends;
+- cleanup after an invalid Namespace update without applying the rejected state or recreating a
+  missing Namespace;
+- a foreign Namespace appearing between the agent's ownership check and write remaining untouched;
+- restoration of declared Namespace fields while preserving unrelated annotation keys;
+- Namespace claim behavior with the cluster-scoped resource option both enabled and disabled;
 - deletion waiting for hook, runtime, and claim Works to disappear;
 - deletion when the target ManagedCluster is already absent;
-- conservative orphaning when the hosting ManagedCluster disappears before ownership feedback; and
+- conservative orphaning when the hosting ManagedCluster disappears before ownership feedback,
+  without recreating an absent Namespace when the work agent returns; and
 - an upgrade with the option unset producing no status, Work, namespace, registration, or template
   behavior change for existing Default-mode and Hosted-mode addons.
 
@@ -573,10 +611,13 @@ unset. Existing Default-mode and Hosted-mode `ManagedClusterAddOn` objects requi
 and will not be relocated.
 
 The API and CRD containing `status.hostingNamespace` must be upgraded before addon managers write the
-field. Hosted registration components that understand the field and ownership gate must be upgraded
-before an addon type enables the option. During version skew, older clients may ignore the optional
-status field, but an addon author must not opt in until every participating hosted registration agent
-supports it.
+field. The hub-side registration controller must support atomic namespace and registration
+publication, and hosted registration agents must understand the field and ownership gate, before an
+addon type enables the option. The hosting work agent must also implement the protected claim
+contract from KEP 192. Without `HostingResourceClaimSupported` from the initial support check, the
+claim will remain read-only and runtime creation will stay blocked.
+Older clients may ignore the optional status field, but opt-in requires every participating
+controller and agent to support this contract.
 
 Opt-in is supported only when selected before any `ManagedClusterAddOn` for that addon type is
 created. It is not an upgrade step for existing objects, and no existing object requires migration.
@@ -625,13 +666,14 @@ semantics. The typed status field provides that value, while RelatedObjects rema
 ### Adopt an existing unannotated namespace
 
 Adding the expected annotation to an existing namespace would allow the addon to take over resources
-that belong to a user or another controller. `CreateOnly` acquisition and exact owner feedback avoid
-that destructive behavior.
+that belong to a user or another controller. A live owner check before each write prevents that
+adoption.
 
-### Force server-side apply during acquisition
+### Apply without checking the owner
 
-Force apply could seize annotation or policy fields from another manager. Initial `CreateOnly`
-followed by verified, non-forcing apply preserves ownership boundaries.
+Force alone does not distinguish an owned Namespace from a foreign one. The work agent will first
+check the live owner, then use SSA to restore fields declared by this addon. This keeps the owner
+decision separate from Kubernetes' field merging and avoids a field-manager transfer protocol.
 
 ### Add an instance suffix to every namespaced resource
 
@@ -641,8 +683,10 @@ stable and also provides an operational boundary for each addon instance.
 
 ## Infrastructure Needed
 
-No new external infrastructure is required. The design uses existing ManagedClusterAddOn status,
-ManifestWork feedback, CEL conditions, server-side apply, and Kubernetes namespaces.
+No new external infrastructure is required. The design uses ManagedClusterAddOn status,
+ManifestWork apply results, server-side apply, and Kubernetes namespaces. Namespace claims require
+the additive Work API and work-agent support described in KEP 192 even when this namespace option
+is used on its own.
 
 ## References
 

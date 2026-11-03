@@ -21,15 +21,14 @@ declaring that relationship.
 This proposal will define two explicit ownership models. A resource that is identical for every
 instance will be installed once by a prerequisite addon running in Default mode on the hosting
 cluster. A resource that belongs to one hosted instance will have a deterministic, instance-specific
-name and will be acquired through a protected claim phase before any namespaced runtime resources
-are delivered.
+name and will be managed by a claim Work before any namespaced runtime resources are delivered.
 
-The claim phase will never adopt or change a pre-existing resource unless its live ownership
-annotation already identifies the same `ManagedClusterAddOn`. A new resource will first be created
-with `CreateOnly` and protected with `SelectivelyOrphan`. After a live CEL condition verifies its
-owner, it will be promoted to server-side apply under a field manager unique to the addon instance:
-one forced apply at promotion, then non-forcing applies after that. A conflict will be reported on
-the `ManagedClusterAddOn` before a foreign resource is mutated.
+For each claim, the work agent will create an absent resource, reconcile a resource owned by the
+same addon instance, or report a conflict without changing a foreign resource. The addon will
+control the fields declared in its manifest through server-side apply with `force: true`. Other
+controllers may manage fields outside that declaration under Kubernetes' normal merge rules.
+Deletion will use the same live ownership check and will never create a missing resource. This
+requires additional Work API and work-agent support for ownership checks during apply and cleanup.
 
 The complete behavior will be optional. Existing addons and existing hosted deployments will keep
 their current behavior. An addon type will select the feature before its addon instances are
@@ -46,8 +45,8 @@ those instances. No migration will be required.
   every hosted instance on a hosting cluster.
 - **Per-instance resource**: a cluster-scoped object whose lifecycle or content belongs to one
   hosted addon instance.
-- **Claim Work**: a `ManifestWork` that contains hosting-bound cluster-scoped objects and performs
-  ownership acquisition and verification.
+- **Claim Work**: a `ManifestWork` that manages hosting-bound cluster-scoped objects with an expected
+  addon owner.
 - **Runtime Work**: a `ManifestWork` that contains the namespaced resources that run the hosted addon
   agent.
 
@@ -87,8 +86,8 @@ possible. Letting every instance manage the same fixed name creates multiple own
 upgrade and deletion lifecycles.
 
 These two cases need different solutions. Shared objects need one stable owner. Per-instance objects
-need unique identities, exclusive ownership, and an acquisition protocol that does not mutate a
-foreign object while deciding whether it can be managed.
+need unique identities and an ownership check before the work agent creates, updates, or removes
+their resources.
 
 ### Goals
 
@@ -99,12 +98,11 @@ foreign object while deciding whether it can be managed.
 - Require an explicit addon-level opt-in before protected cluster-scoped handling is used.
 - Preserve all existing defaults and behavior when the opt-in is absent.
 - Detect an unannotated or differently owned pre-existing object before changing it.
-- Report acquisition and server-side apply conflicts through a clear
-  `ManagedClusterAddOn` condition.
+- Report foreign owners and apply failures through a clear `ManagedClusterAddOn` condition.
 - Prevent namespaced runtime resources from being created until their cluster-scoped prerequisites
   have been safely acquired.
 - Preserve an already-running runtime while a later claim is pending or conflicting.
-- Define safe deletion and controller-recovery behavior for every acquisition state.
+- Make reconciliation and deletion safe to repeat after a controller restart or failed request.
 - Identify cluster-scoped manifests without guessing a custom resource plural.
 
 ### Non-Goals
@@ -132,8 +130,8 @@ that role.
 
 Per-instance resources will use a deterministic instance identifier in their names. The addon will
 explicitly enable protected cluster-scoped handling. The addon framework will separate
-cluster-scoped claims from namespaced runtime manifests, acquire every claim without changing any
-pre-existing object, verify live ownership, and only then deliver the runtime.
+cluster-scoped claims from namespaced runtime manifests and wait until the work agent has safely
+applied every claim before delivering the runtime.
 
 ### User Stories
 
@@ -166,31 +164,31 @@ server-side apply field manager. The ownership annotation will still contain the
 `<target-managed-cluster>/<addon-name>` identity, so ownership will not be inferred from the suffix
 alone.
 
-**An identical pre-existing object could be rejected.** This is deliberate. Comparing content does
-not prove ownership and leaves a race between comparison and mutation. `CreateOnly` plus live
-annotation verification will reject both an unannotated resource and a resource annotated for
-another instance. The framework will not automatically adopt either one.
+**An identical pre-existing object could be rejected.** Comparing content does not prove ownership.
+An unannotated resource or one annotated for another instance will be left unchanged, even if its
+content matches the manifest.
 
 **Claim reconciliation adds time before first deployment.** The runtime will wait for a round trip in
-which the work agent creates or observes each claim and reports the live ownership condition. This
-delay is bounded by normal `ManifestWork` reconciliation and is preferable to deploying a runtime
-whose RBAC or other cluster dependency is unsafe.
+which the work agent applies each claim and reports its result. This delay is bounded by normal
+`ManifestWork` reconciliation and keeps a runtime from starting before its prerequisites are ready.
 
-**A claim can become conflicting after the runtime has started.** Non-forcing server-side apply will
-surface field ownership conflicts. The controller will leave existing runtime Works in place while
-reporting the conflict. It will not roll back or delete a running instance merely because a later
-claim revision cannot be applied.
+**Another controller can edit a field declared by the addon.** The next reconcile will restore the
+addon's desired value. Authors must omit fields they expect another controller to manage. Kubernetes
+schema merge rules determine the ownership unit; an atomic list or map is managed as a whole.
+
+**An object can change between a read and a write.** The work agent will check the live owner before
+each mutation and use the UID and resourceVersion from that read to protect the write. A conflict
+requires a fresh read and another ownership check. These values stay local to the agent.
 
 **An incorrect resource identifier could make deletion unsafe.** The framework will use an explicit
 authoritative mapping for the supported built-in kinds. Every other empty-namespace hosting manifest
 will require one exact `ManifestConfig` declaration with a non-wildcard resource. Reconciliation will
 fail before creating a Work when that declaration is absent or ambiguous.
 
-**A deletion can begin between acquisition and promotion.** A claim created under `CreateOnly` is
-temporarily orphaned, so deleting its Work immediately could leak it. Cleanup will wait for a
-current-generation live ownership result. A claim verified as owned will be promoted to normal Work
-ownership before Work deletion; a foreign claim will remain orphaned. A terminating Work that can no
-longer be updated will use a bounded recovery Work to obtain the same live observation.
+**An addon can be deleted before its claims are applied.** The work agent's finalizer will inspect
+the resources already tracked by the Work and check their live ownership. Cleanup will not require
+the desired spec to apply successfully. Missing resources are already cleaned up, and foreign
+resources will be preserved. A controller restart will repeat the same checks.
 
 **The ownership annotation can be forged by a cluster administrator.** The annotation is an
 ownership coordination signal, not a security boundary against users with cluster-wide write
@@ -244,8 +242,7 @@ metadata:
   name: example-addon-agent-{{ .HostedInstanceID }}
 ```
 
-The instance identifier is a naming primitive, not an ownership proof. The claim protocol below will
-provide ownership proof.
+The instance identifier is a naming primitive. The work agent will check the live owner separately.
 
 ### Explicit opt-in and immutability
 
@@ -322,9 +319,9 @@ deterministic instance identity used by the manifest renderer. Wildcards will no
 claim or deletion decisions. Zero matches or multiple matches will stop reconciliation and report a
 configuration error before any claim Work is created.
 
-The framework will control the update strategy, ownership condition, and temporary deletion rule for
-claim manifests. Other compatible feedback requested by the addon may be merged, but an addon-
-supplied update strategy will not weaken the claim protocol.
+The framework will set the ownership declaration and update strategy for claim manifests. Compatible
+feedback and an intentional orphan policy may be merged from the addon, but addon-supplied settings
+will not bypass ownership checks.
 
 ### Claim and runtime Works
 
@@ -339,7 +336,7 @@ Hosted manifests will be partitioned by destination and scope:
                  |                                 |
             claim Works                        runtime Works
                  |                                 |
-     acquire -> verify -> promote        held until every claim is ready
+       check owner and reconcile         held until every claim is applied
 ```
 
 Claim Works will contain only hosting-bound cluster-scoped resources. Runtime Works will contain only
@@ -350,11 +347,13 @@ phases cannot overwrite each other.
 The addon manager will persist the hosted manifest cleanup finalizer before creating the first claim
 Work. It will not remove that finalizer merely because a Work delete request has been issued; every
 claim and runtime Work protected by the finalizer must actually disappear first. This closes the
-deletion race between initial acquisition and lifecycle protection.
+deletion race between the first hosting Work and lifecycle protection.
 
 If the addon uses an instance-specific hosting namespace, the generated `Namespace` will itself be a
 cluster-scoped claim. Namespaced Deployments, ServiceAccounts, Roles, RoleBindings, Secrets, and
 hooks will use that hosting namespace and will remain in runtime Works.
+The generated Namespace will use the same ownership checks and reconciliation rules whether or not
+`HostedClusterScopedResourcesEnabled` is also selected.
 
 ### Ownership identity
 
@@ -372,157 +371,110 @@ matches. A nonempty chart-supplied value for another instance will be rejected b
 created. An annotation matching another instance, or no annotation on the live object, will mean
 that the live object is foreign.
 
-### Two-phase claim acquisition
+### Required Work support
 
-Each claim will move through the following states. State decisions will be based on the live object
-feedback for the current Work generation, not on the desired manifest alone.
+The Work API needs an additive per-manifest ownership declaration carrying the expected
+`hosting-addon` annotation value. The framework will supply it from the addon instance identity.
+The work agent will enforce that owner before applying a manifest, adding Work ownership, or
+deleting a resource. It will retain the expected owner in AppliedManifestWork so finalization can
+continue after the hub-side Work disappears.
 
-#### 1. Acquire without adoption
+Before enabling writes in a claim Work, the framework will submit it as `ReadOnly` with
+`SelectivelyOrphan`. A supporting agent will report `HostingResourceClaimSupported=True` for that
+Work generation without changing any resource. The framework will then select the steady-state SSA
+strategy and intended deletion policy. If support is absent, the Work will remain read-only and no
+runtime will be delivered. This check establishes agent support before any resource is changed.
 
-Until ownership is proven, the claim's `ManifestConfigOption` will use:
+The existing Work settings alone do not provide these ownership checks. The new declaration and
+supporting agent are required before the framework can send a writable claim. Existing
+AppliedManifestWork resource tracking remains in use.
 
-```yaml
-updateStrategy:
-  type: CreateOnly
-```
+### Reconciliation
 
-The Work will also use `SelectivelyOrphan` for every acquiring resource. Together these settings
-will provide these outcomes:
+Each reconcile will read the live resource and make one decision:
 
-- If the object is absent, the work agent may create the desired object with the expected ownership
-  annotation.
-- If the object already exists, `CreateOnly` will not update its annotation, fields, or spec.
-- A pre-existing object will not be attached to the claim Work merely because its GVR and name
-  match.
-- Deleting the Work while ownership remains foreign will not delete that object.
+| Live resource | Action |
+|---|---|
+| Absent | Create it with the expected owner annotation and the owner reference required by the Work's deletion policy. |
+| Owner matches this addon instance | Ensure Work ownership and apply the addon's desired fields. |
+| Owner is missing or belongs to another instance | Leave it unchanged and report `HostingResourceConflict`. |
 
-`SelectivelyOrphan` is what keeps a pre-existing object unattached: `CreateOnly` on its own would still
-add the Work's owner reference to an existing object.
+Creation will use a create request so an object appearing at the same name cannot be overwritten.
+An AlreadyExists response requires another read and the same ownership check. A foreign resource
+will not gain a Work owner reference or be recorded as owned by this Work.
 
-The temporary orphan rule is part of acquisition safety, not the addon's requested steady-state
-deletion policy.
+For an existing owned resource, the work agent will check the live owner before each write and use
+the UID and resourceVersion from that read as concurrency checks. A conflict requires a fresh read;
+it will not authorize an unconditional retry. These checks remain local to the agent.
 
-#### 2. Verify the live owner
-
-The claim config will add a CEL condition named `HostingResourceOwned`. Its expression will require
-the live object's annotation to equal the expected instance identity. A JSON path feedback rule will
-also return the live annotation value for diagnostics.
-
-The controller will only accept an ownership result when all of these are current:
-
-- the claim Work has `Applied=True`;
-- the Work condition observes the Work's current generation;
-- the manifest has a `HostingResourceOwned` condition for the current generation; and
-- that condition is `True`.
-
-An ownership condition of `False` will be treated as a conflict even if the Work's aggregate
-`Applied` condition is `True`. The controller will set:
-
-```yaml
-type: HostingManifestApplied
-status: "False"
-reason: HostingResourceConflict
-```
-
-The message will identify the claim Work, resource kind and name, expected owner, and observed owner
-or missing annotation. No runtime Work will be created for a new instance in this state.
-
-#### 3. Promote verified ownership
-
-After the live ownership condition is `True`, the claim will be promoted to this steady-state strategy:
+Once ownership is established, the Work will use:
 
 ```yaml
 updateStrategy:
   type: ServerSideApply
   serverSideApply:
-    force: false
+    force: true
     fieldManager: work-agent-<deterministic full-digest suffix for this addon instance>
 ```
 
-The field manager will be stable and unique to the `ManagedClusterAddOn` namespace and name.
-ManifestWork requires it to start with `work-agent`.
+The field manager will be stable for the addon instance and use ManifestWork's required
+`work-agent` prefix. The addon controls the fields declared in its manifest. If another controller
+changes one of those fields, the next reconcile will restore the desired value. Fields outside
+that declaration will follow normal SSA ownership and merge rules. For example, another controller
+may maintain an annotation key that the addon does not declare. An atomic list or map is one
+management unit, so its contents cannot be divided between controllers.
 
-A resource created during acquisition is owned by the work agent's create-time field manager, so a
-non-forcing apply under the per-instance field manager would conflict on every field it changes.
-Promotion will therefore take two steps:
+The agent will establish Work ownership independently of whether the desired spec can be applied,
+and track the owned resource in the existing AppliedManifestWork status. A later validation failure
+will therefore not prevent cleanup. Intentional orphan policies will continue to omit Work ownership.
 
-1. Set `force: true` with the per-instance field manager and wait for `Applied=True` on that Work
-   generation.
-2. Set `force: false` and wait for `Applied=True` again.
+After a restart the agent will read the resource and repeat the same decision. While the Work is
+active, a missing resource can be created again.
 
-If the controller restarts after step 1, it will complete step 2, so a claim Work never stays at
-`force: true`. Every apply after promotion will use `force: false`, and the framework will not take
-fields from another manager to make a later claim revision succeed.
+### Runtime gating and failures
 
-The forced apply takes every conflicting field in the applied manifest, from any manager. An edit
-made by someone else between creation and promotion that leaves the ownership annotation unchanged
-will be overwritten; the verified annotation is what is accepted as proof that the object belongs to
-this instance. A work agent change that lets `CreateOnly` create the object through server-side apply
-with the per-instance field manager would avoid the forced apply entirely.
+The framework will create the initial runtime Works only when every claim Work is in its writable
+configuration and reports `Applied=True` and `HostingResourceClaimSupported=True` for its current
+generation. The supporting agent's apply result includes the ownership check.
 
-The temporary acquisition orphan rule will be removed for the verified object so normal Work
-ownership can manage its lifecycle. An intentional addon deletion policy that already requires the
-resource to be orphaned will remain in place.
+If an instance already has runtime Works and a later claim revision is pending or fails, those
+runtime Works will remain unchanged. The framework will withhold the new runtime revision and
+report the blocked claim through `HostingManifestApplied`.
 
-Promotion will be complete when, after step 2, the current Work generation reports `Applied=True` and
-the live Work contains the exact non-forcing strategy, expected field manager, and expected orphan
-state. It will compare only these controlled claim fields rather than the entire desired and stored
-Work, because API defaulting may add unrelated fields.
+A missing or different owner will use `HostingResourceConflict`, with the resource identity and
+expected and observed owners in the message. Invalid desired manifests and other API failures will
+retain the general apply-failure reason. Changes by another manager to the addon's declared fields
+will be reconciled, rather than reported as ownership conflicts.
 
-### Runtime gating and steady-state conflicts
+### Deletion
 
-Runtime Works for a new instance will be created only after every desired claim Work has completed
-promotion for its current generation. A pending ownership observation, an unrecognized custom GVR,
-a foreign owner, an apply failure, or an SSA conflict will keep the initial runtime gated.
+The hub will delete runtime Works first, then claim Works, and wait for their actual disappearance.
+The work-agent finalizer will use the resource identities and UIDs already tracked by
+AppliedManifestWork and read each live resource:
 
-If an instance already has runtime Works and a later desired claim revision becomes pending or
-conflicting, those existing runtime Works will remain unchanged. The controller will not create the
-new runtime revision, but it will also not delete a working runtime as a side effect. The
-`HostingManifestApplied` condition will expose the blocked claim until it is resolved.
+| Live resource | Action |
+|---|---|
+| Absent | Cleanup is complete. |
+| Tracked UID and addon owner match | Remove it according to the Work's deletion policy, unless it is intentionally orphaned. |
+| UID changed, or owner is missing or different | Preserve it. Remove only this Work's owner reference if one remains. |
 
-Non-forcing SSA conflicts will use the same `HostingResourceConflict` reason and will preserve the
-manifest-level Work error in the condition message. Other claim application failures will retain the
-general manifest-apply failure reason.
+Owner-reference changes will use the live object's concurrency checks. Resource deletion will use
+the tracked UID as a precondition, so a replacement at the same name cannot be removed after a
+stale read. A conflict requires another read and the same checks.
 
-### Deletion and recovery
+Finalization will only clean up tracked resources. It can do so even when the desired update was
+invalid or never reached `Applied=True`, and will never create a missing object. A restart repeats
+the same checks. The finalizer will remain until every tracked resource has been removed, preserved
+under the orphan policy, or found absent.
 
-Claim cleanup must distinguish an object created for this instance from a pre-existing foreign
-object. A Work spec alone is insufficient because deletion can begin before acquisition has been
-promoted.
+The addon manager will keep its cleanup finalizer until the protected Works are gone. The absence
+of the target ManagedCluster will not bypass cross-namespace cleanup.
 
-Before deleting a claim Work, the controller will prepare and observe a safe deletion shape for each
-manifest:
-
-1. If current-generation live feedback says `HostingResourceOwned=True`, the controller will ensure
-   that the object has been promoted (both steps above) and has normal Work ownership. Normal Work
-   cleanup may then delete it, unless the addon's intentional deletion policy says to orphan it.
-2. If current-generation live feedback says `HostingResourceOwned=False`, the controller will keep
-   `CreateOnly` and `SelectivelyOrphan`. Deleting the Work will leave the foreign object untouched.
-3. If no current ownership result exists, the controller will keep the Work and wait. It will not
-   guess based on the desired annotation or an older generation.
-
-This ordering will cover the race in which the work agent creates an absent object during
-acquisition, then the `ManagedClusterAddOn` is deleted before the next promotion reconcile. The live
-condition will identify the newly created object as owned, cleanup will promote it, and ordinary Work
-deletion will remove it rather than leak it.
-
-A Work that already has a deletion timestamp cannot be updated into the safe shape. In that case the
-controller will create one deterministic recovery Work containing the same claims under
-`CreateOnly` and `SelectivelyOrphan`. The recovery Work will re-observe live ownership and drive the
-same three-way decision. A recovery Work will never create another recovery Work, so controller
-restarts or repeated reconciles cannot form an unbounded chain.
-
-Stale claim Works, addon deletion, and hosting-cluster cleanup will all use this same deletion state
-machine. Runtime Works and claim Works will both be included in cleanup, but a foreign claim will
-never be deleted with the Work.
-
-If the hosting `ManagedCluster` is missing, no new live feedback can arrive. In that terminal cleanup
-case, every claim whose ownership is not already proven will be persisted as `CreateOnly` with an
-exact `SelectivelyOrphan` rule. The controller will verify that safe shape on the hub-side Work before
-requesting deletion. The remote object may remain if the hosting cluster returns, but it will not be
-deleted based on an ownership guess. Generic ManifestWork cleanup finalizers will not be
-force-removed; a permanently unavailable work agent can therefore leave a terminating Work that
-requires administrator inspection.
+If the hosting ManagedCluster is missing, the hub cannot obtain a fresh observation. Before
+requesting deletion it will keep any uncertain claim read-only with selective orphaning, preserving
+the earlier safeguard against recreating resources if the agent returns. Agent-side finalization
+will still use the live ownership checks above. Generic Work cleanup finalizers will not be
+force-removed; a permanently unavailable agent may require administrator inspection.
 
 ### Status
 
@@ -531,8 +483,8 @@ The proposed reasons will be:
 
 | Reason | Meaning |
 |---|---|
-| `HostingResourceClaimsPending` | A claim Work, current-generation ownership result, or promotion is still pending. |
-| `HostingResourceConflict` | A live object is unannotated, belongs to another instance, or non-forcing SSA reported a field conflict. |
+| `HostingResourceClaimsPending` | Agent support or a current-generation claim apply result is still pending. |
+| `HostingResourceConflict` | A live object is unannotated or belongs to another instance. |
 | existing manifest apply failure reason | A claim or runtime Work failed for a reason other than ownership conflict. |
 
 The conflict message will include the Work and manifest identity and will preserve the underlying
@@ -567,10 +519,14 @@ properties will limit the authority introduced by this proposal:
 
 - A hosted instance will not manage a shared resource. A separately placed prerequisite addon will
   have the sole lifecycle for that resource.
-- Acquisition will use `CreateOnly`, so checking ownership cannot mutate a pre-existing object.
-- Ownership will be verified from the live object for the current generation.
+- The agent will check live ownership before every apply and cleanup operation.
+- Creation will not overwrite an object that appears after an absence check, and writes will use
+  the current read's UID and resourceVersion checks.
 - The framework will stamp the expected owner instead of trusting a chart-supplied value.
-- Steady-state updates will use non-forcing SSA with one field manager per addon instance.
+- SSA will restore the fields declared by this addon while preserving other controllers' fields
+  according to Kubernetes merge rules.
+- Cleanup will use existing Work resource tracking and will never apply a rejected spec or recreate
+  a missing object.
 - Exact GVR and name declarations will be required when no authoritative built-in mapping exists.
 - A foreign object will remain selectively orphaned during cleanup.
 - Runtime ServiceAccounts will receive only the shared or per-instance RBAC explicitly bound to
@@ -590,23 +546,29 @@ Unit coverage will include:
 - the exact built-in GVK to GVR mapping;
 - rejection of missing, wildcard, mismatched, and ambiguous custom `ManifestConfig` declarations;
 - framework stamping of the expected ownership annotation;
-- `CreateOnly` plus temporary `SelectivelyOrphan` for unverified claims;
-- current-generation CEL ownership results for missing, matching, and foreign annotations;
-- a custom ownership condition of `False` mapping to `HostingResourceConflict` even when the Work is
-  otherwise applied;
-- promotion with one forced apply under the exact per-instance field manager, then non-forcing
-  updates that change the claimed object without a conflict;
-- gating on explicit claim fields without whole-Work semantic equality;
+- read-only support checks that cannot mutate foreign resources on an older agent;
+- the absent, owned, and foreign resource decisions, including AlreadyExists after an absence check;
+- restoration of a declared field changed by another manager and preservation of an undeclared
+  annotation, using normal SSA merge rules;
+- local ownership checks and concurrent deletion, recreation, or update before each write;
 - initial runtime gating and preservation of already-running runtime Works;
-- cleanup of an owned claim, orphaning of a foreign claim, waiting for an unknown claim, and
-  preservation of an intentional orphan policy; and
-- bounded recovery when deletion starts before ownership is observed.
+- finalization of owned, foreign, absent, and replaced resources, including intentional orphaning;
+- repeated cleanup after an invalid desired update or agent restart, without applying the rejected
+  spec or creating a missing object; and
+- conservative cleanup when the hosting cluster disappears.
 
 Integration coverage will use two target managed clusters that share one hosting cluster. It will
 verify that one prerequisite addon owns a shared `ClusterRole`, while two hosted instances create
 different `ClusterRoleBinding` names and subjects. It will also cover an unannotated pre-existing
-binding, a binding owned by another instance, an SSA field conflict, a controller restart during
-acquisition, and deletion immediately after a new claim is created.
+binding, a binding owned by another instance, changes to declared and undeclared fields, and a
+controller restart during apply or deletion. A delete-and-recreate case will replace an object
+between its ownership check and write; a foreign replacement must remain unchanged. An older work
+agent must leave the support-check Work read-only. The generated Namespace will follow the same
+rules whether the cluster-scoped resource option is enabled or disabled.
+
+Deletion coverage will start with an immutable-field update rejected by the API server. Deleting
+the addon must still complete without applying that spec. It will also cover mixed owned, foreign,
+absent, and replaced resources, intentional orphaning, and a restart before cleanup acknowledgement.
 
 End-to-end coverage will create two new opted-in hosted addon instances on one hosting cluster. Both
 agents will reach availability with independent RBAC. Deleting either instance will remove only its
@@ -619,8 +581,8 @@ byte-for-byte unchanged and that the affected `ManagedClusterAddOn` reports
 
 #### Alpha
 
-- The opt-in, deterministic identity, resource classification, claim protocol, runtime gate, status,
-  and deletion recovery contracts are available together.
+- The opt-in, deterministic identity, resource classification, ownership checks, runtime gate,
+  status, and finalization are available together.
 - Unit and integration coverage exercises every ownership and deletion state.
 - One sample hosted addon demonstrates a shared prerequisite `ClusterRole` and per-instance
   `ClusterRoleBinding`.
@@ -650,10 +612,11 @@ renamed or annotated, and existing Works will not be split. New addon instances 
 protected path only when their addon type has selected it before creation and all required
 components support the contract.
 
-The work agent on a hosting cluster must support `CreateOnly`, `SelectivelyOrphan`, CEL condition
-feedback, non-forcing server-side apply, and explicit field managers before a new opted-in instance
-is created there. If those capabilities are unavailable, the claim phase will remain not ready and
-the runtime will not be delivered.
+The work agent must support the ownership declaration during both apply and finalization. The
+framework will require `HostingResourceClaimSupported` from the initial read-only support check
+before selecting a writable strategy. Without it, claims will remain read-only and runtime will
+not be delivered. The support check, owned-field SSA, orphan policy, and finalization must remain
+supported for the instance's complete lifetime.
 
 **Downgrade:** Deployments that have not selected the option will be safe to downgrade because their
 behavior and stored objects are unchanged. An active opted-in instance will require controller and
@@ -679,10 +642,14 @@ deleting any one owner's Work safe for all other owners.
 admission, and mutable fields make complete comparison difficult, and another actor can change the
 object after comparison. This proposal will require a live matching owner annotation instead.
 
-**Use forced server-side apply.** Forced apply would resolve a conflict by taking fields from another
-manager, which violates the requirement to detect incompatibility before changing the existing
-resource. Force is used only for the single promotion apply, on an object whose ownership has already
-been verified.
+**Apply without checking the owner.** SSA field management cannot distinguish a foreign resource
+from one this addon owns. The live owner check must happen before either applying fields or adding
+a Work owner reference. Force is appropriate for the declared fields of an owned resource, but it
+does not authorize adoption of another instance's object.
+
+**Use non-forcing SSA and transfer create-time fields.** This adds a handoff and cleanup protocol
+to preserve third-party edits to fields the addon declares. The addon owns those fields and should
+restore their desired values, so neither the handoff nor direct `managedFields` edits are needed.
 
 **Use one Work and rely on manifest ordering.** `ManifestWork` does not provide the ownership barrier
 needed between cluster-scoped claims and namespaced runtime objects. Splitting the phases gives the
@@ -690,8 +657,8 @@ controller an explicit point at which all live ownership results must be current
 
 **Use only Kubernetes owner references.** An owner reference written while observing an existing
 object would itself be an adoption and mutation. It also would not distinguish an object created
-during acquisition from a foreign object when deletion races with reconciliation. The proposed
-annotation, CreateOnly strategy, live condition, and promotion step make that decision explicit.
+during creation from a foreign object when deletion races with reconciliation. The expected owner
+and a fresh live check let the agent make that decision before every operation.
 
 **Discover every custom GVR from the hosting cluster.** The hub-side addon manager does not have a
 discovery client for every hosting cluster at render time, and discovery would not remove the need
@@ -709,7 +676,10 @@ allows that use case without making protected behavior a default.
 - The shared addon SDK will define the deterministic instance identifier and field manager helpers.
 - The addon framework will provide the opt-in, built-in template value, claim/runtime orchestration,
   validation, status, and cleanup behavior.
-- The existing `ManifestWork` API capabilities will be reused without a new Work API version.
+- The Work API needs an additive per-manifest ownership declaration. The work agent needs support
+  reporting and ownership checks during apply and finalization. Namespace claims in KEP 191 use
+  the same behavior. Existing SSA and AppliedManifestWork tracking will be reused without a new
+  Work API version, a field ownership handoff, or a recovery Work.
 
 ## References
 
