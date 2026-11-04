@@ -281,7 +281,7 @@ spec:
         workloadAPISocket: unix:///spiffe-workload-api/spire-agent.sock
   serverConfiguration:
     endpointsExposure:
-    - protocol: grpc
+    - protocol: grpc-spiffe  # the SPIFFE listener; see gRPC server below
       grpc:
         type: loadBalancer   # must pass TLS through; see Risks
 ```
@@ -329,12 +329,20 @@ local SPIRE agent's Workload API socket into the pod.
 CSI volume and fetches its own SVID. In hosted modes the Deployments still go to the
 Klusterlet-named namespace on the management cluster.
 
+The no-key-material rule covers every hub credential: agent and add-on identities toward the hub
+and the hub gRPC server's own identity. In `Hosted` and `SingletonHosted` modes the operator still
+derives managed-cluster kubeconfig Secrets from the user-provided `external-managed-kubeconfig`,
+exactly as today. Those Secrets authenticate to the managed cluster, not the hub, and stay out of
+scope until Open Question 5 is resolved.
+
 **A label so SPIRE can tell the agents apart.** OCM does not create SPIRE registration entries;
 the platform does. Entries pick pods by properties such as namespace and ServiceAccount. That is
 not enough here: the singleton agent and the default-mode work agent both use the ServiceAccount
 `<klusterlet>-work-sa`. So every agent pod gets a label, `open-cluster-management.io/spiffe-role`,
-with the value `registration`, `work` or `klusterlet`. For example, with the SPIRE controller
-manager:
+with the value `registration`, `work` or `klusterlet`. A label alone is not enough either, because
+anyone who can create a pod in the namespace can set it. Entries must therefore select on the
+namespace, the ServiceAccount and the role label together. For example, with the SPIRE controller
+manager, for the work agent of a Klusterlet named `klusterlet` in `Default` mode:
 
 ```yaml
 apiVersion: spire.spiffe.io/v1alpha1
@@ -349,7 +357,16 @@ spec:
   podSelector:
     matchLabels:
       open-cluster-management.io/spiffe-role: work
+  workloadSelectorTemplates:
+  - "k8s:sa:klusterlet-work-sa"   # SPIRE also checks the pod's ServiceAccount
 ```
+
+The platform must also make sure that only the Klusterlet operator can create pods, or change their
+labels or ServiceAccount, in the agent namespaces (`open-cluster-management-agent`, and the
+Klusterlet-named namespaces on a management cluster). Namespace RBAC that grants pod create and
+update only to the operator does this. A ValidatingAdmissionPolicy can add a second check that a
+pod with a given `spiffe-role` uses the matching ServiceAccount. The same applies to add-on agent
+namespaces.
 
 #### sdk-go
 
@@ -364,9 +381,14 @@ sdk-go holds the shared gRPC server and client code, so most of the SPIFFE logic
   SVID expires.
 - **Server TLS** (`pkg/server/grpc`). The server builds its TLS settings from the local Workload API
   (go-spiffe `workloadapi.X509Source` and `tlsconfig.MTLSServerConfig`) instead of certificate
-  files. A stream interceptor closes a connection when the client's SVID expires. For example, if
-  an agent connects at 10:40 with an SVID valid until 11:00, the hub closes that connection at
-  11:00 and the agent reconnects with its newer SVID.
+  files. The server enforces SVID expiry on the connection, not the stream. A gRPC
+  `TransportCredentials` wrapper around the SPIFFE TLS credentials records the peer's SPIFFE ID and
+  SVID expiry after each handshake. It registers the underlying `net.Conn` in a connection registry
+  and arms a timer that closes the `net.Conn` when the SVID expires. That ends the HTTP/2 connection
+  and every stream and unary call on it. For example, if an agent connects at 10:40 with an SVID
+  valid until 11:00, the hub closes that connection at 11:00. The agent then opens a new connection,
+  with a new handshake, using its newer SVID. As a second check, unary and stream interceptors
+  reject any RPC whose peer SVID has already expired.
 - **Client TLS** (`pkg/cloudevents/generic/options/grpc`). A client option dials the hub with the
   agent's SVID and accepts only the configured hub ID:
   `tlsconfig.MTLSClientConfig(source, source, tlsconfig.AuthorizeID(hubSPIFFEID))`. A server that
@@ -389,10 +411,23 @@ sdk-go holds the shared gRPC server and client code, so most of the SPIFFE logic
   `spiffe://ocm-hub.example.org/ocm/cluster/cluster1/addon/my-addon/agent/my-addon-agent`, but a
   custom user such as `my-team-bot` cannot, so the add-on gets a `RegistrationApplied=False`
   condition.
-- **gRPC server** (`pkg/server/grpc`). In `spiffe` mode it accepts only the SPIFFE authenticator
-  (not tokens or OCM-signed certificates) and does not offer the CSR and token-request services.
-  It watches `ManagedCluster` and `ManagedClusterAddOn` and closes connections right away when a
-  cluster is denied or deleted, or an add-on is disabled.
+- **gRPC server** (`pkg/server/grpc`). The `spiffe` driver gets its own listener, on its own port
+  and Service (`cluster-manager-grpc-server-spiffe`), exposed through an `endpointsExposure` entry
+  with `protocol: grpc-spiffe`. That listener uses only the SPIFFE TLS credentials and the SPIFFE
+  authenticator (no tokens, no OCM-signed certificates) and does not offer the CSR and
+  token-request services.
+  - When `spiffe` is the only driver, only this listener runs, and the operator creates no signer,
+    serving certificate or bootstrap token.
+  - When `spiffe` is listed with `grpc` for migration, the existing `grpc` listener keeps running
+    unchanged on its current port, with its current authentication and its CSR and token-request
+    services. Agents that have not migrated keep working.
+  - Both listeners share the same CloudEvents services and authorizer, so a cluster sees the same
+    resources whichever one it uses. When `grpc` is removed from `registrationDrivers`, its
+    listener and its Secrets are removed.
+
+  The server watches `ManagedCluster` and `ManagedClusterAddOn`. When a cluster is denied or
+  deleted, or an add-on is disabled, it closes the matching connections right away through the
+  connection registry described under sdk-go.
 - **Operators** (`pkg/operator`). Render the SPIFFE version of the gRPC server Deployment and of
   each agent Deployment, for all four install modes.
 - **Agents.** The registration agent does not start its Secret-based hub-kubeconfig controller.
@@ -429,8 +464,8 @@ clusteradm addon enable --names my-addon --clusters cluster1
 If SPIRE issues `.../ocm/cluster/cluster1/...` to a pod that is not one of cluster1's agents,
 that pod can act as cluster1. Example: a careless registration entry that matches any pod with the
 `work` label on any cluster.
-*Mitigation:* the platform must tie each cluster's entries to that cluster's SPIRE agents (or use
-one trust domain per cluster). The hub also checks that every request is about the cluster named
+*Mitigation:* the platform must tie each cluster's entries to that cluster's SPIRE agents, and select
+on namespace, ServiceAccount and role label (see Operators). The hub also checks that every request is about the cluster named
 in the SVID, so an agent of cluster2 can never change cluster1's resources, even with a valid
 SVID. This is documented as a deployment requirement.
 
@@ -508,13 +543,17 @@ deployments.
 ### Test Plan
 
 - **Unit tests.** SPIFFE ID parsing and mapping for every ID form (valid and invalid paths, wrong
-  trust domain, cluster and add-on mismatch), the SPIFFE authenticator, stream cancellation at SVID
-  expiry, connection shutdown on cluster deny or delete and on add-on disable, and operator
+  trust domain, cluster and add-on mismatch), the SPIFFE authenticator, connection closure at SVID
+  expiry (including that no further unary or stream RPC succeeds on that connection), connection
+  shutdown on cluster deny or delete and on add-on disable, and operator
   rendering of the SPIFFE Deployments for each install mode.
 - **Integration tests.** envtest plus an in-process fake Workload API that issues SVIDs from a
   test CA with short TTLs. Cover register, accept, rotation and reconnect, deny, delete, add-on
-  enable, rotation and disable, and the checks that no Secret or ConfigMap with key material is
-  created.
+  enable, rotation and disable, and the checks that no Secret or ConfigMap with hub credentials or
+  key material is created on the hub, managed or management cluster. The hosted-mode
+  managed-cluster kubeconfig Secrets are excluded until Open Question 5 is resolved.
+  Also cover `spiffe` and `grpc` listed together: a `grpc` agent and a `spiffe` agent both work,
+  and one cluster migrates from one to the other.
 - **E2E tests.** kind clusters with SPIRE installed from the SPIFFE Helm charts, run for each of
   `Default`, `Singleton`, `Hosted` and `SingletonHosted`: join, accept, ManifestWork apply and
   status, add-on enable and status sync, SVID rotation under load, and revocation of a cluster
@@ -533,7 +572,8 @@ deployments.
 
 - The driver is opt-in. Clusters that do not set `authType: spiffe` are unaffected.
 - The hub can enable `spiffe` alongside existing drivers in `registrationDrivers`, so clusters
-  move one at a time.
+  move one at a time. The `spiffe` listener runs next to the existing `grpc` listener (see the gRPC
+  server under ocm), so agents that have not migrated keep their current endpoint and credentials.
 - Because the OCM user and group names are the same as with the `csr` and `grpc` drivers and the
   add-on framework defaults, an existing cluster keeps its ManagedCluster, namespace,
   ManifestWorks, add-ons and RBAC when its Klusterlet switches to `spiffe`. The operator deletes
