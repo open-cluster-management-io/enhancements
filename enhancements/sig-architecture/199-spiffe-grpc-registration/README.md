@@ -279,6 +279,9 @@ spec:
         serverSPIFFEID: spiffe://ocm-hub.example.org/ocm/hub/grpc-server
         # Optional. Default: unix:///spiffe-workload-api/spire-agent.sock
         workloadAPISocket: unix:///spiffe-workload-api/spire-agent.sock
+        # Optional. Default: 24h. Upper bound used by the delete guard when a
+        # cluster has no recorded SVID lifetime; see "Deleting a cluster".
+        maxSVIDLifetime: 24h
   serverConfiguration:
     endpointsExposure:
     - protocol: grpc-spiffe  # the SPIFFE listener; see gRPC server below
@@ -378,12 +381,30 @@ on a management cluster):
   owns, and Pods only by the ReplicaSet controller, for such a ReplicaSet. So every Pod traces back
   to an operator-owned Deployment.
 - StatefulSets, DaemonSets, Jobs and CronJobs are refused.
-- A Pod's `spiffe-role` label must match its ServiceAccount (`work` with `<klusterlet>-work-sa`,
-  and so on), and neither may change after creation.
+- A Pod's `spiffe-role` label must match its ServiceAccount, and neither may change after
+  creation. These are the only allowed pairs, for a Klusterlet named `<klusterlet>`:
+
+  | Install mode | `spiffe-role` | ServiceAccount |
+  | --- | --- | --- |
+  | `Default`, `Hosted` | `registration` | `<klusterlet>-registration-sa` |
+  | `Default`, `Hosted` | `work` | `<klusterlet>-work-sa` |
+  | `Singleton`, `SingletonHosted` | `klusterlet` | `<klusterlet>-work-sa` |
+
+  The singleton agent reuses `<klusterlet>-work-sa`, so the label is what tells it apart from a
+  work agent. A pod with `<klusterlet>-work-sa` and any other role label is refused.
 
 Namespace RBAC that grants these permissions only to the operator is the first layer; the policy
 holds even if RBAC is later widened by mistake. Add-on agent namespaces get the same policy, with
 the work agent, which applies the add-on's manifests, as the allowed creator of its Deployments.
+
+**The policy is required, not optional.** ValidatingAdmissionPolicy is GA from Kubernetes 1.30,
+so `spiffe` mode needs Kubernetes 1.30 or later on every cluster that runs OCM agents: the managed
+cluster, or the management cluster in hosted modes. Before it deploys any agent, the Klusterlet
+operator checks that the `admissionregistration.k8s.io/v1` ValidatingAdmissionPolicy API is served
+and that its policy and binding exist. If either check fails, it deploys no agent and sets a
+`Degraded` condition on the Klusterlet that says why. It keeps checking, and if the policy or
+binding is later removed, it scales the agents to zero until they are back. So without the policy
+there is no agent pod, and no agent SVID to steal.
 
 #### sdk-go
 
@@ -463,10 +484,16 @@ sdk-go holds the shared gRPC server and client code, so most of the SPIFFE logic
 - **Deleting a cluster** (`pkg/registration/hub`). Closing connections does not cancel an SVID
   that is still valid. Without a guard, an agent whose cluster was just deleted could reconnect and
   use its pre-acceptance permission to create the `ManagedCluster` again. To prevent this:
-  - When an agent of cluster `c1` completes a handshake, the hub records the longest SVID lifetime
-    (expiry minus issue time) it has seen for `c1` in an annotation on the `ManagedCluster`, for
-    example `open-cluster-management.io/spiffe-max-svid-lifetime: "1h"`. It writes only when the
-    value grows, so normally once.
+  - The hub records the longest SVID lifetime (expiry minus issue time) it has seen for `c1` in an
+    annotation on the `ManagedCluster`, for example
+    `open-cluster-management.io/spiffe-max-svid-lifetime: "1h"`. It writes it in the same request
+    that creates the `ManagedCluster`, using the lifetime of the SVID that made the create call,
+    so the value exists from the first moment. After that, it updates the annotation on a later
+    handshake only if the lifetime grows, so normally never.
+  - If the annotation is missing anyway, for example because someone removed it, the hub uses
+    `spiffe.maxSVIDLifetime` from the `ClusterManager` instead (default `24h`). That value must be
+    at least as long as the longest SVID TTL SPIRE issues to OCM agents. Missing data therefore
+    means a longer wait, never a shorter one.
   - In `spiffe` mode each `ManagedCluster` gets the finalizer
     `open-cluster-management.io/spiffe-revocation`. When the cluster is deleted, the hub keeps the
     finalizer until the deletion time plus the recorded lifetime has passed. Every SVID issued
@@ -615,7 +642,14 @@ deployments.
   trust domain, cluster and add-on mismatch), the SPIFFE authenticator, connection closure at SVID
   expiry (including that no further unary or stream RPC succeeds on that connection), connection
   shutdown on cluster deny or delete and on add-on disable, and operator
-  rendering of the SPIFFE Deployments for each install mode.
+  rendering of the SPIFFE Deployments for each install mode. Also cover the lifetime annotation
+  being written with the first create, and the `maxSVIDLifetime` fallback when it is missing.
+- **Admission policy tests.** For each of `Default`, `Singleton`, `Hosted` and `SingletonHosted`,
+  check that the allowed role and ServiceAccount pairs are accepted, that every other pair is
+  refused (for example `klusterlet` with `<klusterlet>-registration-sa`, or a `work` pod when the
+  Klusterlet runs in `Singleton` mode), and that Jobs and Deployments not created by the operator are refused. Also check
+  that the operator deploys no agent, and reports `Degraded`, when the ValidatingAdmissionPolicy
+  API is not served or the policy is missing.
 - **Integration tests.** envtest plus an in-process fake Workload API that issues SVIDs from a
   test CA with short TTLs. Cover register, accept, rotation and reconnect, deny, delete, add-on
   enable, rotation and disable, and the checks that no Secret or ConfigMap with hub credentials or
