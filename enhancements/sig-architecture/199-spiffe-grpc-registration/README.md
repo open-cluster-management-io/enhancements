@@ -361,12 +361,29 @@ spec:
   - "k8s:sa:klusterlet-work-sa"   # SPIRE also checks the pod's ServiceAccount
 ```
 
-The platform must also make sure that only the Klusterlet operator can create pods, or change their
-labels or ServiceAccount, in the agent namespaces (`open-cluster-management-agent`, and the
-Klusterlet-named namespaces on a management cluster). Namespace RBAC that grants pod create and
-update only to the operator does this. A ValidatingAdmissionPolicy can add a second check that a
-pod with a given `spiffe-role` uses the matching ServiceAccount. The same applies to add-on agent
-namespaces.
+**Who may start pods in the agent namespaces.** Selecting on namespace, ServiceAccount and label
+only helps if nobody else can start a pod with that combination. Restricting Pod creation alone is
+not enough: anyone who can create a Deployment, ReplicaSet, StatefulSet, DaemonSet, Job or
+CronJob in the namespace can put the agent's ServiceAccount and `spiffe-role` label in the pod
+template, and a Kubernetes controller then creates the Pod for them. For example, a user allowed
+to create Jobs in `open-cluster-management-agent` could run a Job as `klusterlet-work-sa` with
+`spiffe-role: work` and receive cluster1's work-agent SVID.
+
+So in `spiffe` mode the Klusterlet operator installs a ValidatingAdmissionPolicy and binding that
+cover the agent namespaces (`open-cluster-management-agent`, and the Klusterlet-named namespaces
+on a management cluster):
+
+- Deployments may be created or changed only by the Klusterlet operator's ServiceAccount.
+- ReplicaSets may be created only by the Deployment controller, for a Deployment the operator
+  owns, and Pods only by the ReplicaSet controller, for such a ReplicaSet. So every Pod traces back
+  to an operator-owned Deployment.
+- StatefulSets, DaemonSets, Jobs and CronJobs are refused.
+- A Pod's `spiffe-role` label must match its ServiceAccount (`work` with `<klusterlet>-work-sa`,
+  and so on), and neither may change after creation.
+
+Namespace RBAC that grants these permissions only to the operator is the first layer; the policy
+holds even if RBAC is later widened by mistake. Add-on agent namespaces get the same policy, with
+the work agent, which applies the add-on's manifests, as the allowed creator of its Deployments.
 
 #### sdk-go
 
@@ -375,10 +392,24 @@ sdk-go holds the shared gRPC server and client code, so most of the SPIFFE logic
 - **Server identity check** (`pkg/server/grpc/authn`). A new `SPIFFEAuthenticator` reads the
   client's verified SVID and turns its SPIFFE ID into an OCM user and groups. For example,
   `spiffe://ocm-hub.example.org/ocm/cluster/cluster1/agent/work` becomes user
-  `system:open-cluster-management:cluster1:work` with groups `system:open-cluster-management:cluster1`
-  and `system:open-cluster-management:managed-clusters`. It rejects IDs from another trust domain,
-  or IDs that do not follow the scheme, such as `.../ocm/something-else`. It also notes when the
-  SVID expires.
+  `system:open-cluster-management:cluster1:work` with groups `system:open-cluster-management:cluster1`,
+  `system:open-cluster-management:managed-clusters` and `system:authenticated`. It rejects IDs from
+  another trust domain, or IDs that do not follow the scheme, such as `.../ocm/something-else`. It
+  also notes when the SVID expires.
+
+  Every mapped identity gets `system:authenticated`, as the kube-apiserver gives every
+  authenticated user today. The hub sends exactly these groups in its SubjectAccessReviews, so
+  without it a permission bound to `system:authenticated`, which works for an agent today, would
+  be denied after the switch to `spiffe`.
+- **Picking the right SVID** (`pkg/server/grpc` and `pkg/cloudevents/generic/options/grpc`). The
+  Workload API can return several SVIDs for one pod, for example when the platform also gives
+  every pod a generic identity, and `X509Source` uses the first one by default. Each OCM component
+  therefore opens its source with `workloadapi.WithDefaultX509SVIDPicker` and picks the SVID whose
+  SPIFFE ID it expects: the configured `serverSPIFFEID` for the hub gRPC server, and the ID built
+  from the cluster name and role for an agent (for example
+  `spiffe://ocm-hub.example.org/ocm/cluster/cluster1/agent/work`). If no SVID with that ID is
+  present, the component reports not ready, with the IDs it did receive, instead of presenting
+  another identity.
 - **Server TLS** (`pkg/server/grpc`). The server builds its TLS settings from the local Workload API
   (go-spiffe `workloadapi.X509Source` and `tlsconfig.MTLSServerConfig`) instead of certificate
   files. The server enforces SVID expiry on the connection, not the stream. A gRPC
@@ -410,7 +441,8 @@ sdk-go holds the shared gRPC server and client code, so most of the SPIFFE logic
   `system:open-cluster-management:cluster:cluster1:addon:my-addon:agent:my-addon-agent` matches
   `spiffe://ocm-hub.example.org/ocm/cluster/cluster1/addon/my-addon/agent/my-addon-agent`, but a
   custom user such as `my-team-bot` cannot, so the add-on gets a `RegistrationApplied=False`
-  condition.
+  condition. The comparison uses the full mapped identity, including `system:authenticated`, so a
+  default subject that lists that group still matches.
 - **gRPC server** (`pkg/server/grpc`). The `spiffe` driver gets its own listener, on its own port
   and Service (`cluster-manager-grpc-server-spiffe`), exposed through an `endpointsExposure` entry
   with `protocol: grpc-spiffe`. That listener uses only the SPIFFE TLS credentials and the SPIFFE
@@ -428,6 +460,26 @@ sdk-go holds the shared gRPC server and client code, so most of the SPIFFE logic
   The server watches `ManagedCluster` and `ManagedClusterAddOn`. When a cluster is denied or
   deleted, or an add-on is disabled, it closes the matching connections right away through the
   connection registry described under sdk-go.
+- **Deleting a cluster** (`pkg/registration/hub`). Closing connections does not cancel an SVID
+  that is still valid. Without a guard, an agent whose cluster was just deleted could reconnect and
+  use its pre-acceptance permission to create the `ManagedCluster` again. To prevent this:
+  - When an agent of cluster `c1` completes a handshake, the hub records the longest SVID lifetime
+    (expiry minus issue time) it has seen for `c1` in an annotation on the `ManagedCluster`, for
+    example `open-cluster-management.io/spiffe-max-svid-lifetime: "1h"`. It writes only when the
+    value grows, so normally once.
+  - In `spiffe` mode each `ManagedCluster` gets the finalizer
+    `open-cluster-management.io/spiffe-revocation`. When the cluster is deleted, the hub keeps the
+    finalizer until the deletion time plus the recorded lifetime has passed. Every SVID issued
+    before the deletion has expired by then, including newer ones the agent received but has not
+    yet shown to the hub. While the object is terminating, a create fails because the name still
+    exists, and the authorizer denies every request from the cluster's identities.
+  - Then the finalizer is removed and the object goes away.
+
+  Example: SVIDs live 1 hour and `c1` is deleted at 10:40. Until 11:40 the agent can neither use
+  the hub nor recreate `c1`. After 11:40 it can register again only with an SVID issued after the
+  deletion, which means SPIRE is still issuing it identities. So deleting the cluster on the hub
+  stops it for one SVID lifetime; to keep it out for good, the platform also removes the cluster's
+  SPIRE registration entries during that window.
 - **Operators** (`pkg/operator`). Render the SPIFFE version of the gRPC server Deployment and of
   each agent Deployment, for all four install modes.
 - **Agents.** The registration agent does not start its Secret-based hub-kubeconfig controller.
@@ -465,9 +517,26 @@ If SPIRE issues `.../ocm/cluster/cluster1/...` to a pod that is not one of clust
 that pod can act as cluster1. Example: a careless registration entry that matches any pod with the
 `work` label on any cluster.
 *Mitigation:* the platform must tie each cluster's entries to that cluster's SPIRE agents, and select
-on namespace, ServiceAccount and role label (see Operators). The hub also checks that every request is about the cluster named
-in the SVID, so an agent of cluster2 can never change cluster1's resources, even with a valid
-SVID. This is documented as a deployment requirement.
+on namespace, ServiceAccount and role label (see Operators). The admission policy the Klusterlet
+operator installs makes sure only operator-owned Deployments can start pods with that combination,
+so a user who can create a Job or Deployment in the agent namespace cannot borrow the agent's
+identity. The hub also checks that every request is about the cluster named in the SVID, so an
+agent of cluster2 can never change cluster1's resources, even with a valid SVID. This is
+documented as a deployment requirement.
+
+**A deleted cluster comes back.**
+Example: an admin deletes `ManagedCluster/c1`, but its agent still has an SVID valid for 40
+minutes. It reconnects and creates `c1` again.
+*Mitigation:* the `spiffe-revocation` finalizer keeps `c1` terminating, so it cannot be recreated
+and all its requests are denied, until every SVID issued before the deletion has expired (see
+"Deleting a cluster"). To keep the cluster out for good, the platform also removes its SPIRE
+registration entries.
+
+**An agent presents the wrong SVID.**
+Example: the platform gives every pod a generic SVID as well, and the Workload API lists it first.
+The agent would present that ID and the hub would reject it.
+*Mitigation:* every OCM component picks its SVID by the SPIFFE ID it expects, never by position,
+and reports not ready if that ID is missing.
 
 **In hosted modes, one management cluster runs agents for many clusters.**
 Example: a management cluster runs the Klusterlets for `cluster1` and `cluster2` in namespaces
