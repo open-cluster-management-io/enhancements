@@ -279,8 +279,9 @@ spec:
         serverSPIFFEID: spiffe://ocm-hub.example.org/ocm/hub/grpc-server
         # Optional. Default: unix:///spiffe-workload-api/spire-agent.sock
         workloadAPISocket: unix:///spiffe-workload-api/spire-agent.sock
-        # Optional. Default: 24h. Upper bound used by the delete guard when a
-        # cluster has no recorded SVID lifetime; see "Deleting a cluster".
+        # Optional. Default: 24h. Must be at least the longest SVID TTL SPIRE
+        # issues to OCM agents. The delete guard waits this long; see
+        # "Deleting a cluster".
         maxSVIDLifetime: 24h
   serverConfiguration:
     endpointsExposure:
@@ -394,8 +395,18 @@ on a management cluster):
   work agent. A pod with `<klusterlet>-work-sa` and any other role label is refused.
 
 Namespace RBAC that grants these permissions only to the operator is the first layer; the policy
-holds even if RBAC is later widened by mistake. Add-on agent namespaces get the same policy, with
-the work agent, which applies the add-on's manifests, as the allowed creator of its Deployments.
+holds even if RBAC is later widened by mistake.
+
+Add-on agent namespaces get the same policy, with two differences:
+
+- The allowed creator of Deployments is the work agent, which applies the add-on's manifests from
+  the hub. So every add-on pod traces back to a manifest the hub defined.
+- The table above does not apply. Add-on pods use their own ServiceAccounts and the role label
+  value `addon`. The policy refuses, in an add-on namespace, any pod with a Klusterlet
+  ServiceAccount or with the role `registration`, `work` or `klusterlet`. Example: the agent of
+  `my-addon` runs as `my-addon-agent-sa` with `spiffe-role: addon` and is admitted; a pod in the
+  same namespace with `klusterlet-work-sa` is refused. The add-on's SPIRE entry selects on its
+  namespace, its ServiceAccount and `spiffe-role: addon`.
 
 **The policy is required, not optional.** ValidatingAdmissionPolicy is GA from Kubernetes 1.30,
 so `spiffe` mode needs Kubernetes 1.30 or later on every cluster that runs OCM agents: the managed
@@ -403,8 +414,18 @@ cluster, or the management cluster in hosted modes. Before it deploys any agent,
 operator checks that the `admissionregistration.k8s.io/v1` ValidatingAdmissionPolicy API is served
 and that its policy and binding exist. If either check fails, it deploys no agent and sets a
 `Degraded` condition on the Klusterlet that says why. It keeps checking, and if the policy or
-binding is later removed, it scales the agents to zero until they are back. So without the policy
-there is no agent pod, and no agent SVID to steal.
+binding is later removed, it scales the agents to zero until they are back.
+
+**Accepted gap when the policy is removed.** Scaling to zero stops the real agents, but it does
+not close every hole. The policy and its binding are cluster-scoped, so only cluster-admin (and
+the operator) can delete them. If a cluster-admin deletes them *and* namespace RBAC also lets
+someone else create workloads in an agent namespace, that user can start a pod with the agent's
+ServiceAccount and role label before the operator reacts, and SPIRE gives it an SVID. This needs
+two mistakes at once. The operator watches the policy and binding, so the window is short, until
+its next reconcile. When it sees the removal it also deletes pods in the agent namespaces that are
+not owned by its own Deployments. A pod that got an SVID in that window can still use it until it
+expires, and the hub can stop it sooner only by denying or deleting the cluster. We accept this
+rather than tying SPIRE entries to the policy, because OCM does not manage SPIRE entries.
 
 #### sdk-go
 
@@ -484,28 +505,24 @@ sdk-go holds the shared gRPC server and client code, so most of the SPIFFE logic
 - **Deleting a cluster** (`pkg/registration/hub`). Closing connections does not cancel an SVID
   that is still valid. Without a guard, an agent whose cluster was just deleted could reconnect and
   use its pre-acceptance permission to create the `ManagedCluster` again. To prevent this:
-  - The hub records the longest SVID lifetime (expiry minus issue time) it has seen for `c1` in an
-    annotation on the `ManagedCluster`, for example
-    `open-cluster-management.io/spiffe-max-svid-lifetime: "1h"`. It writes it in the same request
-    that creates the `ManagedCluster`, using the lifetime of the SVID that made the create call,
-    so the value exists from the first moment. After that, it updates the annotation on a later
-    handshake only if the lifetime grows, so normally never.
-  - If the annotation is missing anyway, for example because someone removed it, the hub uses
-    `spiffe.maxSVIDLifetime` from the `ClusterManager` instead (default `24h`). That value must be
-    at least as long as the longest SVID TTL SPIRE issues to OCM agents. Missing data therefore
-    means a longer wait, never a shorter one.
+  - The hub uses one upper bound for every deletion: `spiffe.maxSVIDLifetime` from the
+    `ClusterManager` (default `24h`). It must be at least as long as the longest SVID TTL SPIRE
+    issues to OCM agents. The hub does not try to learn the lifetime from the SVIDs it sees,
+    because an agent can hold a newer, longer-lived SVID that it has not shown to the hub yet, for
+    example after the platform raises the TTL.
   - In `spiffe` mode each `ManagedCluster` gets the finalizer
     `open-cluster-management.io/spiffe-revocation`. When the cluster is deleted, the hub keeps the
-    finalizer until the deletion time plus the recorded lifetime has passed. Every SVID issued
+    finalizer until the deletion time plus `maxSVIDLifetime` has passed. Every SVID issued
     before the deletion has expired by then, including newer ones the agent received but has not
     yet shown to the hub. While the object is terminating, a create fails because the name still
     exists, and the authorizer denies every request from the cluster's identities.
   - Then the finalizer is removed and the object goes away.
 
-  Example: SVIDs live 1 hour and `c1` is deleted at 10:40. Until 11:40 the agent can neither use
-  the hub nor recreate `c1`. After 11:40 it can register again only with an SVID issued after the
-  deletion, which means SPIRE is still issuing it identities. So deleting the cluster on the hub
-  stops it for one SVID lifetime; to keep it out for good, the platform also removes the cluster's
+  Example: SVIDs live 1 hour, `maxSVIDLifetime` is set to `1h`, and `c1` is deleted at 10:40.
+  Until 11:40 the agent can neither use the hub nor recreate `c1`. After 11:40 it can register
+  again only with an SVID issued after the deletion, which means SPIRE is still issuing it
+  identities. With the default `24h`, the wait is longer but just as safe. So deleting the cluster
+  on the hub stops it for `maxSVIDLifetime`; to keep it out for good, the platform also removes the cluster's
   SPIRE registration entries during that window.
 - **Operators** (`pkg/operator`). Render the SPIFFE version of the gRPC server Deployment and of
   each agent Deployment, for all four install modes.
@@ -642,14 +659,17 @@ deployments.
   trust domain, cluster and add-on mismatch), the SPIFFE authenticator, connection closure at SVID
   expiry (including that no further unary or stream RPC succeeds on that connection), connection
   shutdown on cluster deny or delete and on add-on disable, and operator
-  rendering of the SPIFFE Deployments for each install mode. Also cover the lifetime annotation
-  being written with the first create, and the `maxSVIDLifetime` fallback when it is missing.
+  rendering of the SPIFFE Deployments for each install mode. Also cover the delete guard holding
+  the finalizer for `maxSVIDLifetime` after deletion, including when an agent holds a newer SVID
+  with a longer TTL than any SVID the hub has seen.
 - **Admission policy tests.** For each of `Default`, `Singleton`, `Hosted` and `SingletonHosted`,
   check that the allowed role and ServiceAccount pairs are accepted, that every other pair is
   refused (for example `klusterlet` with `<klusterlet>-registration-sa`, or a `work` pod when the
   Klusterlet runs in `Singleton` mode), and that Jobs and Deployments not created by the operator are refused. Also check
   that the operator deploys no agent, and reports `Degraded`, when the ValidatingAdmissionPolicy
-  API is not served or the policy is missing.
+  API is not served or the policy is missing. For add-on namespaces, check that an add-on pod
+  with its own ServiceAccount and `spiffe-role: addon` is accepted when it comes from a Deployment
+  created by the work agent, and that a pod with a Klusterlet ServiceAccount or role is refused.
 - **Integration tests.** envtest plus an in-process fake Workload API that issues SVIDs from a
   test CA with short TTLs. Cover register, accept, rotation and reconnect, deny, delete, add-on
   enable, rotation and disable, and the checks that no Secret or ConfigMap with hub credentials or
