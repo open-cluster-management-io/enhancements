@@ -381,9 +381,9 @@ cover the agent namespaces (`open-cluster-management-agent`, and the Klusterlet-
 on a management cluster):
 
 - Deployments may be created or changed only by the Klusterlet operator's ServiceAccount.
-- ReplicaSets may be created only by the Deployment controller, for a Deployment the operator
-  owns, and Pods only by the ReplicaSet controller, for such a ReplicaSet. So every Pod traces back
-  to an operator-owned Deployment.
+- ReplicaSets may be created only by the Deployment controller, with a Deployment as owner, and
+  Pods only by the ReplicaSet controller, with a ReplicaSet as owner. So every Pod traces back to
+  a Deployment, and only the operator can create Deployments.
 - StatefulSets, DaemonSets, Jobs and CronJobs are refused.
 - A Pod's `spiffe-role` label must match its ServiceAccount, and neither may change after
   creation. These are the only allowed pairs, for a Klusterlet named `<klusterlet>`:
@@ -396,6 +396,19 @@ on a management cluster):
 
   The singleton agent reuses `<klusterlet>-work-sa`, so the label is what tells it apart from a
   work agent. A pod with `<klusterlet>-work-sa` and any other role label is refused.
+
+**How admission checks the chain.** A ValidatingAdmissionPolicy only sees the request in front
+of it: the user making it and the object. When the ReplicaSet controller creates a Pod, the policy
+sees that controller, not whoever created the Deployment, and it cannot look that up. So the
+creator is checked once, at the top of the chain: when a Deployment (or, in add-on namespaces, a
+DaemonSet or StatefulSet) is created or changed, the request comes from the real user, and the
+policy allows only the operator or the work agent. Every step below that is checked by who makes
+the request and the owner kind: a ReplicaSet must come from the Deployment controller
+(`system:serviceaccount:kube-system:deployment-controller`) and be owned by a Deployment, and a
+Pod must come from the matching built-in controller and be owned by a ReplicaSet, DaemonSet or
+StatefulSet. While the policy is in place, nobody else can create the top object, so every pod
+traces back to the operator or the work agent. Workloads created while the policy was missing
+skip that first check; they are handled by the cleanup described below.
 
 Namespace RBAC that grants these permissions only to the operator is the first layer; the policy
 holds even if RBAC is later widened by mistake.
@@ -440,9 +453,11 @@ DaemonSet or Deployment created during the gap would just make new ones. So the 
 every Deployment, ReplicaSet, DaemonSet and StatefulSet in the Klusterlet agent namespaces that it
 does not own, and every pod those leave behind. In add-on namespaces the work agent does the same
 for any of these workloads that is not in an `AppliedManifestWork`, its existing record of what it
-applied. Only then does the operator scale the agents back up. The restored policy also refuses
-any new pod from such a workload, because its creator was not the operator or the work agent. A pod that got an SVID in that window can still use it until it
-expires, and the hub can stop it sooner only by denying or deleting the cluster. We accept this
+applied. Only then does the operator scale the agents back up. The restored policy cannot refuse
+new pods from such a workload by itself, because those pods come from the normal built-in
+controller (see "How admission checks the chain"). So the gap really ends when this cleanup
+finishes, not when the policy is back; the operator runs the cleanup in the same reconcile that
+restores the policy. A pod that got an SVID in that window can still use it until it expires, and the hub can stop it sooner only by denying or deleting the cluster. We accept this
 rather than tying SPIRE entries to the policy, because OCM does not manage SPIRE entries.
 
 #### sdk-go
@@ -704,8 +719,10 @@ deployments.
   DaemonSet or StatefulSet created by the work agent, that the same workloads created by anyone
   else are refused, that Jobs and CronJobs are refused, and that a pod with a Klusterlet
   ServiceAccount or role is refused. Finally, create a DaemonSet while the policy is removed,
-  restore the policy, and check that its new pods are refused and that the operator or work agent
-  deletes it before the agents come back.
+  restore the policy, and check that the operator or work agent deletes the DaemonSet and its pods
+  before the agents come back. Also check that, with the policy in place, a DaemonSet or Deployment
+  created by any other user is refused, and that a ReplicaSet or Pod is refused when the requester
+  is not the matching built-in controller or the owner kind is wrong.
 - **Integration tests.** envtest plus an in-process fake Workload API that issues SVIDs from a
   test CA with short TTLs. Cover register, accept, rotation and reconnect, deny, delete, add-on
   enable, rotation and disable, and the checks that no Secret or ConfigMap with hub credentials or
