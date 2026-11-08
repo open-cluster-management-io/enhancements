@@ -384,6 +384,14 @@ on a management cluster):
 - ReplicaSets may be created only by the Deployment controller, with a Deployment as owner, and
   Pods only by the ReplicaSet controller, with a ReplicaSet as owner. So every Pod traces back to
   a Deployment, and only the operator can create Deployments.
+- After creation, a ReplicaSet's spec may be changed only by the Deployment controller, and its
+  Pod template not at all. The Deployment controller only scales ReplicaSets; for a new template
+  it creates a new ReplicaSet. Without this, someone allowed to update ReplicaSets could change
+  the image, and the ReplicaSet controller would create Pods from it that pass every other check.
+- After creation, nobody may change a Pod's container images or add ephemeral containers (the
+  `pods/ephemeralcontainers` subresource). Kubernetes allows image updates on a running Pod, so
+  without this a user could swap the code inside an agent Pod that already holds an SVID. Status
+  updates, and the label and annotation changes controllers make, are still allowed.
 - StatefulSets, DaemonSets, Jobs and CronJobs are refused.
 - A Pod's `spiffe-role` label must match its ServiceAccount, and neither may change after
   creation. These are the only allowed pairs, for a Klusterlet named `<klusterlet>`:
@@ -411,8 +419,8 @@ traces back to the operator or the work agent. Workloads created while the polic
 skip that first check; they are handled by the cleanup described below.
 
 This needs each built-in controller to run under its own ServiceAccount, which is what
-kube-controller-manager's `--use-service-account-credentials=true` does. kubeadm and the major
-managed services, AKS among them, set it by default. If the controllers share one identity
+kube-controller-manager's `--use-service-account-credentials=true` does. kubeadm sets it by
+default; on managed services the platform must confirm it. If the controllers share one identity
 instead, the policy refuses their ReplicaSets and Pods, so no agent starts and the Klusterlet
 reports `Degraded`. That is safe, but unsupported: `spiffe` mode requires separate controller
 ServiceAccounts.
@@ -736,7 +744,10 @@ deployments.
   and change the image of a DaemonSet the work agent applied. Check that the operator deletes both
   while every agent, the work agent included, is at zero, and that afterwards only the clean
   copy re-applied from the `ManifestWork` exists. Also check that agents do not start, and the
-  Klusterlet reports `Degraded`, when the built-in controllers share one identity. Also check that, with the policy in place, a DaemonSet or Deployment
+  Klusterlet reports `Degraded`, when the built-in controllers share one identity. With the
+  policy in place, check that changing a ReplicaSet's Pod template, changing a Pod's image and
+  adding an ephemeral container are all refused, while a Deployment rollout, ReplicaSet scaling
+  and Pod status updates still work. Also check that, with the policy in place, a DaemonSet or Deployment
   created by any other user is refused, and that a ReplicaSet or Pod is refused when the requester
   is not the matching built-in controller or the owner kind is wrong.
 - **Integration tests.** envtest plus an in-process fake Workload API that issues SVIDs from a
