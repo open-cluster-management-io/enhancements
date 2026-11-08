@@ -410,6 +410,13 @@ StatefulSet. While the policy is in place, nobody else can create the top object
 traces back to the operator or the work agent. Workloads created while the policy was missing
 skip that first check; they are handled by the cleanup described below.
 
+This needs each built-in controller to run under its own ServiceAccount, which is what
+kube-controller-manager's `--use-service-account-credentials=true` does. kubeadm and the major
+managed services, AKS among them, set it by default. If the controllers share one identity
+instead, the policy refuses their ReplicaSets and Pods, so no agent starts and the Klusterlet
+reports `Degraded`. That is safe, but unsupported: `spiffe` mode requires separate controller
+ServiceAccounts.
+
 Namespace RBAC that grants these permissions only to the operator is the first layer; the policy
 holds even if RBAC is later widened by mistake.
 
@@ -436,28 +443,35 @@ operator checks that the `admissionregistration.k8s.io/v1` ValidatingAdmissionPo
 and that its policy and binding exist. If either check fails, it deploys no agent and sets a
 `Degraded` condition on the Klusterlet that says why. The operator installs the policy and
 binding itself, so on every reconcile it also recreates them if they are missing. If they are
-removed, it scales the agents to zero, recreates them, and scales the agents back up only once both
-exist again.
+removed, it runs the recovery steps below before any agent comes back.
 
 **Accepted gap when the policy is removed.** Scaling to zero stops the real agents, but it does
 not close every hole. The policy and its binding are cluster-scoped, so only cluster-admin (and
 the operator) can delete them. If a cluster-admin deletes them *and* namespace RBAC also lets
 someone else create workloads in an agent namespace, that user can start a pod with the agent's
 ServiceAccount and role label before the operator reacts, and SPIRE gives it an SVID. This needs
-two mistakes at once. The window lasts until the policy and binding are back, not just until the
-operator notices: until then anyone allowed by the widened RBAC can keep creating pods. The
-operator watches both and recreates them on its next reconcile, so the window is normally short.
-If recreating fails, for example because something keeps deleting them, the window stays open and
-the Klusterlet stays `Degraded`. Once both are back, deleting stray pods is not enough: a
-DaemonSet or Deployment created during the gap would just make new ones. So the operator deletes
-every Deployment, ReplicaSet, DaemonSet and StatefulSet in the Klusterlet agent namespaces that it
-does not own, and every pod those leave behind. In add-on namespaces the work agent does the same
-for any of these workloads that is not in an `AppliedManifestWork`, its existing record of what it
-applied. Only then does the operator scale the agents back up. The restored policy cannot refuse
-new pods from such a workload by itself, because those pods come from the normal built-in
-controller (see "How admission checks the chain"). So the gap really ends when this cleanup
-finishes, not when the policy is back; the operator runs the cleanup in the same reconcile that
-restores the policy. A pod that got an SVID in that window can still use it until it expires, and the hub can stop it sooner only by denying or deleting the cluster. We accept this
+two mistakes at once.
+
+Recovery runs in the operator, in this order:
+
+1. Scale all agents to zero, including the work agent.
+2. Recreate the policy and binding.
+3. Delete every Deployment, ReplicaSet, DaemonSet, StatefulSet and Pod in the Klusterlet agent
+   namespaces and the add-on namespaces, trusted or not. Someone with widened RBAC could have
+   created new workloads or changed existing ones, and the operator cannot tell a changed
+   workload from a clean one, so it removes them all.
+4. Recreate its own agent Deployments and scale them up. The work agent then re-applies the
+   add-on workloads from their `ManifestWork`s, so every add-on workload comes back as a clean
+   copy of what the hub defined, and passes the restored policy.
+
+The restored policy alone cannot refuse new pods from a workload created during the gap, because
+those pods come from the normal built-in controller (see "How admission checks the chain"). So
+the gap lasts until step 3 finishes, not just until the policy is back. The operator watches the
+policy and binding and runs these steps in one reconcile, so the gap is normally short. If step 2
+fails, for example because something keeps deleting the policy, the agents stay at zero, the gap
+stays open and the Klusterlet stays `Degraded`. Add-ons are briefly down during recovery. A pod
+that got an SVID during the gap can still use it until it expires, and the hub can stop it sooner
+only by denying or deleting the cluster. We accept this
 rather than tying SPIRE entries to the policy, because OCM does not manage SPIRE entries.
 
 #### sdk-go
@@ -718,9 +732,11 @@ deployments.
   with its own ServiceAccount and `spiffe-role: addon` is accepted when it comes from a Deployment,
   DaemonSet or StatefulSet created by the work agent, that the same workloads created by anyone
   else are refused, that Jobs and CronJobs are refused, and that a pod with a Klusterlet
-  ServiceAccount or role is refused. Finally, create a DaemonSet while the policy is removed,
-  restore the policy, and check that the operator or work agent deletes the DaemonSet and its pods
-  before the agents come back. Also check that, with the policy in place, a DaemonSet or Deployment
+  ServiceAccount or role is refused. For recovery, remove the policy, then create a new DaemonSet
+  and change the image of a DaemonSet the work agent applied. Check that the operator deletes both
+  while every agent, the work agent included, is at zero, and that afterwards only the clean
+  copy re-applied from the `ManifestWork` exists. Also check that agents do not start, and the
+  Klusterlet reports `Degraded`, when the built-in controllers share one identity. Also check that, with the policy in place, a DaemonSet or Deployment
   created by any other user is refused, and that a ReplicaSet or Pod is refused when the requester
   is not the matching built-in controller or the owner kind is wrong.
 - **Integration tests.** envtest plus an in-process fake Workload API that issues SVIDs from a
