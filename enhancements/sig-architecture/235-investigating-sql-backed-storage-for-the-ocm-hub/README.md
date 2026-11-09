@@ -164,8 +164,18 @@ presented as measured savings.
 ## Artifacts
 
 The prototype implementations and detailed test results for both
-investigations are available from the authors; links will be added to this
-proposal once the artifacts are published.
+investigations are published as proof-of-technology pull requests against the
+OCM repository. They are records of the investigations, not proposals to
+merge:
+
+- **Aggregated API server investigation** — the POC server with its
+  architecture and implementation specs, the hub API compatibility inventory,
+  and the three-cluster demo with recorded results and object counts:
+  [open-cluster-management-io/ocm#1820](https://github.com/open-cluster-management-io/ocm/pull/1820)
+- **Hosted Kubernetes API with Kine investigation** — the Kine/PostgreSQL
+  hosted hub demo with its implementation and test results, the ManifestWork
+  load simulator, and the Hosted-mode chart configuration it required:
+  [open-cluster-management-io/ocm#1821](https://github.com/open-cluster-management-io/ocm/pull/1821)
 
 ## Related work
 
