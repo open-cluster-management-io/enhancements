@@ -11,6 +11,8 @@
 > **Status note:** Technology demonstration. This proposal records the results
 > of two storage investigations for community discussion; it does not select
 > an architecture or commit to implementation.
+>
+> **Tracking issue:** [#205](https://github.com/open-cluster-management-io/enhancements/issues/205)
 
 ## Summary
 
