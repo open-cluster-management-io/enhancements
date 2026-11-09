@@ -1,0 +1,12 @@
+title: investigating-sql-backed-storage-for-the-ocm-hub
+authors:
+  - "@jnpacker"
+reviewers:
+  - "@mikeshng"
+approvers:
+  - TBD
+creation-date: 2026-11-09
+status: provisional
+see-also:
+  - "/enhancements/sig-architecture/33-hosted-deploy-mode"
+  - "/enhancements/sig-architecture/224-event-based-manifestwork"
