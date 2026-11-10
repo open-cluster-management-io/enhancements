@@ -1,0 +1,145 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 860" width="1200" height="860" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <style>
+      .title { font-size: 20px; font-weight: bold; fill: #1a1a1a; }
+      .mode { font-size: 16px; font-weight: bold; fill: #1a1a1a; }
+      .mode-sub { font-size: 11.5px; fill: #555; }
+      .zone { font-size: 12.5px; font-weight: bold; }
+      .name { font-size: 13px; font-weight: bold; fill: #1a1a1a; }
+      .id { font-size: 9.5px; font-family: "DejaVu Sans Mono", Menlo, Consolas, monospace; fill: #0f6e78; }
+      .detail { font-size: 10.5px; fill: #555; }
+      .note { font-size: 10.5px; fill: #a3461f; }
+      .foot { font-size: 12.5px; fill: #1a1a1a; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="860" fill="#ffffff"/>
+  <text x="600" y="36" text-anchor="middle" class="title">Agent SVIDs in the four Klusterlet install modes</text>
+
+  <!-- ===== Row 1: Default ===== -->
+  <text x="30" y="100" class="mode">Default</text>
+  <text x="30" y="120" class="mode-sub">agents on the managed</text>
+  <text x="30" y="135" class="mode-sub">cluster, one per role</text>
+
+  <rect x="230" y="70" width="950" height="160" rx="10" fill="#f4f8f1" stroke="#3c7a3c" stroke-width="1.5"/>
+  <text x="245" y="92" class="zone" fill="#3c7a3c">Managed cluster c1</text>
+
+  <rect x="245" y="110" width="130" height="80" rx="7" fill="#ffffff" stroke="#777"/>
+  <text x="310" y="142" text-anchor="middle" class="name">SPIRE agent</text>
+  <text x="310" y="160" text-anchor="middle" class="detail">local Workload API</text>
+  <text x="310" y="174" text-anchor="middle" class="detail">for pods on its node</text>
+
+  <rect x="390" y="110" width="250" height="80" rx="7" fill="#ffffff" stroke="#3c7a3c"/>
+  <text x="515" y="134" text-anchor="middle" class="name">Registration agent</text>
+  <text x="515" y="155" text-anchor="middle" class="id">/ocm/cluster/c1/agent/registration</text>
+  <text x="515" y="175" text-anchor="middle" class="detail">ns open-cluster-management-agent</text>
+
+  <rect x="650" y="110" width="250" height="80" rx="7" fill="#ffffff" stroke="#3c7a3c"/>
+  <text x="775" y="134" text-anchor="middle" class="name">Work agent</text>
+  <text x="775" y="155" text-anchor="middle" class="id">/ocm/cluster/c1/agent/work</text>
+  <text x="775" y="175" text-anchor="middle" class="detail">ns open-cluster-management-agent</text>
+
+  <rect x="910" y="110" width="250" height="80" rx="7" fill="#ffffff" stroke="#a3461f"/>
+  <text x="1035" y="134" text-anchor="middle" class="name">Add-on agent a1</text>
+  <text x="1035" y="155" text-anchor="middle" class="id">/ocm/cluster/c1/addon/a1/agent/a1</text>
+  <text x="1035" y="175" text-anchor="middle" class="detail">add-on install namespace</text>
+
+  <!-- ===== Row 2: Singleton ===== -->
+  <text x="30" y="280" class="mode">Singleton</text>
+  <text x="30" y="300" class="mode-sub">one agent pod does</text>
+  <text x="30" y="315" class="mode-sub">registration and work</text>
+
+  <rect x="230" y="250" width="950" height="160" rx="10" fill="#f4f8f1" stroke="#3c7a3c" stroke-width="1.5"/>
+  <text x="245" y="272" class="zone" fill="#3c7a3c">Managed cluster c1</text>
+
+  <rect x="245" y="290" width="130" height="80" rx="7" fill="#ffffff" stroke="#777"/>
+  <text x="310" y="322" text-anchor="middle" class="name">SPIRE agent</text>
+  <text x="310" y="340" text-anchor="middle" class="detail">local Workload API</text>
+  <text x="310" y="354" text-anchor="middle" class="detail">for pods on its node</text>
+
+  <rect x="390" y="290" width="510" height="80" rx="7" fill="#ffffff" stroke="#3c7a3c"/>
+  <text x="645" y="314" text-anchor="middle" class="name">Klusterlet agent (registration + work)</text>
+  <text x="645" y="335" text-anchor="middle" class="id">/ocm/cluster/c1/agent/klusterlet</text>
+  <text x="645" y="355" text-anchor="middle" class="detail">one SVID for the combined pod, ns open-cluster-management-agent</text>
+
+  <rect x="910" y="290" width="250" height="80" rx="7" fill="#ffffff" stroke="#a3461f"/>
+  <text x="1035" y="314" text-anchor="middle" class="name">Add-on agent a1</text>
+  <text x="1035" y="335" text-anchor="middle" class="id">/ocm/cluster/c1/addon/a1/agent/a1</text>
+  <text x="1035" y="355" text-anchor="middle" class="detail">add-on install namespace</text>
+
+  <!-- ===== Row 3: Hosted ===== -->
+  <text x="30" y="460" class="mode">Hosted</text>
+  <text x="30" y="480" class="mode-sub">agents on a management</text>
+  <text x="30" y="495" class="mode-sub">cluster, ns named after</text>
+  <text x="30" y="510" class="mode-sub">the Klusterlet</text>
+
+  <rect x="230" y="430" width="575" height="160" rx="10" fill="#f3f6fc" stroke="#3a5bc7" stroke-width="1.5"/>
+  <text x="245" y="452" class="zone" fill="#3a5bc7">Management cluster</text>
+
+  <rect x="245" y="470" width="130" height="80" rx="7" fill="#ffffff" stroke="#777"/>
+  <text x="310" y="502" text-anchor="middle" class="name">SPIRE agent</text>
+  <text x="310" y="520" text-anchor="middle" class="detail">local Workload API</text>
+  <text x="310" y="534" text-anchor="middle" class="detail">for pods on its node</text>
+
+  <rect x="385" y="470" width="205" height="80" rx="7" fill="#ffffff" stroke="#3a5bc7"/>
+  <text x="487" y="494" text-anchor="middle" class="name">Registration agent</text>
+  <text x="487" y="515" text-anchor="middle" class="id">/ocm/cluster/c1/agent/registration</text>
+  <text x="487" y="535" text-anchor="middle" class="detail">ns c1 (Klusterlet name)</text>
+
+  <rect x="595" y="470" width="200" height="80" rx="7" fill="#ffffff" stroke="#3a5bc7"/>
+  <text x="695" y="494" text-anchor="middle" class="name">Work agent</text>
+  <text x="695" y="515" text-anchor="middle" class="id">/ocm/cluster/c1/agent/work</text>
+  <text x="695" y="535" text-anchor="middle" class="detail">ns c1 (Klusterlet name)</text>
+
+  <text x="245" y="575" class="note">Reaches c1's kube-apiserver with the managed-cluster kubeconfig (see Open Questions)</text>
+
+  <rect x="815" y="430" width="365" height="160" rx="10" fill="#f4f8f1" stroke="#3c7a3c" stroke-width="1.5"/>
+  <text x="830" y="452" class="zone" fill="#3c7a3c">Managed cluster c1</text>
+
+  <rect x="828" y="470" width="110" height="80" rx="7" fill="#ffffff" stroke="#777"/>
+  <text x="883" y="502" text-anchor="middle" class="name">SPIRE agent</text>
+  <text x="883" y="520" text-anchor="middle" class="detail">local Workload API</text>
+  <text x="883" y="534" text-anchor="middle" class="detail">for pods on its node</text>
+
+  <rect x="948" y="470" width="222" height="80" rx="7" fill="#ffffff" stroke="#a3461f"/>
+  <text x="1059" y="494" text-anchor="middle" class="name">Add-on agent a1</text>
+  <text x="1059" y="515" text-anchor="middle" class="id">/ocm/cluster/c1/addon/a1/agent/a1</text>
+  <text x="1059" y="535" text-anchor="middle" class="detail">add-on install namespace</text>
+
+  <!-- ===== Row 4: SingletonHosted ===== -->
+  <text x="30" y="640" class="mode">SingletonHosted</text>
+  <text x="30" y="660" class="mode-sub">one agent pod on a</text>
+  <text x="30" y="675" class="mode-sub">management cluster</text>
+
+  <rect x="230" y="610" width="575" height="160" rx="10" fill="#f3f6fc" stroke="#3a5bc7" stroke-width="1.5"/>
+  <text x="245" y="632" class="zone" fill="#3a5bc7">Management cluster</text>
+
+  <rect x="245" y="650" width="130" height="80" rx="7" fill="#ffffff" stroke="#777"/>
+  <text x="310" y="682" text-anchor="middle" class="name">SPIRE agent</text>
+  <text x="310" y="700" text-anchor="middle" class="detail">local Workload API</text>
+  <text x="310" y="714" text-anchor="middle" class="detail">for pods on its node</text>
+
+  <rect x="385" y="650" width="410" height="80" rx="7" fill="#ffffff" stroke="#3a5bc7"/>
+  <text x="590" y="674" text-anchor="middle" class="name">Klusterlet agent (registration + work)</text>
+  <text x="590" y="695" text-anchor="middle" class="id">/ocm/cluster/c1/agent/klusterlet</text>
+  <text x="590" y="715" text-anchor="middle" class="detail">ns c1 (Klusterlet name)</text>
+
+  <text x="245" y="755" class="note">Reaches c1's kube-apiserver with the managed-cluster kubeconfig (see Open Questions)</text>
+
+  <rect x="815" y="610" width="365" height="160" rx="10" fill="#f4f8f1" stroke="#3c7a3c" stroke-width="1.5"/>
+  <text x="830" y="632" class="zone" fill="#3c7a3c">Managed cluster c1</text>
+
+  <rect x="828" y="650" width="110" height="80" rx="7" fill="#ffffff" stroke="#777"/>
+  <text x="883" y="682" text-anchor="middle" class="name">SPIRE agent</text>
+  <text x="883" y="700" text-anchor="middle" class="detail">local Workload API</text>
+  <text x="883" y="714" text-anchor="middle" class="detail">for pods on its node</text>
+
+  <rect x="948" y="650" width="222" height="80" rx="7" fill="#ffffff" stroke="#a3461f"/>
+  <text x="1059" y="674" text-anchor="middle" class="name">Add-on agent a1</text>
+  <text x="1059" y="695" text-anchor="middle" class="id">/ocm/cluster/c1/addon/a1/agent/a1</text>
+  <text x="1059" y="715" text-anchor="middle" class="detail">add-on install namespace</text>
+
+  <!-- Footer -->
+  <text x="600" y="808" text-anchor="middle" class="foot">IDs are shown without the spiffe://&lt;trust-domain&gt; prefix. Every agent, in every mode, fetches its own SVID from its local SPIRE agent.</text>
+  <text x="600" y="830" text-anchor="middle" class="foot">Every agent connects to the hub gRPC server with that SVID. The hub maps IDs the same way in all four modes and does not need to know the mode.</text>
+</svg>

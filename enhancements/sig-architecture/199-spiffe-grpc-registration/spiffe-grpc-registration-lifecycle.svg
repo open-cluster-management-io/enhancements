@@ -1,0 +1,132 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 925" width="1200" height="925" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#333"/>
+    </marker>
+    <marker id="arrow-grey" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#777"/>
+    </marker>
+    <style>
+      .title { font-size: 20px; font-weight: bold; fill: #1a1a1a; }
+      .lane { font-size: 13px; font-weight: bold; fill: #1a1a1a; }
+      .phase { font-size: 14px; font-weight: bold; }
+      .phase-sub { font-size: 11px; fill: #555; }
+      .msg { stroke: #333; stroke-width: 1.5; }
+      .label { font-size: 11.5px; fill: #222; paint-order: stroke; stroke: #fff; stroke-width: 4px; stroke-linejoin: round; }
+      .grey { fill: #666; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="925" fill="#ffffff"/>
+  <text x="600" y="32" text-anchor="middle" class="title">Hub setup, registration, renewal and revocation with SPIFFE SVIDs only</text>
+
+  <!-- Phase bands -->
+  <rect x="10" y="100" width="1180" height="192" rx="8" fill="#f5f2fa"/>
+  <text x="20" y="124" class="phase" fill="#6a4c9c">1. Set up hub</text>
+  <text x="20" y="141" class="phase-sub">gRPC server reads its</text>
+  <text x="20" y="155" class="phase-sub">SVID from local SPIRE</text>
+
+  <rect x="10" y="300" width="1180" height="262" rx="8" fill="#f3f6fc"/>
+  <text x="20" y="324" class="phase" fill="#3a5bc7">2. Register</text>
+  <text x="20" y="341" class="phase-sub">first connection,</text>
+  <text x="20" y="355" class="phase-sub">no bootstrap token</text>
+
+  <rect x="10" y="570" width="1180" height="128" rx="8" fill="#e6f2f3"/>
+  <text x="20" y="594" class="phase" fill="#0f6e78">3. Renew</text>
+  <text x="20" y="611" class="phase-sub">SPIRE rotates,</text>
+  <text x="20" y="625" class="phase-sub">OCM never signs</text>
+
+  <rect x="10" y="706" width="1180" height="170" rx="8" fill="#fbf0ec"/>
+  <text x="20" y="730" class="phase" fill="#a3461f">4. Revoke</text>
+  <text x="20" y="747" class="phase-sub">hub denies at once,</text>
+  <text x="20" y="761" class="phase-sub">SVIDs lapse by TTL</text>
+
+  <!-- Lanes -->
+  <rect x="160" y="52" width="140" height="40" rx="6" fill="#ffffff" stroke="#777"/>
+  <text x="230" y="70" text-anchor="middle" class="lane">SPIRE</text>
+  <text x="230" y="85" text-anchor="middle" class="phase-sub">local agent + server</text>
+  <rect x="370" y="52" width="160" height="40" rx="6" fill="#ffffff" stroke="#3c7a3c"/>
+  <text x="450" y="70" text-anchor="middle" class="lane">Spoke agent</text>
+  <text x="450" y="85" text-anchor="middle" class="phase-sub">registration / work</text>
+  <rect x="600" y="52" width="160" height="40" rx="6" fill="#ffffff" stroke="#0f6e78"/>
+  <text x="680" y="70" text-anchor="middle" class="lane">Hub gRPC server</text>
+  <text x="680" y="85" text-anchor="middle" class="phase-sub">SPIFFE mode</text>
+  <rect x="830" y="52" width="160" height="40" rx="6" fill="#ffffff" stroke="#3a5bc7"/>
+  <text x="910" y="70" text-anchor="middle" class="lane">Hub kube-apiserver</text>
+  <text x="910" y="85" text-anchor="middle" class="phase-sub">+ operator, controllers</text>
+  <rect x="1040" y="52" width="140" height="40" rx="6" fill="#ffffff" stroke="#777"/>
+  <text x="1110" y="70" text-anchor="middle" class="lane">Cluster admin</text>
+  <text x="1110" y="85" text-anchor="middle" class="phase-sub">or automation</text>
+
+  <g stroke="#bbb" stroke-width="1.2" stroke-dasharray="4 4">
+    <line x1="230" y1="92" x2="230" y2="890"/>
+    <line x1="450" y1="92" x2="450" y2="890"/>
+    <line x1="680" y1="92" x2="680" y2="890"/>
+    <line x1="910" y1="92" x2="910" y2="890"/>
+    <line x1="1110" y1="92" x2="1110" y2="890"/>
+  </g>
+
+  <!-- 1. Set up hub -->
+  <line x1="1110" y1="135" x2="910" y2="135" class="msg" marker-end="url(#arrow)"/>
+  <text x="1010" y="128" text-anchor="middle" class="label">1. ClusterManager: spiffe</text>
+
+  <line x1="910" y1="170" x2="680" y2="170" class="msg" marker-end="url(#arrow)"/>
+  <text x="795" y="163" text-anchor="middle" class="label">2. deploy gRPC server, no Secrets</text>
+
+  <line x1="680" y1="205" x2="230" y2="205" class="msg" marker-end="url(#arrow)"/>
+  <text x="455" y="198" text-anchor="middle" class="label">3. FetchX509SVID (Workload API, hub node)</text>
+
+  <line x1="230" y1="240" x2="680" y2="240" class="msg" marker-end="url(#arrow)"/>
+  <text x="455" y="233" text-anchor="middle" class="label">4. .../ocm/hub/grpc-server SVID + bundle, memory</text>
+
+  <rect x="596" y="256" width="168" height="28" rx="5" fill="#ffffff" stroke="#0f6e78"/>
+  <text x="680" y="275" text-anchor="middle" class="label">5. serve mTLS; ready</text>
+
+  <!-- 2. Register -->
+  <line x1="450" y1="335" x2="230" y2="335" class="msg" marker-end="url(#arrow)"/>
+  <text x="340" y="328" text-anchor="middle" class="label">6. FetchX509SVID (spoke node)</text>
+
+  <line x1="230" y1="370" x2="450" y2="370" class="msg" marker-end="url(#arrow)"/>
+  <text x="340" y="363" text-anchor="middle" class="label">7. X.509-SVID + bundle, memory</text>
+
+  <line x1="450" y1="405" x2="680" y2="405" class="msg" marker-end="url(#arrow)"/>
+  <text x="565" y="398" text-anchor="middle" class="label">8. mTLS; create ManagedCluster c1</text>
+
+  <rect x="596" y="422" width="168" height="40" rx="5" fill="#ffffff" stroke="#0f6e78"/>
+  <text x="680" y="438" text-anchor="middle" class="label">9. verify SVID chain,</text>
+  <text x="680" y="454" text-anchor="middle" class="label">map ID to OCM user</text>
+
+  <line x1="680" y1="485" x2="910" y2="485" class="msg" marker-end="url(#arrow)"/>
+  <text x="795" y="478" text-anchor="middle" class="label">10. SAR; create c1 (not accepted)</text>
+
+  <line x1="1110" y1="518" x2="910" y2="518" class="msg" marker-end="url(#arrow)"/>
+  <text x="1010" y="511" text-anchor="middle" class="label">11. accept c1; RBAC created</text>
+
+  <line x1="680" y1="550" x2="450" y2="550" class="msg" marker-end="url(#arrow)"/>
+  <text x="565" y="543" text-anchor="middle" class="label">12. accepted: start work + lease sync</text>
+
+  <!-- 3. Renew -->
+  <line x1="230" y1="605" x2="450" y2="605" class="msg" marker-end="url(#arrow)"/>
+  <text x="340" y="598" text-anchor="middle" class="label">13. rotated SVID pushed at ½ TTL</text>
+
+  <line x1="680" y1="640" x2="450" y2="640" class="msg" marker-end="url(#arrow)"/>
+  <text x="565" y="633" text-anchor="middle" class="label">14. stream closed at old SVID expiry</text>
+
+  <line x1="450" y1="675" x2="680" y2="675" class="msg" marker-end="url(#arrow)"/>
+  <text x="565" y="668" text-anchor="middle" class="label">15. reconnect with new SVID; resync</text>
+
+  <!-- 4. Revoke -->
+  <line x1="1110" y1="740" x2="910" y2="740" class="msg" marker-end="url(#arrow)"/>
+  <text x="1010" y="733" text-anchor="middle" class="label">16. deny or delete c1</text>
+
+  <line x1="910" y1="775" x2="680" y2="775" class="msg" marker-end="url(#arrow)"/>
+  <text x="795" y="768" text-anchor="middle" class="label">17. watch event</text>
+
+  <line x1="680" y1="810" x2="450" y2="810" class="msg" marker-end="url(#arrow)"/>
+  <text x="565" y="803" text-anchor="middle" class="label">18. close c1 streams; deny calls</text>
+
+  <line x1="1110" y1="850" x2="230" y2="850" stroke="#777" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arrow-grey)"/>
+  <text x="670" y="843" text-anchor="middle" class="label grey">19. optional: delete SPIRE entries; no new SVIDs, current ones lapse within their TTL</text>
+
+  <text x="600" y="912" text-anchor="middle" class="phase-sub">OCM reaches SPIRE only through the local agent's Workload API (steps 3 and 6), on the node where each pod runs. No CSR, no signer, no Secret.</text>
+</svg>
