@@ -329,6 +329,10 @@ status:
       policyGeneration: 3
       bindingUID: 9a2e7b44-5c1d-4e0a-8f3b-2c6d9e1f7a05
       bindingGeneration: 1
+    # The add-on namespace the operator created; see "Which namespaces recovery cleans".
+    addOnNamespace:
+      name: open-cluster-management-agent-addon
+      uid: 3b8d5f21-7e4a-4c19-b6d2-8a0f1e9c4d73
   conditions:
   - type: SPIFFEAdmissionReady
     status: "True"
@@ -484,22 +488,31 @@ That matters in hosted modes, where one management cluster runs several Klusterl
 its own add-on namespaces:
 
 - The label can be set only when the namespace is created, by the Klusterlet's work agent
-  (applying the add-on's namespace manifest) or by the Klusterlet operator. Nobody may add it to,
-  change it on, or remove it from an existing namespace. The policy enforces these rules on
-  Namespace requests.
+  (applying the add-on's namespace manifest) or by the Klusterlet operator. Nobody may add it to
+  or change it on an existing namespace, and only the operator may remove it. The policy enforces
+  these rules on Namespace requests. There are no exceptions: the operator never labels an
+  existing namespace, because anything could be created in it between a check and the label.
 - In a namespace labeled for Klusterlet `cluster4`, only `cluster4`'s work agent may create or
   change Deployments, DaemonSets and StatefulSets. Another Klusterlet's work agent is refused, so
   it cannot put pods into `cluster4`'s namespaces, even while `cluster4` is recovering.
-- The one exception to "only at creation" is the operator's own
-  `open-cluster-management-agent-addon`, which may already exist from an earlier mode. The operator
-  labels it during recovery only if everything in it is OCM's: every Deployment, DaemonSet and
-  StatefulSet is listed in an `AppliedManifestWork` of this Klusterlet, and every Pod belongs to
-  one of them. Recovery then deletes them and the work agent re-applies them, so nothing is lost.
-  If anything else is in there, the operator leaves the namespace unlabeled and untouched, the
-  Klusterlet reports why in a condition, and add-ons there get `AddOnNamespaceNotDedicated` like
-  any shared namespace. Example: someone ran their own `nginx` Deployment in
-  `open-cluster-management-agent-addon`; the operator does not label or clean the namespace, and
-  the admin moves either `nginx` or the add-ons out.
+- That includes the operator's own `open-cluster-management-agent-addon`. If it already exists
+  without the label, for example from an earlier mode, it is treated like any shared namespace:
+  the operator leaves it untouched, the Klusterlet reports it in a condition, and add-ons there get
+  `AddOnNamespaceNotDedicated`. The admin moves out anything that is not an add-on and deletes the
+  namespace. The operator then creates it again with the label, and the work agent re-applies the
+  add-ons into it. Example: someone ran their own `nginx` Deployment in
+  `open-cluster-management-agent-addon`; the admin moves `nginx` elsewhere and deletes the
+  namespace, and the add-ons come back in the new, labeled one.
+- **Which namespaces recovery cleans.** The label alone is not enough, because it could be added
+  or changed while the policy is missing. Example: during a gap, someone adds
+  `spiffe-addon-namespace: cluster4` to `default`. So recovery cleans an add-on namespace only if
+  its UID shows it really belongs to this Klusterlet: it is listed in one of the Klusterlet's
+  `AppliedManifestWork`s, which means its work agent created it, or it is the
+  `open-cluster-management-agent-addon` the operator created, whose UID the operator records in
+  the Klusterlet status. Users who can edit namespaces cannot change either record. Any other
+  namespace that carries this Klusterlet's label is not cleaned; the operator removes the label,
+  so SPIRE issues no add-on SVID there, and add-ons in it get `AddOnNamespaceNotDedicated`.
+  In the example, nothing in `default` is deleted and the label is simply removed again.
 - The add-on framework adds the label to the namespace manifest it renders for the add-on.
 - If an add-on's install namespace already exists without the label, for example `default`, the
   work agent cannot label it, and the registration agent sets `RegistrationApplied=False` on the
@@ -573,16 +586,14 @@ Recovery runs in the operator, in this order:
    are gone. With the work agent stopped, nothing re-applies add-on workloads during the cleanup.
    Add-on workloads are not scaled: a DaemonSet has no replica count, and step 3 deletes them
    anyway. Add-on agents keep running until then.
-2. Recreate the policy and binding, and note their UIDs and generations. Label
-   `open-cluster-management-agent-addon` if it is not labeled yet and holds only OCM's workloads
-   (see the add-on namespaces above).
+2. Recreate the policy and binding, and note their UIDs and generations. Remove this Klusterlet's
+   label from any namespace whose UID is not on record (see "Which namespaces recovery cleans").
 3. Delete every Deployment, ReplicaSet, DaemonSet, StatefulSet and Pod in this Klusterlet's agent
-   namespaces and in the add-on namespaces labeled with this Klusterlet's name, trusted or not,
-   and wait until no Pod is left in them. Someone with widened RBAC could have created new
-   workloads or changed existing ones, and the operator cannot tell a changed workload from a
-   clean one, so it removes them all. Because add-on namespaces are dedicated, this never touches
-   unrelated applications, and because the label names the Klusterlet, it never touches another
-   Klusterlet's add-ons on the same management cluster.
+   namespaces and in its recorded add-on namespaces, trusted or not, and wait until no Pod is left
+   in them. Someone with widened RBAC could have created new workloads or changed existing ones,
+   and the operator cannot tell a changed workload from a clean one, so it removes them all.
+   Because add-on namespaces are dedicated and checked by UID, this never touches unrelated
+   applications or another Klusterlet's add-ons on the same management cluster.
 4. Compare the policy and binding with the values noted in step 2. If anything changed, someone
    may have weakened the policy during the cleanup and put it back, so the operator starts again
    from step 1. Otherwise it records the values, sets `SPIFFEAdmissionReady`, recreates its own
@@ -890,11 +901,13 @@ deployments.
   gets `RegistrationApplied=False` with reason `AddOnNamespaceNotDedicated`, that its SPIRE entry
   issues no SVID there, and that no workload in `default` is blocked or deleted, recovery
   included. Check that adding the `spiffe-addon-namespace` label to an existing namespace,
-  changing it or removing it is refused, and that the work agent can create a new namespace with
-  it. With an existing `open-cluster-management-agent-addon` that holds only workloads from
-  `AppliedManifestWork`s, check that the operator labels it and they come back after recovery;
-  with an extra Deployment of someone else's in it, check that the operator neither labels nor
-  cleans it and reports why. In hosted mode, with two Klusterlets on one management cluster,
+  changing it is refused, removing it is refused for everyone but the operator, and the work agent
+  can create a new namespace with it. With an existing, unlabeled
+  `open-cluster-management-agent-addon`, check that the operator never labels or cleans it and
+  reports why, and that after the admin deletes it the operator recreates it labeled, records its
+  UID, and the add-ons come back in it. With the policy removed, add this Klusterlet's label to
+  `default` and to another Klusterlet's add-on namespace; check that recovery deletes nothing in
+  either, removes the label, and SPIRE issues no add-on SVID there. In hosted mode, with two Klusterlets on one management cluster,
   check that one's work agent cannot create workloads in the other's add-on namespaces and that
   recovering one leaves the other's add-ons running.
 - **Recovery and trusted state tests.** With an add-on running as a DaemonSet, remove the policy
@@ -944,7 +957,9 @@ deployments.
 - The switch is a first activation, so the operator runs recovery once: agents and add-on agents
   restart from clean copies. An add-on installed into a shared namespace, such as `default`, stops
   getting hub credentials with reason `AddOnNamespaceNotDedicated` until it is moved to a namespace
-  of its own; nothing else in the shared namespace is touched.
+  of its own; nothing else in the shared namespace is touched. The same applies to an existing
+  `open-cluster-management-agent-addon`: the admin moves out anything that is not an add-on and
+  deletes it, and the operator recreates it with the label.
 - Switching between install modes works as today; only where SVIDs are issued changes.
 - Downgrade: switch the Klusterlet back to its previous drivers and provide a bootstrap
   kubeconfig, as for a new join.
