@@ -317,8 +317,9 @@ spec:
 ```
 
 The `Klusterlet` status gets one new field, where the operator records the admission policy and
-binding it has made trusted (see "When the operator trusts the namespaces"). It holds only UIDs
-and generations:
+binding it has made trusted, and one new condition, `SPIFFEAdmissionReady`, that tells the
+platform when it is safe to create the cluster's SPIRE entries (see "When the operator trusts the
+namespaces"). The field holds only UIDs and generations:
 
 ```yaml
 status:
@@ -328,6 +329,9 @@ status:
       policyGeneration: 3
       bindingUID: 9a2e7b44-5c1d-4e0a-8f3b-2c6d9e1f7a05
       bindingGeneration: 1
+  conditions:
+  - type: SPIFFEAdmissionReady
+    status: "True"
 ```
 
 **Add-ons.** `ManagedClusterAddOn` (`v1beta1`) gets one new allowed value, `spiffe`, for
@@ -474,14 +478,28 @@ Add-on agent namespaces get the same policy, with three differences:
 namespace, including one shared with unrelated applications, such as `default`. The policy would
 then block those applications' Deployments, and the recovery below would delete them. So in
 `spiffe` mode the add-on policy and the recovery cover only namespaces labeled
-`open-cluster-management.io/spiffe-addon-namespace: "true"`, and an add-on agent gets an SVID only
-in such a namespace:
+`open-cluster-management.io/spiffe-addon-namespace: <klusterlet>`, and an add-on agent gets an
+SVID only in such a namespace. The label's value names the Klusterlet the namespace belongs to.
+That matters in hosted modes, where one management cluster runs several Klusterlets and each has
+its own add-on namespaces:
 
-- The label can be set only when the namespace is created, by the work agent (applying the
-  add-on's namespace manifest) or by the Klusterlet operator. Nobody may add it to, or remove it
-  from, an existing namespace. The one exception is the operator's own
-  `open-cluster-management-agent-addon`, which the operator labels during recovery, before it
-  cleans that namespace. The policy enforces these rules on Namespace requests.
+- The label can be set only when the namespace is created, by the Klusterlet's work agent
+  (applying the add-on's namespace manifest) or by the Klusterlet operator. Nobody may add it to,
+  change it on, or remove it from an existing namespace. The policy enforces these rules on
+  Namespace requests.
+- In a namespace labeled for Klusterlet `cluster4`, only `cluster4`'s work agent may create or
+  change Deployments, DaemonSets and StatefulSets. Another Klusterlet's work agent is refused, so
+  it cannot put pods into `cluster4`'s namespaces, even while `cluster4` is recovering.
+- The one exception to "only at creation" is the operator's own
+  `open-cluster-management-agent-addon`, which may already exist from an earlier mode. The operator
+  labels it during recovery only if everything in it is OCM's: every Deployment, DaemonSet and
+  StatefulSet is listed in an `AppliedManifestWork` of this Klusterlet, and every Pod belongs to
+  one of them. Recovery then deletes them and the work agent re-applies them, so nothing is lost.
+  If anything else is in there, the operator leaves the namespace unlabeled and untouched, the
+  Klusterlet reports why in a condition, and add-ons there get `AddOnNamespaceNotDedicated` like
+  any shared namespace. Example: someone ran their own `nginx` Deployment in
+  `open-cluster-management-agent-addon`; the operator does not label or clean the namespace, and
+  the admin moves either `nginx` or the add-ons out.
 - The add-on framework adds the label to the namespace manifest it renders for the add-on.
 - If an add-on's install namespace already exists without the label, for example `default`, the
   work agent cannot label it, and the registration agent sets `RegistrationApplied=False` on the
@@ -494,7 +512,7 @@ in such a namespace:
   namespaceSelector:
     matchLabels:
       kubernetes.io/metadata.name: open-cluster-management-agent-addon
-      open-cluster-management.io/spiffe-addon-namespace: "true"
+      open-cluster-management.io/spiffe-addon-namespace: klusterlet
   ```
 
 **The policy is required, not optional.** ValidatingAdmissionPolicy is GA from Kubernetes 1.30,
@@ -526,6 +544,17 @@ value differs, it runs recovery before any agent runs. This covers:
 - **Policy or binding edited**, for example weakened and then put back. Every spec change raises
   the generation.
 
+Recovery removes an old workload, but if SPIRE entries for the cluster already exist, a pod from
+that workload could get an SVID before recovery deletes it. OCM does not manage SPIRE entries, so
+it cannot hold them back itself. Instead the Klusterlet gets a condition, `SPIFFEAdmissionReady`,
+which turns `True` only once the first recovery has finished and the values are recorded. The
+platform creates the cluster's SPIRE entries only after that, and `clusteradm join` waits for it
+and says so. With that order, nothing can get an agent SVID before the
+namespaces are clean. If entries already exist, for example when a cluster switches from another
+mode and the platform created them early, the same gap as below applies: a pod that got an SVID
+before the cleanup can use it until it expires. For a new cluster that pod can do little, because
+the hub does not accept the cluster until an admin does.
+
 When the operator changes the policy itself, for example after an operator upgrade, it records the
 new generation in the same reconcile without running recovery, but only if the values before its
 change matched the recorded ones. Changing the Klusterlet status needs write access to the
@@ -544,17 +573,22 @@ Recovery runs in the operator, in this order:
    are gone. With the work agent stopped, nothing re-applies add-on workloads during the cleanup.
    Add-on workloads are not scaled: a DaemonSet has no replica count, and step 3 deletes them
    anyway. Add-on agents keep running until then.
-2. Recreate the policy and binding, and label `open-cluster-management-agent-addon` if it is not
-   labeled yet.
-3. Delete every Deployment, ReplicaSet, DaemonSet, StatefulSet and Pod in the Klusterlet agent
-   namespaces and the dedicated add-on namespaces, trusted or not, and wait until no Pod is left
-   in them. Someone with widened RBAC could have created new workloads or changed existing ones,
-   and the operator cannot tell a changed workload from a clean one, so it removes them all.
-   Because add-on namespaces are dedicated, this never touches unrelated applications.
-4. Record the policy and binding UIDs and generations, then recreate its own agent Deployments
-   and scale them up. The work agent then re-applies the add-on workloads from their
-   `ManifestWork`s, so every add-on workload, DaemonSets included, comes back as a clean copy of
-   what the hub defined, and passes the restored policy.
+2. Recreate the policy and binding, and note their UIDs and generations. Label
+   `open-cluster-management-agent-addon` if it is not labeled yet and holds only OCM's workloads
+   (see the add-on namespaces above).
+3. Delete every Deployment, ReplicaSet, DaemonSet, StatefulSet and Pod in this Klusterlet's agent
+   namespaces and in the add-on namespaces labeled with this Klusterlet's name, trusted or not,
+   and wait until no Pod is left in them. Someone with widened RBAC could have created new
+   workloads or changed existing ones, and the operator cannot tell a changed workload from a
+   clean one, so it removes them all. Because add-on namespaces are dedicated, this never touches
+   unrelated applications, and because the label names the Klusterlet, it never touches another
+   Klusterlet's add-ons on the same management cluster.
+4. Compare the policy and binding with the values noted in step 2. If anything changed, someone
+   may have weakened the policy during the cleanup and put it back, so the operator starts again
+   from step 1. Otherwise it records the values, sets `SPIFFEAdmissionReady`, recreates its own
+   agent Deployments and scales them up. The work agent then re-applies the add-on workloads
+   from their `ManifestWork`s, so every add-on workload, DaemonSets included, comes back as a
+   clean copy of what the hub defined, and passes the restored policy.
 
 The restored policy alone cannot refuse new pods from a workload created during the gap, because
 those pods come from the normal built-in controller (see "How admission checks the chain"). So
@@ -692,7 +726,8 @@ sdk-go holds the shared gRPC server and client code, so most of the SPIFFE logic
   rendered by the framework get the `csi.spiffe.io` volume and the `spiffe-role: addon` label
   instead of the `<addon>-hub-kubeconfig` Secret volume. Unit tests cover all three kinds.
 - The add-on's namespace manifest gets the `open-cluster-management.io/spiffe-addon-namespace`
-  label, so the namespace is dedicated from the moment it is created (see Operators).
+  label, set to the Klusterlet's name, so the namespace is dedicated from the moment it is created
+  (see Operators).
 
 #### clusteradm
 
@@ -854,8 +889,14 @@ deployments.
 - **Dedicated add-on namespace tests.** Check that an add-on whose install namespace is `default`
   gets `RegistrationApplied=False` with reason `AddOnNamespaceNotDedicated`, that its SPIRE entry
   issues no SVID there, and that no workload in `default` is blocked or deleted, recovery
-  included. Check that adding the `spiffe-addon-namespace` label to an existing namespace, or
-  removing it, is refused, and that the work agent can create a new namespace with it.
+  included. Check that adding the `spiffe-addon-namespace` label to an existing namespace,
+  changing it or removing it is refused, and that the work agent can create a new namespace with
+  it. With an existing `open-cluster-management-agent-addon` that holds only workloads from
+  `AppliedManifestWork`s, check that the operator labels it and they come back after recovery;
+  with an extra Deployment of someone else's in it, check that the operator neither labels nor
+  cleans it and reports why. In hosted mode, with two Klusterlets on one management cluster,
+  check that one's work agent cannot create workloads in the other's add-on namespaces and that
+  recovering one leaves the other's add-ons running.
 - **Recovery and trusted state tests.** With an add-on running as a DaemonSet, remove the policy
   and check that the DaemonSet and its Pods are gone before the Klusterlet agents scale up, and
   that the work agent then re-applies it. For first activation, create a Deployment with
@@ -864,6 +905,11 @@ deployments.
   stopped, delete and recreate the policy, and separately edit and restore it; when the operator
   starts, check that it runs recovery in both cases because the recorded UID or generation no
   longer matches. Check that an operator upgrade that changes the policy does not run recovery.
+  Edit the policy while recovery is deleting workloads and put it back before it ends; check that
+  the operator starts recovery again instead of recording the restored values. Check that
+  `SPIFFEAdmissionReady` stays `False` until the first recovery has finished. With SPIRE entries
+  created before that, check that a pod from an old Deployment gets an SVID before the cleanup,
+  is then deleted, and that the hub refuses it once its SVID expires; this is the accepted gap.
 - **Integration tests.** envtest plus an in-process fake Workload API that issues SVIDs from a
   test CA with short TTLs. Cover register, accept, rotation and reconnect, deny, delete, add-on
   enable, rotation and disable, and the checks that no Secret or ConfigMap with hub credentials or
