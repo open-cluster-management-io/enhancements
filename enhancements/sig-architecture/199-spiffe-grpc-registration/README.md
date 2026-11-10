@@ -907,9 +907,9 @@ deployments.
   reports why, and that after the admin deletes it the operator recreates it labeled, records its
   UID, and the add-ons come back in it. With the policy removed, add this Klusterlet's label to
   `default` and to another Klusterlet's add-on namespace; check that recovery deletes nothing in
-  either, removes the label, and SPIRE issues no add-on SVID there. In hosted mode, with two Klusterlets on one management cluster,
-  check that one's work agent cannot create workloads in the other's add-on namespaces and that
-  recovering one leaves the other's add-ons running.
+  either, removes the label, and SPIRE issues no add-on SVID there. In hosted mode, with two
+  Klusterlets on one management cluster, check that one's work agent cannot create workloads in
+  the other's add-on namespaces and that recovering one leaves the other's add-ons running.
 - **Recovery and trusted state tests.** With an add-on running as a DaemonSet, remove the policy
   and check that the DaemonSet and its Pods are gone before the Klusterlet agents scale up, and
   that the work agent then re-applies it. For first activation, create a Deployment with
