@@ -1,0 +1,17 @@
+title: ocm-mcp-server
+authors:
+  - "@payjain"
+reviewers:
+  - "@qiujian16"
+  - "@mikeshng"
+  - "@zhujian7"
+  - "@elgnay"
+  - "@sudeshmu"
+approvers:
+  - "@qiujian16"
+creation-date: 2026-10-30
+last-updated: 2026-11-04
+status: provisional
+see-also:
+  - "/enhancements/sig-architecture/225-placement-score-visibility"
+  - "/enhancements/sig-architecture/166-dynamic-scoring-framework-addon"
