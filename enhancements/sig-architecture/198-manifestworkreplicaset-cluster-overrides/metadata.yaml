@@ -1,0 +1,18 @@
+title: manifestworkreplicaset-cluster-overrides
+authors:
+  - "@payjain"
+reviewers:
+  - "@qiujian16"
+  - "@mikeshng"
+  - "@kahirokunn"
+  - "@everpeace"
+  - "@ncr38"
+approvers:
+  - "@qiujian16"
+creation-date: 2026-11-02
+last-updated: 2026-11-03
+status: provisional
+see-also:
+  - "/enhancements/sig-architecture/35-work-placement"
+  - "/enhancements/sig-architecture/82-addon-template"
+  - "/enhancements/sig-architecture/47-manifestwork-updatestrategy"
