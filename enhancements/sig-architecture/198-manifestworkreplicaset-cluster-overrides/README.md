@@ -265,8 +265,12 @@ type ResourceOverrideSchemaSpec struct {
     Kind    string `json:"kind"`
     Version string `json:"version"`
 
-    // OpenAPIV3Schema is a partial schema overlay. Merge metadata given here takes
-    // precedence; anything not mentioned is inherited from the type's own schema.
+    // OpenAPIV3Schema describes the merge semantics of the paths a patch may touch.
+    // Where the hub has the CRD installed, this is an overlay: metadata given here takes
+    // precedence and anything unmentioned is inherited from the type's own schema. Where
+    // the hub does not have the CRD -- the case this resource exists to serve -- there is
+    // no schema to inherit from, so this is the whole of the type information and
+    // unmentioned paths fall back to deduced semantics. See Effective schema below.
     OpenAPIV3Schema apiextensionsv1.JSON `json:"openAPIV3Schema"`
 }
 ```
@@ -292,12 +296,16 @@ spec:
   kind: Service
   version: v1
   openAPIV3Schema:
+    type: object
     properties:
       spec:
+        type: object
         properties:
           template:
+            type: object
             properties:
               spec:
+                type: object
                 properties:
                   containers:
                     type: array
@@ -306,11 +314,24 @@ spec:
                     items:
                       type: object
                       properties:
+                        name:
+                          type: string
                         env:
                           type: array
                           x-kubernetes-list-type: map
                           x-kubernetes-list-map-keys: ["name"]
+                          items:
+                            type: object
+                            properties:
+                              name:
+                                type: string
 ```
+
+Knative is installed only on the managed clusters, so the hub has no `Service` schema to
+inherit from and this document is the whole of the type information. It is written out in
+full for that reason: every ancestor carries `type: object`, every map list declares its
+`items` and the scalar property named by `x-kubernetes-list-map-keys`. A key that is named
+but not declared cannot be honoured.
 
 The markers are the structural ones, `x-kubernetes-list-type` and
 `x-kubernetes-list-map-keys`, because those are what `structured-merge-diff` reads.
@@ -335,6 +356,34 @@ giving the structural equivalent:
 Accepting both forms and converting internally was considered and rejected: it puts two ways
 of expressing one thing on a brand-new API, and commits us to keeping the conversion correct
 forever, to save the author a one-line edit that the validation error spells out.
+
+#### Effective schema
+
+Strategic merge for a custom resource needs a schema to convert against, and in alpha the
+hub may have none, so the resolution order has to be stated rather than assumed:
+
+1. If the hub has the CRD, its structural schema for the matching version is the base, and
+   the registered `ResourceOverrideSchema` is overlaid on it. Overlaid metadata wins.
+2. If the hub does not have the CRD, the registered schema is the base. There is nothing to
+   inherit.
+3. In both cases, any path the resulting schema does not describe falls back to the deduced
+   semantics `structured-merge-diff` uses for untyped data.
+
+Step 3 is the part that matters, because the fallback is not neutral. In the vendored
+`structured-merge-diff` v6, `DeducedParseableType` defines `__untyped_deduced_` with maps
+`separable` and lists `atomic`. So an undescribed map still merges field by field, while an
+**undescribed list is atomic**. Combined with the `atomicLists: Reject` default, a list the
+author forgot to describe fails the patch with an error naming the path, rather than
+silently replacing the list. That is the safe direction, and it is why the fallback is
+acceptable for alpha rather than a hole.
+
+The practical rule for authors is therefore narrow: describe every list you expect to merge,
+down to the scalar properties named as its map keys. Everything else may be omitted.
+
+This is also the sharpest argument for the agent-sourced schema cache in
+[open question 1](#open-questions). Once schemas are collected from the clusters that
+actually serve the type, step 2 stops being a hand-written document and the fallback stops
+being reachable in normal use.
 
 #### ManifestWorkReplicaSet opt-out
 
@@ -730,7 +779,10 @@ invariant; atomic-list reject and the explicit `Replace` opt-in; composite
 two schemas sharing a uniqueness key, asserting that the render fails naming both rather than
 picking one, and that a second schema differing only in `spec.version` is accepted; an overlay
 carrying the legacy `x-kubernetes-patch-strategy` pair, asserting a validation error that
-names the structural equivalent rather than a silently atomic list; determinism, by rendering
+names the structural equivalent rather than a silently atomic list; a managed-cluster-only
+type whose registered schema omits a list the patch touches, asserting that the deduced
+fallback makes it atomic and that `atomicLists: Reject` therefore fails with the path named,
+rather than replacing the list; determinism, by rendering
 twice and comparing bytes. [ocm#1792][ocm-1792] already carries this suite for the agreed
 subset.
 
