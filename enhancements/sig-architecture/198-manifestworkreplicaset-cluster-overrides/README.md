@@ -205,8 +205,41 @@ rendered successfully everywhere it applied.
 
 #### ResourceOverrideSchema
 
-Cluster-scoped, administrator-managed, at most one per target type so that schema selection is
-unambiguous.
+Cluster-scoped and administrator-managed. Schema selection has to be unambiguous, so
+uniqueness is defined explicitly rather than left to "one per type".
+
+**The uniqueness key is `(spec.target.group, spec.target.resource, spec.version)`.** Two
+objects sharing that triple conflict, whatever they are named.
+
+`spec.kind` is deliberately *not* part of the key. Within one group/version a resource maps to
+exactly one kind, so admitting `kind` into the key would permit two objects that disagree
+about the kind for the same resource — precisely the ambiguity the rule exists to prevent. The
+reverse mapping must be unique for the same reason: two objects mapping the same
+`(group, version, kind)` to different resources also conflict.
+
+Different versions of one resource are *not* a conflict. A type served at both `v1` and
+`v1beta1` may legitimately carry different list metadata per version, and the manifest's
+`apiVersion` selects which schema applies.
+
+`spec.target.name` and `spec.target.namespace` must be empty — this names a type, not an
+instance. `ResourceIdentifier` carries those fields because `manifestConfigs` needs them;
+here they are rejected by validation rather than silently ignored.
+
+Conflicts are rejected deterministically rather than resolved by picking a winner:
+
+- Both objects get a `Conflicting` condition naming the other, so the problem is visible on
+  the objects themselves and not only in controller logs.
+- Any render needing that schema fails for the affected cluster, with an error naming both
+  objects and the duplicated key. It does **not** fall back to treating the type as
+  schemaless: that would silently downgrade a merge to an atomic replacement, which is the
+  exact failure `atomicLists: Reject` exists to prevent.
+- Renders that do not touch the contested type are unaffected.
+
+Last-writer-wins and lowest-name-wins were both considered and rejected: either makes the
+rendered payload depend on creation order or on object naming, which contradicts the
+determinism guarantee in [Ordering](#ordering). A validating webhook rejecting the second
+object at admission is worthwhile hardening on top, but the controller-side rejection is
+required regardless, since a webhook cannot catch objects created while it is unavailable.
 
 ```go
 // ResourceOverrideSchema supplies list-merge metadata for a resource type, so that
@@ -267,18 +300,40 @@ spec:
                 properties:
                   containers:
                     type: array
-                    x-kubernetes-patch-strategy: merge
-                    x-kubernetes-patch-merge-key: name
+                    x-kubernetes-list-type: map
+                    x-kubernetes-list-map-keys: ["name"]
                     items:
+                      type: object
                       properties:
                         env:
                           type: array
-                          x-kubernetes-patch-strategy: merge
-                          x-kubernetes-patch-merge-key: name
+                          x-kubernetes-list-type: map
+                          x-kubernetes-list-map-keys: ["name"]
 ```
 
-This follows the pattern Kustomize documents for custom resources in its
-[custom OpenAPI schema example][kustomize-openapi].
+The markers are the structural ones, `x-kubernetes-list-type` and
+`x-kubernetes-list-map-keys`, because those are what `structured-merge-diff` reads.
+
+This is a deliberate difference from the [custom OpenAPI schema example][kustomize-openapi]
+Kustomize documents, which uses the older `x-kubernetes-patch-strategy` /
+`x-kubernetes-patch-merge-key` pair that `strategicpatch` reads. The difference matters
+rather than being cosmetic: users will arrive carrying the Kustomize form, and an overlay
+supplying only those markers leaves the list with no effective merge metadata under the
+engine this proposal uses. The list would be treated as atomic, so the merge fails under the
+default `atomicLists: Reject`, or discards existing entries under `Replace`. Neither is
+acceptable as a silent outcome.
+
+`ResourceOverrideSchema` therefore rejects the legacy pair at validation, with an error
+giving the structural equivalent:
+
+| Legacy marker | Structural equivalent |
+| --- | --- |
+| `x-kubernetes-patch-strategy: merge` + `x-kubernetes-patch-merge-key: name` | `x-kubernetes-list-type: map` + `x-kubernetes-list-map-keys: ["name"]` |
+| array with no `x-kubernetes-patch-strategy` | `x-kubernetes-list-type: atomic` |
+
+Accepting both forms and converting internally was considered and rejected: it puts two ways
+of expressing one thing on a brand-new API, and commits us to keeping the conversion correct
+forever, to save the author a one-line edit that the validation error spells out.
 
 ### Example
 
@@ -417,7 +472,7 @@ the type, rather than silently skipping the manifest.
 - **JSONMergePatch** — RFC 7386.
 - **StrategicMergePatch** — for built-in types the merge keys come from the Go types in
   `client-go`'s scheme. For custom resources they come from the type's CRD schema, overlaid
-  with any `ResourceOverrideSchema` registered for that GVK.
+  with any `ResourceOverrideSchema` registered for that type.
 
 For custom resources the implementation uses typed conversion plus merge from
 `sigs.k8s.io/structured-merge-diff`, which is already vendored in OCM, rather than
@@ -527,9 +582,9 @@ Two mechanisms, following the precedent of `ManagedClusterAddOn.status.configRef
 
 ### Open Questions
 
-1. **Where do CRD schemas come from?** Reading a CRD schema requires the CRD on the hub, but
-   a type such as Knative may only be installed on managed clusters. Options discussed on
-   [#198][issue-198]:
+1. ~~**Where do CRD schemas come from?**~~ **Resolved.** Reading a CRD schema requires the
+   CRD on the hub, but a type such as Knative may only be installed on managed clusters.
+   Options discussed on [#198][issue-198]:
    a. require a `ResourceOverrideSchema` and error otherwise — no new machinery, but the
       administrator must supply the schema;
    b. add discovery on the hub — only works for types installed on the hub;
@@ -539,15 +594,18 @@ Two mechanisms, following the precedent of `ManagedClusterAddOn.status.configRef
       reporting channel that does not exist in `work` today, plus a refresh and
       garbage-collection story. That is arguably its own enhancement.
 
-   This is the main unresolved question, and it is a disagreement rather than a gap.
-   @kahirokunn's position is that (c) should land *before* custom-resource strategic merge
-   ships at all, because requiring administrators to extract, register and keep schemas
-   current is a poor first experience and does not handle per-cluster schema differences.
-   The counter-position is that (c) is a new hub/agent contract with its own skew and
-   lifecycle design, and that making it a prerequisite couples this proposal's delivery to
-   a second, larger one. @mikeshng has been asked to arbitrate. The proposal as written
-   assumes (a) with (c) as a follow-up; if the group prefers @kahirokunn's sequencing, the
-   change is to graduation criteria and scope rather than to the API above.
+   Settled on [#198][issue-198] (2026-11-06): **alpha ships (a)** — built-in types plus
+   custom resources with an explicitly registered `ResourceOverrideSchema` — and **(c) gates
+   beta graduation rather than existence**.
+
+   The disagreement was about sequencing, not destination. @kahirokunn's objection was that
+   manual registration is a poor first experience and does not handle clusters whose schemas
+   genuinely differ for the same type, which is correct, and (c) remains the intended normal
+   path. The counter-position was that (c) is a new hub/agent contract carrying its own skew,
+   refresh and garbage-collection design, so making it a prerequisite couples this proposal's
+   delivery to a second and larger one. Gating graduation keeps both true: no user meets
+   manual registration as the permanent answer, and neither design blocks the other. See
+   [Graduation Criteria](#graduation-criteria).
 
 2. ~~**One identifier scheme or two?**~~ **Resolved.** `ResourceIdentifier` (group/resource)
    is used throughout — `resourceSelectors` and `ResourceOverrideSchema.spec.target` — per
@@ -567,9 +625,11 @@ Two mechanisms, following the precedent of `ManagedClusterAddOn.status.configRef
    decides whether expansion happens before or after cluster matching. Recorded here so the
    templating enhancement inherits the questions rather than rediscovering them.
 
-4. **Scope of the first implementation.** Built-in types with a clear error for custom
-   resources, with `ResourceOverrideSchema` as a follow-up; or both together. Reviewers have
-   expressed both preferences. The answer depends partly on question 1.
+4. ~~**Scope of the first implementation.**~~ **Resolved.** Built-in types and
+   `ResourceOverrideSchema`-backed custom resources ship together in alpha, per the same
+   [#198][issue-198] agreement. This follows from question 1: with (a) as the alpha answer
+   there is no reason to hold custom resources back, and splitting them would have put one
+   behaviour through two rounds of review. Delivery is still expected to be several PRs.
 
 5. **Should policies be namespaced or cluster-scoped?** Namespaced is proposed, so that
    authorisation follows the namespace that already governs the MWRS. A platform team wanting
@@ -582,8 +642,12 @@ each patch type; ordering across priority, overrides and patches; wildcard and n
 resource selectors; cluster selectors that match, do not match, and are empty; the identity
 invariant; atomic-list reject and the explicit `Replace` opt-in; composite
 `x-kubernetes-list-map-keys`; `ResourceOverrideSchema` overlay precedence over the CRD schema;
-determinism, by rendering twice and comparing bytes. [ocm#1792][ocm-1792] already carries this
-suite for the agreed subset.
+two schemas sharing a uniqueness key, asserting that the render fails naming both rather than
+picking one, and that a second schema differing only in `spec.version` is accepted; an overlay
+carrying the legacy `x-kubernetes-patch-strategy` pair, asserting a validation error that
+names the structural equivalent rather than a silently atomic list; determinism, by rendering
+twice and comparing bytes. [ocm#1792][ocm-1792] already carries this suite for the agreed
+subset.
 
 Two cases deserve naming because they guard against silent divergence rather than an
 outright bug. **Deletion parity**: the same strategic merge patch using `null` and
@@ -614,11 +678,14 @@ realistic fleet size, with and without the informer `transform`, before graduati
 - `ManifestOverridePolicy` served at `v1alpha1` behind a feature gate, off by default.
 - Renderer used by all three MWRS call sites; unit and integration tests above passing.
 - Per-cluster failure reporting and provenance implemented.
+- `ResourceOverrideSchema` and custom-resource strategic merge implemented, backed by
+  explicitly registered schemas (open question 1, option a).
 
 #### Beta
 
-- `ResourceOverrideSchema` and custom-resource strategic merge implemented, with open
-  question 1 resolved.
+- Schema collection from managed clusters, with the content-hash-deduplicated hub cache of
+  open question 1 option c, implemented and serving as the normal path. Explicit
+  `ResourceOverrideSchema` registration remains available as an override.
 - E2E coverage on a real multi-cluster setup.
 - Scale measurements published for the `ManagedCluster` informer.
 - Feature gate on by default.
