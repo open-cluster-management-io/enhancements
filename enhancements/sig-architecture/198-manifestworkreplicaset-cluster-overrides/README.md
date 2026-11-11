@@ -22,11 +22,12 @@ manifests by resource identity and clusters by `ManagedCluster` labels, and appl
 patches (JSON Patch, JSON Merge Patch, or strategic merge patch) to the matched manifests as
 they are rendered for each cluster. Policies apply implicitly to the `ManifestWorkReplicaSet`
 resources in their namespace, so a platform team can define an override once and have it hold
-for every workload distributed from that namespace, rather than restating it in each MWRS.
+for every workload distributed from that namespace, rather than restating it in each MWRS. A
+single opt-out field on the MWRS turns policy application off for one workload.
 
 A companion cluster-scoped resource, `ResourceOverrideSchema`, supplies the list-merge metadata
-(`x-kubernetes-patch-merge-key` and friends) that strategic merge patching needs for custom
-resources, whose CRD schemas cannot declare it.
+(`x-kubernetes-list-type` and `x-kubernetes-list-map-keys`) that strategic merge patching needs
+for custom resources, whose own CRD schemas do not carry it in a form the merge engine reads.
 
 ## Motivation
 
@@ -335,6 +336,72 @@ Accepting both forms and converting internally was considered and rejected: it p
 of expressing one thing on a brand-new API, and commits us to keeping the conversion correct
 forever, to save the author a one-line edit that the validation error spells out.
 
+#### ManifestWorkReplicaSet opt-out
+
+Implicit application needs an escape hatch, and the thread agreed on one: @kahirokunn asked
+for "a feature to prevent overrides when certain parameters are entered into MWRS", and
+automatic application was accepted *with* an opt-out rather than without one.
+
+One optional field is added to `ManifestWorkReplicaSetSpec`. This is the only change to an
+existing API in this proposal.
+
+```go
+type ManifestWorkReplicaSetSpec struct {
+    // ... ManifestWorkTemplate and PlacementRefs are unchanged ...
+
+    // OverrideMode determines whether ManifestOverridePolicy objects in this namespace
+    // apply to this ManifestWorkReplicaSet. Empty is treated as Enabled.
+    // +kubebuilder:default=Enabled
+    // +optional
+    OverrideMode OverrideMode `json:"overrideMode,omitempty"`
+}
+
+// OverrideMode determines whether ManifestOverridePolicy objects apply to a
+// ManifestWorkReplicaSet.
+// +kubebuilder:validation:Enum=Enabled;Disabled
+type OverrideMode string
+
+const (
+    // OverrideModeEnabled applies every ManifestOverridePolicy in the namespace whose
+    // selectors match this ManifestWorkReplicaSet. This is the default.
+    OverrideModeEnabled OverrideMode = "Enabled"
+
+    // OverrideModeDisabled skips override rendering entirely for this
+    // ManifestWorkReplicaSet, rendering ManifestWorkTemplate as though no policy existed.
+    OverrideModeDisabled OverrideMode = "Disabled"
+)
+```
+
+Two deliberate choices in that shape:
+
+- A bare enum rather than a nested `overrides` struct. `spec.overrides` is already the patch
+  list on `ManifestOverridePolicy`, and reusing the name on MWRS for an on/off setting would
+  give one field name two meanings across the same API group. `overridePolicies` is likewise
+  avoided, since that name belongs to the explicit-reference alternative still open below.
+- No struct wrapper "for future extensibility". The one plausible extension, a per-policy
+  skip list, is argued against immediately below, so a wrapper would be speculative. A
+  second field can be added later without breaking this one.
+
+The `Enabled` default is declared but is not sufficient on its own: an object written before
+the field existed carries no value until it is next written through the API server. The
+renderer must therefore treat the empty string as `Enabled` as well, which is what makes the
+field purely additive for existing `ManifestWorkReplicaSet` objects.
+
+It is deliberately all-or-nothing. A list of policies to skip would reintroduce the
+enumeration problem that made implicit application preferable in the first place: a policy
+created later is neither listed nor skipped, so the skip list quietly stops being accurate.
+
+The obvious objection is that an opt-out makes a governance control evadable. It does not
+grant the MWRS author any power they lack today: they write `manifestWorkTemplate`, so they
+can already produce whatever payload they like, and overrides render on the hub rather than
+acting as admission control on the managed cluster. The field makes an existing capability
+explicit and auditable rather than hiding it: `overrideMode: Disabled` is visible on the
+MWRS, which quietly hand-editing a template to defeat a policy is not.
+
+`overrideMode: Disabled` is recorded in MWRS status and on the rendered `ManifestWork` next
+to the usual provenance, so "policies were switched off" is distinguishable from "no policy
+matched".
+
 ### Example
 
 ```yaml
@@ -401,14 +468,26 @@ spec:
 
 ### Why policies apply implicitly
 
-An alternative is an `overridePolicies` list on the MWRS, mirroring `placementRefs`. The
-thread settled against it: a governance override that application teams can forget to list is
-not an override. Implicit application also matches how OCM's `Policy` framework and Kyverno
-behave, which is the mental model users already have for "a rule the platform team imposes".
+An alternative is an `overridePolicies` list on the MWRS, mirroring `placementRefs`.
+
+The case for implicit application was made by @kahirokunn on [#198][issue-198]: "policies
+will inevitably be missed in enumeration", so a governance override that application teams
+can forget to list is not an override. It also matches how OCM's `Policy` framework and
+Kyverno behave, which is the mental model users already have for "a rule the platform team
+imposes". The [opt-out](#manifestworkreplicaset-opt-out) keeps an explicit escape hatch
+without requiring every MWRS to enumerate what applies to it.
 
 The cost is that an MWRS author cannot see, from the MWRS alone, what will be applied. That is
 mitigated by recording provenance on the rendered `ManifestWork` and on MWRS status; see
-[Observability](#observability).
+[Observability](#observability), and by `overrideMode: Disabled` where an author needs certainty.
+
+**This decision deserves one more look before merge.** The explicit `overridePolicies` form
+was proposed by @everpeace, who raised the original request, and their last word on
+[#198][issue-198] was "let's add `overridePolicies` on the MWRS side" — said while the
+question was whether the reference belonged on `Placement` or on MWRS, before the thread moved
+to implicit application. @everpeace has not commented since, so the switch was made without
+the person who proposed the alternative. @everpeace: does the opt-out cover what you had in
+mind, or do you still want explicit references?
 
 ### Implementation Details
 
@@ -631,7 +710,13 @@ Two mechanisms, following the precedent of `ManagedClusterAddOn.status.configRef
    there is no reason to hold custom resources back, and splitting them would have put one
    behaviour through two rounds of review. Delivery is still expected to be several PRs.
 
-5. **Should policies be namespaced or cluster-scoped?** Namespaced is proposed, so that
+5. **Implicit application versus explicit `overridePolicies` references.** Reopened for one
+   round rather than left as settled. The thread chose implicit application with an opt-out,
+   but @everpeace proposed the explicit form and has not commented since the discussion moved
+   on, so the decision was taken without them. See
+   [Why policies apply implicitly](#why-policies-apply-implicitly).
+
+6. **Should policies be namespaced or cluster-scoped?** Namespaced is proposed, so that
    authorisation follows the namespace that already governs the MWRS. A platform team wanting
    a fleet-wide override must then create one policy per namespace.
 
@@ -662,7 +747,14 @@ churn occurs — a regression test for the failure mode described above; that a 
 marks one cluster `Failed` and leaves others untouched; that a `Progressive` rollout with
 `maxFailures` and `progressDeadline` reacts to a failing cluster instead of stalling; that
 `ManagedCluster` label changes re-render; that creating, editing and deleting a
-`ResourceOverrideSchema` re-renders the `ManifestWork`s whose merge result it changes.
+`ResourceOverrideSchema` re-renders the `ManifestWork`s whose merge result it changes; that
+`overrideMode: Disabled` renders the plain template while a sibling MWRS in the same
+namespace is still patched by the same policy, and that flipping the field back to `Enabled`
+re-renders rather than leaving the un-overridden payload in place.
+
+The opt-out also needs an explicit case for the empty value: a `ManifestWorkReplicaSet`
+object whose `overrideMode` is unset must behave as `Enabled`, since objects written before
+the field existed carry no value and defaulting alone does not cover them.
 
 **E2E tests**: a `ManifestWorkReplicaSet` plus a `ManifestOverridePolicy` producing different
 payloads on two managed clusters, including a custom resource patched with a registered
@@ -699,12 +791,21 @@ realistic fleet size, with and without the informer `transform`, before graduati
 
 ### Upgrade / Downgrade Strategy
 
-Both resources are new and optional. An existing cluster needs no change on upgrade and
-behaviour is unchanged until a `ManifestOverridePolicy` is created. On downgrade, or if the
-feature gate is turned off, rendering reverts to the plain template; the next reconcile
-rewrites each `ManifestWork` back to the un-overridden payload, which is a real workload
-change and must be documented. Deleting the policies before downgrading produces the same
-result through the normal reconcile path and is the recommended procedure.
+Both new resources are optional, and the one change to an existing API —
+`ManifestWorkReplicaSetSpec.overrideMode` — is an optional field whose empty value preserves
+today's behaviour, so an existing cluster needs no change on upgrade and behaviour is
+unchanged until a `ManifestOverridePolicy` is created.
+
+On downgrade, or if the feature gate is turned off, rendering reverts to the plain template;
+the next reconcile rewrites each `ManifestWork` back to the un-overridden payload, which is a
+real workload change and must be documented. Deleting the policies before downgrading
+produces the same result through the normal reconcile path and is the recommended procedure.
+
+Downgrade also drops `overrideMode` from stored objects. That is harmless while the feature
+is off, but an MWRS that was relying on `overrideMode: Disabled` becomes eligible for
+overrides again the moment the feature is re-enabled, if the policies outlived the
+downgrade. Deleting the policies first avoids this too, which is the second reason to
+recommend it.
 
 ### Version Skew Strategy
 
