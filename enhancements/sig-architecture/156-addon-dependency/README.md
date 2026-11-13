@@ -49,6 +49,22 @@ We propose to extend the `ClusterManagementAddOn` API to include a `dependencies
 
 As an addon author, I want to declare a dependency on the Managed Service Account addon because my addon uses the `ManagedServiceAccount` API to provision service accounts on managed clusters. When the Managed Service Account addon is not installed, I want users to see a clear error message in the addon status.
 
+#### Story 2: Template addon depending on a CRD provided by another addon
+
+As a user, I enable a virtualization addon that is shipped as an `AddOnTemplate` and whose
+manifests include an `OperatorPolicy`. That CRD is installed by the Policy Framework
+addons (`governance-policy-framework` and `config-policy-controller`).
+
+If I enable the virtualization addon on a cluster that does not have the Policy Framework
+addons, today the `ManagedClusterAddOn` reports `Available=True` and the only sign of the
+real problem - `the server doesn't have a resource type OperatorPolicy` - is inside the
+`ManifestWork` status. I want the dependency failure reported on the addon itself, naming
+the prerequisites that are missing.
+
+This story is what motivates
+[Ownership of the Available condition](#ownership-of-the-available-condition): the addon in
+question uses `HealthProberTypeWorkloadAvailability`, so its `Available` condition is set
+on the hub rather than by the klusterlet-agent.
 
 ## Design Details
 
@@ -138,9 +154,36 @@ const (
 
 There are two types of dependencies:
 
-- **Required dependencies (default, type=Required)**: The addon cannot function at all without the dependency. When a required dependency is not satisfied, the addon-manager will set `Degraded=True` with reason `RequiredDependencyNotSatisfied`, and the klusterlet-agent will detect this specific reason and set `Available=False`.
+- **Required dependencies (default, type=Required)**: The addon cannot function at all without the dependency. When a required dependency is not satisfied, the addon-manager will set `Degraded=True` with reason `RequiredDependencyNotSatisfied`, and the component that owns the `Available` condition will set `Available=False`. See [Ownership of the Available condition](#ownership-of-the-available-condition).
 
-- **Optional dependencies (type=Optional)**: The addon can still function with reduced functionality when the dependency is missing. When an optional dependency is not satisfied, the addon-manager will set `Degraded=True` with reason `DependencyNotSatisfied`, but the klusterlet-agent will not modify the `Available` condition, allowing the addon to remain available if its health checks pass.
+- **Optional dependencies (type=Optional)**: The addon can still function with reduced functionality when the dependency is missing. When an optional dependency is not satisfied, the addon-manager will set `Degraded=True` with reason `DependencyNotSatisfied`, but no component will modify the `Available` condition, allowing the addon to remain available if its health checks pass.
+
+#### When a Dependency Is Satisfied
+
+A dependency is **satisfied** only when all of the following hold on the dependent addon's
+managed cluster namespace:
+
+1. A `ManagedClusterAddOn` with the dependency's name exists.
+2. Its `metadata.deletionTimestamp` is not set.
+3. Its `Available` condition is `True`.
+
+Condition 2 is required because an addon that is being uninstalled keeps `Available=True`
+while its pre-delete hook runs. Without it, a dependent addon would keep reporting healthy
+against a prerequisite that is on its way out. A prerequisite with a deletion timestamp is
+treated as not satisfied even when its `Available` condition is still `True`.
+
+A dependency returns to satisfied when, and only when, all three conditions hold again. At
+that point the dependency-related `Degraded` condition is cleared and the dependent addon's
+`Available` condition goes back to being driven by its own health check.
+
+#### Status Matrix
+
+| Prerequisite state | `type: Required` | `type: Optional` |
+| --- | --- | --- |
+| No `ManagedClusterAddOn` | `Available=False` / `RequiredDependencyNotSatisfied`; `Degraded=True` / `RequiredDependencyNotSatisfied` | `Available` not modified; `Degraded=True` / `DependencyNotSatisfied` |
+| Exists, `Available=False` or `Unknown` | same as above | same as above |
+| Exists, `Available=True`, `deletionTimestamp` set | same as above | same as above |
+| Exists, `Available=True`, not terminating | Dependency gate passes; `Available` is set by the addon's own health check | `Degraded` cleared for this dependency |
 
 ### Implementation Details
 
@@ -152,8 +195,10 @@ The addon-manager component will implement dependency validation with the follow
 
 1. **Read dependencies**: When reconciling a `ManagedClusterAddOn`, read the corresponding `ClusterManagementAddOn` to get the list of dependencies.
 
-2. **Check each dependency**: For each dependency in the list:
+2. **Check each dependency**: For each dependency in the list, apply the rule in
+   [When a Dependency Is Satisfied](#when-a-dependency-is-satisfied):
    - Check if a `ManagedClusterAddOn` with the same name exists in the same namespace (managed cluster namespace)
+   - Check that its `metadata.deletionTimestamp` is not set
    - Check if the dependent addon's `Available` condition is `True`
 
 3. **Set Degraded condition based on dependency type**:
@@ -170,24 +215,53 @@ The addon-manager component will implement dependency validation with the follow
      - Set the `Degraded` condition to `True` with:
        - Reason: `RequiredDependencyNotSatisfied` (different reason!)
        - Message: Clear description of which dependencies are missing, including the custom message if provided (e.g., "Required addon 'managed-serviceaccount' is not installed or not available. This addon cannot function without ManagedServiceAccount API.")
-     - Do NOT modify the `Available` condition (klusterlet-agent will do this)
+     - Do NOT modify the `Available` condition here. The component that owns `Available` for the addon's health check mode acts on this reason - see [Ownership of the Available condition](#ownership-of-the-available-condition)
 
-**Klusterlet-Agent (on Managed Cluster):**
+#### Ownership of the Available Condition
+
+The klusterlet-agent is not always the component that writes `Available`. Which component
+owns it depends on the addon's health check mode, and both paths have to honour the
+dependency state or the condition will flap between them.
+
+| `HealthCheck.Mode` | `HealthProberType` | Component that writes `Available` |
+| --- | --- | --- |
+| `Lease` | `Lease` | klusterlet-agent, `pkg/registration/spoke/addon/lease_controller.go` |
+| `Customized` | `Work`, `DeploymentAvailability`, `WorkloadAvailability` | addon-manager on the hub, via addon-framework `pkg/addonmanager/controllers/agentdeploy/healthcheck_sync.go` |
+
+This matters in practice because every `AddOnTemplate` addon is hard-wired to
+`HealthProberTypeWorkloadAvailability`
+(`pkg/addon/templateagent/template_agent.go`), so template addons fall entirely in the
+second row. If only the klusterlet-agent were changed, a template addon with an
+unsatisfied required dependency would keep reporting `Available=True`.
+
+The hub path also overwrites the condition. `probeAddonStatusByWorks` ends by setting
+`Available=True` whenever its probes pass, so an `Available=False` written by the agent
+would be reverted on the next sync.
+
+**Klusterlet-Agent (on Managed Cluster), `HealthCheck.Mode=Lease`:**
 
 The klusterlet-agent component will check the `Degraded` condition when determining addon availability:
 
-1. **When reconciling addon health**: After checking lease/probe health status
+1. **When reconciling addon health**: After checking lease health status
 2. **Check for required dependency failures**:
-   - If `Degraded=True` with reason `RequiredDependencyNotSatisfied`, set `Available=False`
+   - If `Degraded=True` with reason `RequiredDependencyNotSatisfied`, set `Available=False` with reason `RequiredDependencyNotSatisfied`
    - If `Degraded=True` with reason `DependencyNotSatisfied` (optional dependency), do not modify `Available` - let the addon's own health checks determine availability
 
-This design ensures clear component ownership and avoids conflicts:
-- **addon-manager** owns dependency validation and sets `Degraded` with appropriate reason
-- **klusterlet-agent** owns `Available` and considers dependency information when making availability decisions
+**Addon-Manager (on Hub), `HealthCheck.Mode=Customized`:**
+
+The health check syncer gates the probe on the dependency state:
+
+1. **Before probing**: If `Degraded=True` with reason `RequiredDependencyNotSatisfied`, set `Available=False` with reason `RequiredDependencyNotSatisfied` and return without running the probe, so the probe result cannot overwrite it.
+2. **Optional dependencies**: If `Degraded=True` with reason `DependencyNotSatisfied`, run the probe as normal and let it decide `Available`.
+3. **Ordering**: Dependency validation must run before the health check within the same reconcile. Otherwise the two writers alternate and the condition flaps.
+
+This design keeps a single source of truth and avoids conflicts:
+- **addon-manager** owns dependency validation and sets `Degraded` with the appropriate reason
+- Whichever component owns `Available` for that health check mode reads that `Degraded` reason and does not re-derive the dependency state itself
 
 **Key Design Benefits:**
-1. The klusterlet-agent does not need access to the `ClusterManagementAddOn` API - all dependency type information is encoded in the `Degraded` condition reason
-2. Component ownership is clear and prevents components from fighting over the same condition
+1. No component needs access to the `ClusterManagementAddOn` API to interpret the result - all dependency type information is encoded in the `Degraded` condition reason
+2. Condition ownership is explicit per health check mode, which prevents components from fighting over `Available`
 3. Different dependency types (Optional vs Required) result in different status behaviors automatically
 
 ### Example Usage
@@ -267,7 +341,7 @@ metadata:
 status:
   conditions:
   - type: Available
-    status: "False"  # Set by klusterlet-agent
+    status: "False"  # Set by whichever component owns Available for this health check mode
     reason: RequiredDependencyNotSatisfied
     message: "Required addon 'managed-serviceaccount' is not installed or not available. This addon cannot function without ManagedServiceAccount API"
     lastTransitionTime: "2025-10-22T10:00:00Z"
@@ -307,12 +381,31 @@ status:
   - Single dependency (satisfied/unsatisfied)
   - Multiple dependencies (all satisfied, some unsatisfied, none satisfied)
 
+- Test the satisfied/unsatisfied rule itself:
+  - Dependency `ManagedClusterAddOn` missing
+  - Dependency present with `Available=False` and with `Available=Unknown`
+  - Dependency present, `Available=True`, `deletionTimestamp` set - must be unsatisfied
+  - Dependency present, `Available=True`, not terminating - satisfied
+
 #### Integration Tests
 
 - Test complete workflow:
   1. Install addon A with dependency on addon B (B not installed) - verify Degraded condition
   2. Install addon B - verify addon A becomes Available
   3. Delete addon B - verify addon A becomes Degraded
+
+- Run the workflow above once per health check mode, since `Available` is written by a
+  different component in each:
+  - `HealthCheck.Mode=Lease` (klusterlet-agent)
+  - `HealthCheck.Mode=Customized`, including an `AddOnTemplate` addon
+    (`WorkloadAvailability`, hub) - verify the probe does not overwrite `Available=False`
+
+- Verify the gate holds for both `installStrategy: Manual` and `installStrategy: Placements`,
+  since with `Placements` the addon-manager creates the `ManagedClusterAddOn` itself.
+
+- Verify recovery: once the prerequisite is present, non-terminating and `Available=True`,
+  the dependency `Degraded` condition is cleared and `Available` returns to the value its
+  own health check produces.
 
 #### E2E Tests
 
@@ -326,7 +419,7 @@ status:
 
 - API changes implemented in `open-cluster-management.io/api` addon v1beta1
 - Dependency validation fully supported by addon-manager component
-- Klusterlet-agent updated to handle `RequiredDependencyNotSatisfied` reason
+- Both `Available` owners updated to handle the `RequiredDependencyNotSatisfied` reason: the klusterlet-agent for `HealthCheck.Mode=Lease`, and the hub health check syncer for `HealthCheck.Mode=Customized`
 - Unit and integration tests passing
 - E2E tests with real addons
 - At least 2 real addons using dependency declarations
@@ -363,9 +456,62 @@ status:
 - Dependency validation happens on the hub side in the addon-manager component
 - No version skew issues expected as long as the API version is compatible
 
+## Resolved Review Decisions
+
+Settled on [#157](https://github.com/open-cluster-management-io/enhancements/pull/157),
+recorded here so they are not relitigated.
+
+- **An unsatisfied dependency does not block or undo installation.** The question was
+  raised both ways: whether the addon should not be deployed until its dependencies are
+  met, and whether an already-installed addon should be uninstalled when a dependency
+  becomes unavailable. The answer to both is no - report a status condition and leave the
+  addon in place. Disabling installation was considered and dropped as unnecessary.
+- **`type` is an enum, not a boolean.** An earlier draft used a boolean `required` field.
+  Booleans are avoided in OCM APIs because they cannot be extended.
+- **The default is `Required`, not `Optional`.** Reviewers did not read an unmarked
+  dependency as optional.
+- **No implicit ordering between multiple dependencies.** Listing two dependencies does not
+  order them against each other. Ordering is expressed by chaining dependent addons.
+- **No version constraints.** `ClusterManagementAddOn` carries no addon version, so a
+  dependency cannot be expressed against one.
+- **Per-cluster-type dependencies are deferred.** An addon may depend on different addons
+  depending on the kind of managed cluster - for example on OpenShift but not on EKS. There
+  is no requirement for it yet, and the API can be extended later with a field such as
+  `when` holding a CEL expression, without breaking the shape proposed here. See
+  [addon-framework#341](https://github.com/open-cluster-management-io/addon-framework/issues/341)
+  for the equivalent case in health checking.
+
+## Open Questions
+
+These are raised but not settled, and are not implied by the text above.
+
+1. **Is `Degraded` the right condition for an unsatisfied required dependency?** It reads
+   oddly - at that point the addon has failed rather than degraded. `ManagedClusterAddOn`
+   has no `Failed` condition type today (`Available`, `Degraded`, `Configured`,
+   `Progressing`), so the choice is between `Available=False` plus `Degraded=True` as
+   written above, or `Available=False` alone with the detail carried in the reason and
+   message. Keeping `Degraded=True` preserves a machine-readable reason for consumers that
+   do not parse messages.
+
+2. **Should a missing optional dependency set `Degraded` at all?** If a dependency is
+   genuinely optional, the addon may simply be missing a nice-to-have rather than running
+   degraded. One option is to leave it to the addon author, for example only setting
+   `Degraded` when `message` is specified.
+
+3. **Interaction with install ordering.** This proposal deliberately stops at declaration
+   and status; prerequisites are not installed automatically and no install ordering is
+   implied. [Issue #184](https://github.com/open-cluster-management-io/enhancements/issues/184)
+   asks for ordering and auto-install. Keeping them separate lets declaration and status
+   land first, but the two designs need to stay compatible.
+
 ## Implementation History
 
-- 2025-10-22: Initial KEP draft
+- 2025-10-22: Initial KEP draft, proposed in
+  [#157](https://github.com/open-cluster-management-io/enhancements/pull/157) by @elgnay
+- 2026-11-13: Defined when a dependency is satisfied (including terminating prerequisites),
+  documented `Available` ownership per health check mode, added the status matrix, the
+  template addon user story, the kro alternative, and the resolved and open questions.
+  Reopened as a fresh PR after the original author left the project.
 - TBD: Beta implementation
 - TBD: GA promotion
 
@@ -392,6 +538,51 @@ Instead of adding a `required` field, the addon-manager could only set the `Degr
 - More work for addon authors who want hard dependency behavior
 
 **Decision**: Not chosen as the primary approach because the `type` field provides clearer semantics and reduces boilerplate for addon authors. However, this remains a valid alternative if the `type` field proves too complex in practice.
+
+### Alternative 2: Use kro Instead of Adding Dependency Support to OCM
+
+[kro](https://kro.run/) was suggested on this proposal and in
+[#194](https://github.com/open-cluster-management-io/enhancements/issues/194) as a way to get
+dependency handling without changing the addon API. Both placements of it were prototyped or
+assessed and neither met the requirement. Recorded here so the evaluation is not repeated.
+
+Evidence: https://gist.github.com/payjain/e12a5d8ea0188cc466dd6edbb2f001e5 (upstream OCM
+v1.3.1 on kind, 1 hub and 2 managed clusters, kro v0.9.4).
+
+**kro on the hub.** A `ResourceGraphDefinition` gates creation of the dependent
+`ManagedClusterAddOn` until its prerequisites are `Available`.
+
+- Worked: install ordering and gating with no OCM code changes; kro named the missing
+  prerequisites; the dependent addon installed once they became available, and reinstalled
+  after a prerequisite was restored.
+- Only works with `installStrategy: Manual`. With `installStrategy: Placements` the
+  addon-manager creates and deletes the `ManagedClusterAddOn` itself and bypasses the gate.
+- The failure is reported on the kro instance, not on the addon. The `ManagedClusterAddOn`
+  still reported `Available=True`, which is the opposite of what this proposal is for.
+- By default kro deletes the dependent `ManagedClusterAddOn` when a prerequisite
+  disappears, uninstalling the addon. Avoiding that needs a workaround.
+
+**kro on every managed cluster.** Each addon gets a graph and graphs wait on each other,
+which would put the gate below Placement and also give ordered apply and readiness waits.
+
+- Requires shipping and supporting kro - controller, CRDs, and an applier ServiceAccount
+  per graph - on every managed cluster, which is significant on single-node and edge
+  fleets.
+- An RGD resolves each referenced kind's OpenAPI schema when it is created, so a graph
+  waiting on a not-yet-installed CRD never reaches `Active` - exactly the state it would
+  need to wait in. Only the alpha `Graph` API avoids this.
+- The addon would go `Available=False` with a generic message rather than one naming the
+  missing prerequisite, because `AddOnTemplate` addons use
+  `HealthProberTypeWorkloadAvailability`.
+- A managed cluster cannot enable an addon on the hub, so auto-installing prerequisites
+  would still need hub-side work.
+- Version skew: RGDs written by addon authors must match the kro version on each managed
+  cluster.
+
+**Decision**: Not chosen. Dependency declaration and status belong in the addon API, where
+the failure can be reported on the addon itself and where both install strategies behave
+the same. This does not rule out kro for other purposes, such as
+[#194](https://github.com/open-cluster-management-io/enhancements/issues/194).
 
 ## Infrastructure Needed
 
