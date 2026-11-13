@@ -1,0 +1,18 @@
+title: addon-dependency
+authors:
+  - "@elgnay"
+  - "@payjain"
+reviewers:
+  - "@qiujian16"
+  - "@jnpacker"
+  - "@mikeshng"
+  - "@zhujian7"
+  - "@haoqing0110"
+approvers:
+  - "@qiujian16"
+creation-date: 2025-10-22
+last-updated: 2026-11-13
+status: provisional
+see-also:
+  - "/enhancements/sig-architecture/76-addon-install-strategy"
+  - "/enhancements/sig-architecture/82-addon-template"
